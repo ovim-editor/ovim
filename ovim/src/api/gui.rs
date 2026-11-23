@@ -235,14 +235,18 @@ mod tests {
                 columns: 100,
                 rows: 30,
             },
-            // The last three answer `Err` -- no vector document, no worktree --
-            // but the shape is what is being pinned here, not the outcome.
+            // Some of these answer `Err` -- no vector document, no open chat
+            // -- but the shape is what is being pinned here, not the outcome.
             GuiCommand::VectorSource,
-            GuiCommand::DiffReview { spec: None },
-            GuiCommand::DiffFilePatch {
-                spec: None,
-                path: "src/main.rs".to_string(),
+            GuiCommand::WorkspaceDirectory,
+            GuiCommand::UpdateChatInput {
+                expected_input: String::new(),
+                expected_cursor: 0,
+                input: "draft".to_string(),
+                cursor: 5,
+                action: None,
             },
+            GuiCommand::ReadClipboard,
             GuiCommand::SelectTab { index: 0 },
         ] {
             let (response, _) = tokio::join!(
@@ -393,57 +397,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_diff_commands_compute_against_the_workspace_the_editor_is_in() {
-        // This is the whole point of moving the diff server-side: the answer
-        // describes the repository the editor is sitting in, and the caller
-        // never needs to be able to reach it.
+    async fn a_diff_review_opened_over_the_wire_arrives_computed_where_the_repository_is() {
+        // The review is built by the editor from the repository it is sitting
+        // in and travels inside the frame, so the caller never needs to be
+        // able to reach that repository. This is also the deepest part of a
+        // frame to read back, which is what a remote frontend has to do.
         let (_directory, root) = repository_with_one_change();
         let (app, capability, mut server) = secured_app();
         let mut editor = Editor::with_content("");
         editor.set_workspace_root(&root).unwrap();
+        // The review finds its repository from the file being edited.
+        editor.set_file_path(root.join("a.txt").to_string_lossy().into_owned());
 
         let (response, _) = tokio::join!(
             app.clone().oneshot(command_request(
                 &capability,
-                &GuiCommand::DiffReview { spec: None }
+                &GuiCommand::EditorCommand {
+                    command: "GitDiff HEAD".to_string()
+                }
             )),
             serve_one(&mut server, &mut editor)
         );
         let body = to_bytes(response.unwrap().into_body(), 1024 * 1024)
             .await
             .unwrap();
-        let GuiReply::DiffReview(review) = serde_json::from_slice(&body).unwrap() else {
-            panic!("a DiffReview command must answer with a review");
-        };
-        let review = review.expect("the workspace is a Git worktree");
-        assert_eq!(review.root, root);
-        assert_eq!(
-            review
-                .files
-                .iter()
-                .map(|file| file.path.as_str())
-                .collect::<Vec<_>>(),
-            vec!["a.txt"]
-        );
+        let reply: GuiReply = serde_json::from_slice(&body).unwrap();
+        assert_eq!(reply, GuiReply::Unit(Ok(())));
 
         let (response, _) = tokio::join!(
             app.oneshot(command_request(
                 &capability,
-                &GuiCommand::DiffFilePatch {
-                    spec: None,
-                    path: "a.txt".to_string(),
+                &GuiCommand::Snapshot {
+                    columns: 120,
+                    rows: 40,
                 },
             )),
             serve_one(&mut server, &mut editor)
         );
-        let body = to_bytes(response.unwrap().into_body(), 1024 * 1024)
+        let body = to_bytes(response.unwrap().into_body(), 16 * 1024 * 1024)
             .await
             .unwrap();
-        let GuiReply::DiffPatch(patch) = serde_json::from_slice(&body).unwrap() else {
-            panic!("a DiffFilePatch command must answer with a patch");
+        let GuiReply::Snapshot(frame) = serde_json::from_slice(&body).unwrap() else {
+            panic!("a Snapshot command must answer with a frame");
         };
-        let patch = patch.expect("a.txt is changed in the worktree");
-        assert!(patch.contains("+three"), "{patch}");
+        let frame = frame.expect("the editor projects a frame");
+        let review = frame
+            .panes
+            .iter()
+            .find_map(|pane| pane.diff_review.as_ref())
+            .unwrap_or_else(|| panic!("no pane carries the review: {}", frame.status_message));
+        let files: Vec<_> = review
+            .0
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(files, vec!["a.txt"]);
+        assert!(review.0.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .any(|line| line.kind == "added" && line.text.contains("three")));
     }
 
     /// Serve a router on a loopback port and report where to reach it.

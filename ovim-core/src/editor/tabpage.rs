@@ -1,7 +1,18 @@
-use crate::buffer::BufferId;
+use crate::buffer::{BufferId, Cursor};
 use crate::editor::WindowManager;
 
 pub type TabPageId = u64;
+
+/// Cursor and scroll position a tab last had in its buffer. The cursor lives
+/// on the shared `Buffer`, so two tabs showing one file would otherwise move
+/// together; each tab snapshots its view on leave and restores it on enter.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TabView {
+    pub(crate) buffer_id: BufferId,
+    pub(crate) cursor: Cursor,
+    pub(crate) scroll_offset: usize,
+    pub(crate) scroll_subrow: usize,
+}
 
 /// Represents a single tab page
 pub struct TabPage {
@@ -15,6 +26,9 @@ pub struct TabPage {
     /// editor's current buffer in that case. Stored as an id rather than an
     /// index so buffer removal elsewhere can't silently repoint the tab.
     buffer_id: Option<BufferId>,
+    pub(crate) definition_origin: Option<TabPageId>,
+    /// This tab's own view of `buffer_id`, saved whenever the tab is synced.
+    pub(crate) view: Option<TabView>,
 }
 
 impl TabPage {
@@ -28,6 +42,8 @@ impl TabPage {
             id,
             window_manager: None,
             buffer_id: None,
+            definition_origin: None,
+            view: None,
         }
     }
 
@@ -57,6 +73,9 @@ impl TabPage {
 
     /// Sets the buffer this tab is displaying
     pub fn set_buffer_id(&mut self, id: BufferId) {
+        if self.buffer_id != Some(id) {
+            self.definition_origin = None;
+        }
         self.buffer_id = Some(id);
     }
 }

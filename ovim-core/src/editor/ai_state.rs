@@ -108,12 +108,21 @@ pub struct AiState {
     /// the process entry point (`ovim --resume`).
     pub(crate) resume_durable_conversations: bool,
     pub config: AiConfig,
+    pub(crate) chat_preference: crate::ai::chat_preference::ChatPreference,
+    pub(crate) chat_config_override: bool,
     /// Dedicated read-only delegated-agent control plane. It snapshots the
     /// startup config and never replaces root chat orchestration.
     pub(crate) subagents: Box<super::ai_subagents::AiSubagentService>,
+    /// Reviews shell programs auto mode cannot clear locally. Tests replace it
+    /// so no unit test reaches a real provider.
+    pub(crate) shell_classifier: Arc<dyn crate::ai::auto_classifier::AutoModeClassifier>,
     pub active_selection: Option<AiSelectionSnapshot>,
+    /// Folders already told that Claude Code has not trusted them.
+    pub(crate) claude_untrusted_noted: std::collections::HashSet<PathBuf>,
     /// Global because opening chat can require sign-in.
     pub(crate) codex_auth_dialog: Option<CodexAuthDialog>,
+    /// First-run "how should chat run inference?" chooser.
+    pub(crate) provider_choice_dialog: Option<super::ai_provider_choice::ProviderChoiceDialog>,
     pub(crate) pending_codex_auth: Option<PendingCodexAuth>,
     pub(crate) pending_external_url: Option<String>,
     pub active_profile: String,
@@ -185,9 +194,16 @@ impl AiState {
             durable_chat_bindings: HashMap::new(),
             resume_durable_conversations: false,
             config,
+            chat_preference: crate::ai::chat_preference::ChatPreference::default(),
+            chat_config_override: false,
             subagents,
+            shell_classifier: Arc::new(
+                crate::ai::auto_classifier::CodexAutoModeClassifier::default(),
+            ),
             active_selection: None,
+            claude_untrusted_noted: std::collections::HashSet::new(),
             codex_auth_dialog: None,
+            provider_choice_dialog: None,
             pending_codex_auth: None,
             pending_external_url: None,
             active_profile: default_profile,

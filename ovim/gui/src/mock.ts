@@ -164,11 +164,13 @@ export const mockSnapshot: GuiSnapshot = {
         },
     ],
     gitBranch: "gui/tauri-entry",
+    symbolBreadcrumbs: [],
     gitChanges: { added: 86, modified: 12, removed: 3 },
     diagnostics: { errors: 0, warnings: 1, information: 0, hints: 2 },
     lspStatus: "rust-analyzer: Ready",
     statusMessage: "",
     fileTree: {
+        revealGeneration: 0,
         root: "ovim",
         selected: 5,
         items: [
@@ -191,9 +193,7 @@ export const mockSnapshot: GuiSnapshot = {
     },
     aiChat: {
         profile: "codex_sol",
-        profiles: [
-            { id: "codex_sol", provider: "codex", model: "gpt-5.6-sol" },
-        ],
+        profiles: [{ id: "codex_sol", provider: "codex", model: "gpt-6-sol" }],
         reasoningEffort: "medium",
         reasoningEffortSelection: "default",
         reasoningEfforts: ["default", "low", "medium", "high"],
@@ -233,7 +233,9 @@ export const mockSnapshot: GuiSnapshot = {
     testPanel: undefined,
     problems: undefined,
     lspManager: undefined,
+    searchReplace: undefined,
     debug: undefined,
+    runConsole: undefined,
     theme,
     predictableInsert: false,
     inputEpoch: 0,

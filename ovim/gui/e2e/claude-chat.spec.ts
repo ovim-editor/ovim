@@ -1,0 +1,175 @@
+import { expect, test } from "@playwright/test";
+
+// Render the actual chat components with representative runtime projections.
+// Live Claude requests are deliberately not part of browser layout tests.
+for (const state of ["approval", "question"] as const) {
+    test(`Claude ${state} keeps the editor chat experience`, async ({
+        page,
+    }, testInfo) => {
+        await page.route("**/src/mock.ts", async (route) => {
+            const response = await route.fetch();
+            await route.fulfill({
+                response,
+                body:
+                    (await response.text()) +
+                    `
+Object.assign(mockSnapshot.aiChat, {
+    profile: "claude_code", externalAgent: true, externalQuestion: ${state === "question"},
+    profiles: [
+        {id: "claude_code", label: "Claude Agent", provider: "claude_code", model: "default"},
+        {id: "codex_sol", provider: "codex", model: "gpt-6-sol"}
+    ],
+    reasoningEffort: "default", reasoningEfforts: ["default", "low", "medium", "high", "xhigh", "max"],
+    activity: "waiting_tool_approval", waiting: true,
+    input: "", inputCursor: 0, queuedInputs: [], pendingImages: [],
+    approval: ${state === "approval" ? JSON.stringify("Claude Code: Bash\n\nRun project tests\n\nCommand:\ncd 'norsk 🦦' && npm test\n\nReason: Shell access needs approval\n\nApproval applies to this invocation only.") : "undefined"},
+    messages: [{id:"claude-message", role:"assistant", content:${JSON.stringify(state === "question" ? "Which language should the examples use?\n1. Norsk\n2. English\n\nType your answer below." : "I will verify the change with the project tests.")}, model:"Claude Agent", index:0, images:[], tools:[], selected:false}],
+    streaming: undefined, streamingThinking: undefined, thinkingLive: false,
+    codeExplanation: undefined, setup: undefined
+});`,
+            });
+        });
+        await page.goto("/");
+        await expect(
+            page.getByTitle("Configure AI provider, model, and run settings"),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: /YOLO|COMPREHENSION/ }),
+        ).toHaveCount(0);
+        if (state === "approval") {
+            await expect(
+                page.getByRole("button", { name: "Allow once" }),
+            ).toBeVisible();
+            await expect(
+                page.getByRole("button", { name: "Deny", exact: true }),
+            ).toBeVisible();
+            await expect(page.locator(".approval-card")).toContainText(
+                "Run project tests",
+            );
+            await expect(page.locator(".approval-card")).toContainText(
+                "Command:\ncd 'norsk 🦦' && npm test",
+            );
+            await expect(page.locator(".approval-card")).not.toContainText(
+                '"command":',
+            );
+        } else {
+            await expect(
+                page.getByPlaceholder("Answer Claude’s question…"),
+            ).toBeVisible();
+            await expect(
+                page.getByRole("button", { name: "Send message" }),
+            ).toBeVisible();
+            await page.getByLabel("AI chat input").fill("Norsk 🦦");
+            await expect(page.getByLabel("AI chat input")).toHaveValue(
+                "Norsk 🦦",
+            );
+        }
+        await page.screenshot({
+            path: testInfo.outputPath(`claude-${state}.png`),
+            fullPage: true,
+        });
+        await page
+            .getByTitle("Configure AI provider, model, and run settings")
+            .click();
+        await expect(page.getByLabel("AI provider")).toHaveValue("claude_code");
+        await expect(
+            page
+                .getByLabel("AI provider")
+                .getByRole("option", { name: "Codex" }),
+        ).toBeAttached();
+    });
+}
+
+test("Claude walkthrough uses the existing interactive reader", async ({
+    page,
+}, testInfo) => {
+    await page.route("**/src/mock.ts", async (route) => {
+        const response = await route.fetch();
+        const walkthrough = {
+            answerInProgress: false,
+            current: 1,
+            total: 2,
+            page: {
+                kind: "concept",
+                title: "How editor context reaches Claude",
+                body: "Ovim supplies the active file and cursor. Claude can refresh that context through an editor tool.",
+            },
+            discussion: {
+                state: "navigating",
+                questionCount: 0,
+                exchangeTotal: 0,
+                latestFailed: false,
+            },
+        };
+        await route.fulfill({
+            response,
+            body:
+                (await response.text()) +
+                `\nObject.assign(mockSnapshot.aiChat, {externalAgent:true, profile:"claude_code", waiting:true, codeExplanation:${JSON.stringify(walkthrough)}});`,
+        });
+    });
+    await page.goto("/");
+    await expect(
+        page.getByText("How editor context reaches Claude", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /next/i })).toBeVisible();
+    await page.screenshot({
+        path: testInfo.outputPath("claude-walkthrough.png"),
+        fullPage: true,
+    });
+});
+
+test("Claude model presets are selectable in a narrow chat window", async ({
+    page,
+}, testInfo) => {
+    await page.setViewportSize({ width: 1154, height: 1054 });
+    await page.route("**/src/mock.ts", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({
+            response,
+            body:
+                (await response.text()) +
+                `
+Object.assign(mockSnapshot.aiChat, {
+    profile:"claude_code", model:"claude-fable-5-1", externalAgent:true, externalQuestion:false,
+    profiles:["default","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-haiku-5-5"].map(model => ({id:"claude_code",label:"Claude Agent",provider:"claude_code",model})),
+    activity:"idle", waiting:false, approval:undefined, codeExplanation:undefined,
+    reasoningEffort:"medium", reasoningEffortSelection:"default", reasoningEffortDefault:"medium",
+    reasoningEfforts:["default","low","medium","high","xhigh","max"]
+});`,
+        });
+    });
+    await page.goto("/");
+    await page
+        .getByTitle("Configure AI provider, model, and run settings")
+        .click();
+    const model = page.getByLabel("AI model");
+    await expect(model.getByRole("option")).toHaveCount(5);
+    await expect(model).toHaveValue(
+        JSON.stringify(["claude_code", "claude-fable-5-1"]),
+    );
+    for (const model of [
+        "default",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "claude-haiku-5-5",
+    ])
+        await expect(
+            page
+                .getByLabel("AI model")
+                .getByRole("option", { name: new RegExp("^" + model) }),
+        ).toBeAttached();
+    await page.screenshot({
+        path: testInfo.outputPath("claude-model-picker.png"),
+        fullPage: true,
+    });
+    await model.selectOption(
+        JSON.stringify(["claude_code", "claude-haiku-5-5"]),
+    );
+    await page.getByRole("button", { name: "Done" }).click();
+    await expect(
+        page.getByRole("dialog", { name: "AI run settings" }),
+    ).toHaveCount(0);
+    await expect(page.getByLabel("AI chat input")).toBeFocused();
+});

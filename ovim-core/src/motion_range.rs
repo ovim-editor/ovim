@@ -21,6 +21,49 @@
 use crate::buffer::Buffer;
 use crate::unicode::CharCol;
 
+/// A cursor motion usable as the target of an operator. What each one does
+/// is in `editor/input/normal/operator_motion.rs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Left,
+    Right,
+    Down,
+    Up,
+    WordForward {
+        big: bool,
+    },
+    WordBackward {
+        big: bool,
+    },
+    WordEnd {
+        big: bool,
+    },
+    WordEndBackward {
+        big: bool,
+    },
+    LineStart,
+    FirstNonBlank,
+    LineEnd,
+    /// `_`: the first non-blank `count - 1` lines down.
+    FirstNonBlankDown,
+    /// `+` / `-`: the first non-blank `count` lines down / up.
+    NextLine,
+    PreviousLine,
+    /// `|`: column `count`.
+    Column,
+    ParagraphForward,
+    ParagraphBackward,
+    SentenceForward,
+    SentenceBackward,
+    MatchingBracket,
+    SearchNext,
+    SearchPrevious,
+    /// `;` / `,`: repeat the last `f`/`t`/`F`/`T`.
+    FindRepeat {
+        reverse: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wise {
     Charwise,
@@ -69,6 +112,23 @@ impl MotionRange {
         }
 
         Self { start, end, wise }
+    }
+
+    /// `d` makes a charwise range over several lines linewise when it starts in the
+    /// indent and ends at the end of its last line (Vim's `op_delete`), so `d}` or
+    /// `d2$` from the start of a line leaves no empty line behind.
+    pub fn linewise_for_delete(mut self, buffer: &Buffer) -> Self {
+        if self.wise == Wise::Charwise
+            && self.end.0 > self.start.0
+            && self.start.1 <= buffer.first_non_blank_col(self.start.0)
+            && buffer
+                .line_text(self.end.0)
+                .is_none_or(|text| text.chars().skip(self.end.1 .0).all(char::is_whitespace))
+        {
+            self.wise = Wise::Linewise;
+            self.start.1 = CharCol::ZERO;
+        }
+        self
     }
 }
 

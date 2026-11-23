@@ -117,7 +117,7 @@ fn editor_undo_failure_keeps_change_on_stack_and_toasts() {
     test.editor
         .buffer_mut()
         .change_manager_mut()
-        .push_undo_change_preserving_repeat(change);
+        .push_change(change);
 
     assert_eq!(
         test.editor.buffer().change_manager().undo_stack.len(),
@@ -181,7 +181,7 @@ fn editor_undo_success_path_stays_silent() {
     test.editor
         .buffer_mut()
         .change_manager_mut()
-        .push_undo_change_preserving_repeat(change);
+        .push_change(change);
 
     test.editor.undo();
 

@@ -44,7 +44,7 @@ pub(super) fn predictable_insert(editor: &Editor) -> bool {
         // A visual-block insert replays the typed run onto sibling lines when
         // it ends, so the buffer it produces is not the one the keystrokes
         // describe.
-        && editor.visual_block_insert_state().is_none()
+        && !editor.has_pending_block_insert()
         && !editor.buffer().is_read_only()
         && !insert_mapping_starts_with_a_printable_key(editor)
 }

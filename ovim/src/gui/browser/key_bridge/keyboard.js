@@ -182,10 +182,17 @@
         !event.isTrusted ||
         event.isComposing ||
         event.key === "Process" ||
-        event.key === "Dead" ||
-        !sharedState.enabled
+        event.key === "Dead"
       )
         return;
+      // Workbench shortcuts also work in page inputs and with Vim keys off.
+      if (event.ctrlKey && event.key === "Tab" && !event.altKey && !event.metaKey) {
+        prevent(event);
+        clearSequence();
+        emit(event.shiftKey ? "previous_workbench_tab" : "next_workbench_tab");
+        return;
+      }
+      if (!sharedState.enabled) return;
       if (sharedState.mode === "insert") {
         if (event.key === "Escape") {
           prevent(event);

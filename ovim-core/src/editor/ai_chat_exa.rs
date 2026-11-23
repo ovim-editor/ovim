@@ -11,15 +11,6 @@ impl Editor {
             .is_some_and(|profile| profile.provider == AiProviderKind::Codex)
     }
 
-    pub(crate) fn maybe_prompt_exa_on_chat_open(&mut self) {
-        if !self.has_codex_auth_dialog()
-            && self.ai_chat_uses_direct_codex()
-            && crate::ai::exa::should_offer_onboarding()
-        {
-            self.open_exa_setup_dialog(None);
-        }
-    }
-
     pub(crate) fn open_exa_setup_dialog(&mut self, error: Option<String>) {
         let environment_override =
             std::env::var("EXA_API_KEY").is_ok_and(|value| !value.trim().is_empty());

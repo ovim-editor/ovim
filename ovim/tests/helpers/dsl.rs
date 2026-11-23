@@ -1,5 +1,6 @@
 use crate::helpers::EditorTest;
 use ovim::mode::Mode;
+use ovim_core::unicode::grapheme_count;
 
 #[derive(Debug, Clone)]
 pub struct Fixture {
@@ -88,7 +89,7 @@ fn normalize_expected_buffer(content: &str) -> String {
 ///   expand_annotation("--", 6)     -> "------"   (selected 0-5)
 fn expand_annotation(ann: &str, content_len: usize) -> String {
     if content_len == 0 {
-        return String::new();
+        return ann.to_string();
     }
 
     let ann_chars: Vec<char> = ann.chars().collect();
@@ -142,12 +143,16 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
 
         // Pad annotation with spaces if shorter than content.
         // If annotation ends with '-', extend selection to end of line.
-        let text_len = text.chars().count();
+        // One annotation column represents one cursor step, including emoji
+        // sequences and combining characters.
+        let text_len = grapheme_count(text);
         let ann = expand_annotation(ann_raw, text_len);
 
-        // Validate annotation doesn't exceed content length
+        // Insert cursors and characterwise selections can include the EOL
+        // position. Other modes stop on the last grapheme.
         let ann_len = ann.chars().count();
-        if ann_len > text_len && text_len > 0 {
+        let max_len = (text_len + usize::from(matches!(mode, Mode::Insert | Mode::Visual))).max(1);
+        if ann_len > max_len {
             panic!(
                 "Annotation is longer than content on line {}:\n  content ({}): {:?}\n  annotation ({}): {:?}\n\
                  Hint: annotation markers should not exceed content length.",
@@ -246,7 +251,10 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
         | Mode::Dashboard
         | Mode::LspManager
         | Mode::RenameInput
-        | Mode::AiChat => Fixture {
+        | Mode::AiChat
+        | Mode::RunConsole
+        | Mode::DebugPanel
+        | Mode::SearchReplace => Fixture {
             mode,
             content,
             cursor,
@@ -351,7 +359,7 @@ fn derive_visual_linewise(
 
     let end_col = content_lines
         .get(end_line)
-        .map(|l| l.chars().count().saturating_sub(1))
+        .map(|l| grapheme_count(l).saturating_sub(1))
         .unwrap_or(0);
 
     let expected_start = (start_line, 0);

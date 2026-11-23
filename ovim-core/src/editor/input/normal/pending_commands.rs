@@ -4,7 +4,7 @@
 //! g*, z*, Z*, "*, q*, @*, [*, ]*, W* (Ctrl-W)
 
 use crate::editor::input::helpers;
-use crate::editor::{CursorPos, Editor, Motions, Operator, PendingChangeRepeat};
+use crate::editor::{CursorPos, Editor, InputState, Motions, Operator, PendingChangeRepeat};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col, GraphemeCol};
@@ -15,31 +15,36 @@ use anyhow::Result;
 ///
 /// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
-    let pending = match editor.pending_command() {
-        Some(p) => p,
-        None => return Ok(false),
+    let state = editor.input_state().clone();
+    let Some(pending) = state.prefix_key() else {
+        return Ok(false);
     };
-
-    editor.clear_pending_command();
+    // An operator reaches a prefix only as `dgn` / `cgN` (see operators.rs).
+    let operator = state.pending_operator();
+    editor.reset_input_state();
 
     match (pending, key_event.code) {
         // =====================================================================
         // 'g' - Go commands
         // =====================================================================
         ('g', KeyCode::Char('g')) => {
-            editor.add_jump();
             let max_line = editor.buffer().line_count().saturating_sub(1);
             let target_line = editor.count().unwrap_or(1).saturating_sub(1).min(max_line);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol::ZERO);
-            Motions::first_non_blank(editor.buffer_mut());
-            editor.add_jump();
+            editor.record_jump_if_moved(|editor| {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, GraphemeCol::ZERO);
+                Motions::first_non_blank(editor.buffer_mut());
+            });
             editor.clear_count();
         }
         ('g', KeyCode::Char('d')) => {
-            editor.request_goto_definition();
+            if editor.is_diff_review_buffer() {
+                editor.diff_review_goto_definition_at_cursor();
+            } else {
+                editor.request_goto_definition();
+            }
             editor.clear_count();
         }
         ('g', KeyCode::Char('D')) => {
@@ -60,6 +65,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         ('g', KeyCode::Char('q')) => {
             editor.request_format_document();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char(key @ ('p' | 'P'))) => {
+            let count = editor.effective_count();
+            helpers::paste_moving_past(editor, count, key == 'p')?;
             editor.clear_count();
         }
         ('g', KeyCode::Char('J')) => {
@@ -98,18 +108,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('g', KeyCode::Char('u')) => {
-            editor.set_pending_operator(Operator::Lowercase);
+            editor.enter_operator_pending(Operator::Lowercase);
         }
         ('g', KeyCode::Char('U')) => {
-            editor.set_pending_operator(Operator::Uppercase);
+            editor.enter_operator_pending(Operator::Uppercase);
         }
         ('g', KeyCode::Char('~')) => {
-            editor.set_pending_operator(Operator::ToggleCase);
+            editor.enter_operator_pending(Operator::ToggleCase);
         }
-        ('g', KeyCode::Char('r')) => {
-            // gr prefix for LSP commands
-            editor.set_pending_command('R');
-        }
+        ('g', KeyCode::Char('r')) => editor.set_input_state(InputState::LspPrefix),
         ('g', KeyCode::Char('i')) => {
             // gi - go to last insert position and enter insert mode
             if let Some((line, col)) = editor.editing.last_insert_position {
@@ -162,7 +169,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('g', KeyCode::Char('\'')) => {
-            editor.set_input_state(crate::editor::InputState::AwaitingChar {
+            editor.set_input_state(InputState::AwaitingChar {
                 motion: crate::editor::CharMotion::JumpMarkLine,
                 operator: None,
             });
@@ -181,31 +188,16 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.previous_tab();
             editor.clear_count();
         }
-        ('g', KeyCode::Char('n')) => {
-            // gn - select next search match
-            // Save pending operator before search_select_next, as set_mode() clears it
-            let saved_operator = editor.pending_operator();
-
-            if editor.search_select_next() {
-                // If we have a pending operator, apply it to the visual selection
-                if let Some(op) = saved_operator {
-                    apply_operator_to_visual_selection(editor, op)?;
-                    editor.clear_pending_operator();
-                }
-            }
-            editor.clear_count();
-        }
-        ('g', KeyCode::Char('N')) => {
-            // gN - select previous search match
-            // Save pending operator before search_select_prev, as set_mode() clears it
-            let saved_operator = editor.pending_operator();
-
-            if editor.search_select_prev() {
-                // If we have a pending operator, apply it to the visual selection
-                if let Some(op) = saved_operator {
-                    apply_operator_to_visual_selection(editor, op)?;
-                    editor.clear_pending_operator();
-                }
+        ('g', KeyCode::Char(key @ ('n' | 'N'))) => {
+            // gn / gN - select the next / previous search match, then apply
+            // a pending operator (dgn, cgN) to it. No match cancels.
+            let found = if key == 'n' {
+                editor.search_select_next()
+            } else {
+                editor.search_select_prev()
+            };
+            if let (true, Some(op)) = (found, operator) {
+                apply_operator_to_visual_selection(editor, op)?;
             }
             editor.clear_count();
         }
@@ -377,33 +369,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // 'z' - Fold/scroll commands
         // =====================================================================
-        ('z', KeyCode::Char('o')) => {
-            let line = editor.buffer().cursor().line();
-            editor.buffer_mut().open_fold(line);
-        }
-        ('z', KeyCode::Char('c')) => {
-            let line = editor.buffer().cursor().line();
-            editor.buffer_mut().close_fold(line);
-        }
-        ('z', KeyCode::Char('a')) => {
-            let line = editor.buffer().cursor().line();
-            editor.buffer_mut().toggle_fold(line);
-        }
-        ('z', KeyCode::Char('R')) => {
-            editor.buffer_mut().fold_manager_mut().open_all();
-        }
-        ('z', KeyCode::Char('M')) => {
-            editor.buffer_mut().fold_manager_mut().close_all();
-        }
-        ('z', KeyCode::Char('d')) => {
-            let line = editor.buffer().cursor().line();
-            editor.buffer_mut().fold_manager_mut().delete_fold_at(line);
-        }
-        ('z', KeyCode::Char('E')) => {
-            editor.buffer_mut().clear_folds();
-        }
+        ('z', KeyCode::Char(key)) if editor.fold_command(key) => {}
         ('z', KeyCode::Char('f')) => {
-            editor.set_pending_operator(Operator::Fold);
+            editor.enter_operator_pending(Operator::Fold);
         }
         ('z', KeyCode::Char('z')) => {
             // [count]zz — scroll cursor line (or line [count]) to center
@@ -456,51 +424,27 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // 'Z' - Save/quit commands
         // =====================================================================
+        // ZZ is `:x` and ZQ is `:q!` (vim), including what they mean in the
+        // commit message and chat scratch buffers. A failed save keeps the
+        // editor open (OV-00204).
         ('Z', KeyCode::Char('Z')) => {
-            if editor.is_chat_scratch_buffer() {
-                if let Err(error) = editor.finish_chat_scratch(true) {
-                    editor.set_status_message(format!("Could not finish chat scratch: {error}"));
-                }
-            } else {
-                if editor.buffer().file_path().is_some()
-                    && tokio::runtime::Handle::try_current().is_ok()
-                {
-                    // OV-00204: Don't quit if save fails — show error instead
-                    if let Err(e) = editor.buffer_mut().save() {
-                        editor.set_status_message(format!("Save failed: {}", e));
-                        return Ok(true);
-                    }
-                }
-                editor.quit();
-            }
+            crate::commands::execute_and_show(editor, "x");
         }
         ('Z', KeyCode::Char('Q')) => {
-            editor.quit();
+            crate::commands::execute_and_show(editor, "q!");
         }
 
         // =====================================================================
         // '"' - Register selection
         // =====================================================================
-        ('"', KeyCode::Char(ch))
-            if ch.is_ascii_alphanumeric()
-                || ch == '"'
-                || ch == '_'
-                || ch == '-'
-                || ch == '+'
-                || ch == '*'
-                || ch == '%'
-                || ch == '.'
-                || ch == ':'
-                || ch == '#'
-                || ch == '/' =>
-        {
+        ('"', KeyCode::Char(ch)) if crate::editor::RegisterManager::is_valid_name(ch) => {
             editor.set_pending_register(ch);
         }
 
         // =====================================================================
         // 'q' - Start macro recording
         // =====================================================================
-        ('q', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+        ('q', KeyCode::Char(ch)) if ch.is_ascii_alphabetic() => {
             editor.start_macro_recording(ch);
         }
 
@@ -511,38 +455,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if let Some(register) = editor.last_played_macro() {
                 let count = editor.effective_count();
                 editor.clear_count();
-                if let Some(events) = editor.get_macro(register) {
-                    let events = events.clone();
-                    editor.clear_macro_abort();
-                    'outer_repeat: for _ in 0..count {
-                        for event in &events {
-                            crate::editor::input::InputHandler::handle_key_event(editor, *event)?;
-                            if editor.macro_aborted() {
-                                break 'outer_repeat;
-                            }
-                        }
-                    }
-                    editor.clear_macro_abort();
-                }
+                editor.play_macro(register, count)?;
             }
         }
         ('@', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
             let count = editor.effective_count();
             editor.clear_count();
             editor.set_last_played_macro(ch);
-            if let Some(events) = editor.get_macro(ch) {
-                let events = events.clone();
-                editor.clear_macro_abort();
-                'outer: for _ in 0..count {
-                    for event in &events {
-                        crate::editor::input::InputHandler::handle_key_event(editor, *event)?;
-                        if editor.macro_aborted() {
-                            break 'outer;
-                        }
-                    }
-                }
-                editor.clear_macro_abort();
-            }
+            editor.play_macro(ch, count)?;
         }
 
         // =====================================================================
@@ -550,22 +470,30 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         ('[', KeyCode::Char('[')) => {
             let count = editor.effective_count();
-            Motions::section_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char(']')) => {
             let count = editor.effective_count();
-            Motions::section_end_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_end_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char('{')) => {
             let count = editor.effective_count();
-            Motions::unmatched_brace_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_brace_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char('(')) => {
             let count = editor.effective_count();
-            Motions::unmatched_paren_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_paren_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char('m')) => {
@@ -576,6 +504,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('[', KeyCode::Char('M')) => {
             let count = editor.effective_count();
             Motions::method_end_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('D')) | (']', KeyCode::Char('D')) => {
+            for _ in 0..editor.effective_count() {
+                editor.goto_error_diagnostic(pending == ']');
+            }
             editor.clear_count();
         }
         ('[', KeyCode::Char('d')) => {
@@ -591,6 +525,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.goto_change(false);
             editor.clear_count();
         }
+        ('[', KeyCode::Char('n')) => {
+            // [n - previous merge conflict marker block
+            editor.goto_conflict(false);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('z')) => editor.fold_edge_motion(false),
+        (']', KeyCode::Char('z')) => editor.fold_edge_motion(true),
         ('[', KeyCode::Char('f')) => {
             // [f - previous file in the diff review
             editor.diff_review_goto_file(false);
@@ -602,22 +543,30 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (']', KeyCode::Char(']')) => {
             let count = editor.effective_count();
-            Motions::section_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char('[')) => {
             let count = editor.effective_count();
-            Motions::section_end_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_end_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char('}')) => {
             let count = editor.effective_count();
-            Motions::unmatched_brace_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_brace_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char(')')) => {
             let count = editor.effective_count();
-            Motions::unmatched_paren_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_paren_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char('m')) => {
@@ -641,6 +590,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         (']', KeyCode::Char('c')) => {
             // ]c - next change (git hunk, or hunk in the diff review)
             editor.goto_change(true);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('n')) => {
+            // ]n - next merge conflict marker block
+            editor.goto_conflict(true);
             editor.clear_count();
         }
         (']', KeyCode::Char('f')) => {
@@ -708,7 +662,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -> Result<()> {
     match operator {
         Operator::Delete => {
+            let search_info = editor
+                .current_search()
+                .map(|s| (s.pattern().to_string(), s.is_forward()));
             helpers::delete_visual_selection(editor)?;
+            // `.` deletes the next match, not as many characters as this one had.
+            if let Some((search_pattern, search_forward)) = search_info {
+                editor.set_repeat_action(RepeatAction::DeleteSearchMatch {
+                    search_pattern,
+                    search_forward,
+                });
+            }
             helpers::exit_visual_mode_to_normal(editor);
         }
         Operator::Yank => {
@@ -871,7 +835,7 @@ mod tests {
             .buffer_mut()
             .cursor_mut()
             .set_position(0, GraphemeCol::ZERO);
-        editor.set_pending_command('g');
+        editor.set_input_state(InputState::GPrefix { operator: None });
 
         try_handle(
             &mut editor,

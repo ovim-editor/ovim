@@ -887,6 +887,54 @@ class Foo {
             .any(|(_, group)| *group == HighlightGroup::String));
     }
 
+    /// Kotlin has its own grammar (not Java's): constructs that do not exist
+    /// in Java must parse without error nodes and get real highlights.
+    #[test]
+    fn kotlin_uses_a_kotlin_grammar_for_kt_and_kts() {
+        for path in ["Main.kt", "build.gradle.kts", "script.kts"] {
+            assert_eq!(
+                crate::syntax::LanguageRegistry::detect_from_path(std::path::Path::new(path)),
+                Some(Language::Kotlin),
+                "{path}"
+            );
+        }
+        let mut highlighter =
+            SyntaxHighlighter::new(Language::Kotlin).expect("Kotlin highlighter should be created");
+        let source = r#"package demo
+
+import kotlin.math.max
+
+data class User(val name: String, var age: Int = 0)
+
+suspend fun greet(user: User?): String = "hi ${user?.name ?: "anon"}"
+
+fun main() {
+    val xs = listOf(1, 2, 3).map { it * 2 }
+    when (xs.size) { 3 -> println("three") else -> {} }
+}
+"#;
+        highlighter.parse(source);
+        assert!(
+            !highlighter.tree().unwrap().root_node().has_error(),
+            "Kotlin source must parse without errors"
+        );
+        let highlights = highlighter.highlights_for_all_lines(source);
+        let has = |line: usize, text: &str, group: HighlightGroup| {
+            let l = source.lines().nth(line).unwrap();
+            let start = l.find(text).unwrap();
+            highlights[line]
+                .iter()
+                .any(|(range, g)| *g == group && range.start <= start && start < range.end)
+        };
+        assert!(has(4, "data", HighlightGroup::Keyword));
+        assert!(has(4, "class", HighlightGroup::Keyword));
+        assert!(has(6, "suspend", HighlightGroup::Keyword));
+        assert!(has(6, "\"hi", HighlightGroup::String));
+        assert!(has(10, "when", HighlightGroup::Keyword));
+        assert!(has(9, "listOf", HighlightGroup::Function));
+        assert!(has(9, "1", HighlightGroup::Number));
+    }
+
     #[test]
     fn test_astro_highlighter_parses_component_syntax() {
         let mut highlighter =

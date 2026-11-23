@@ -80,29 +80,20 @@ fn place_eol_at_current_version(test: &mut EditorTest, line: usize, text: &'stat
 
 fn projected_inline_for_line(test: &EditorTest, line: usize) -> Vec<(usize, usize)> {
     test.editor
-        .decorations
-        .inline_decorations_for_line_projected(
-            line,
-            test.editor.buffer().rope(),
-            test.editor.buffer().edit_log(),
-        )
+        .projected_decorations()
+        .inline_decorations_for_line(line, test.editor.buffer().rope())
 }
 
 fn projected_width_before(test: &EditorTest, line: usize, char_idx: usize) -> usize {
-    test.editor.decorations.inline_width_before_projected(
+    test.editor.projected_decorations().inline_width_before(
         line,
         char_idx,
         test.editor.buffer().rope(),
-        test.editor.buffer().edit_log(),
     )
 }
 
 fn projected_for_line(test: &EditorTest, line: usize) -> Vec<Decoration> {
-    test.editor.decorations.for_line_projected(
-        line,
-        test.editor.buffer().rope(),
-        test.editor.buffer().edit_log(),
-    )
+    test.editor.projected_decorations().for_line(line).to_vec()
 }
 
 #[test]

@@ -134,16 +134,36 @@ vim.ai.setup({
 
     contexts = {
         selection = "codex_terra",
-        chat = "codex_sol",
+        -- Claude Code uses the user's Claude subscription with no Ovim-side
+        -- setup. First chat open still asks (see ai_provider_choice.rs).
+        chat = "claude_code",
         query = "codex_terra",
     },
 
     profiles = {
+        claude_code = {
+            provider = "claude_code",
+            model = "default", -- Use Claude Code's configured model.
+        },
+        codex_astra = {
+            scope = "project",
+            scope_network = true,
+            provider = "codex",
+            model = "gpt-6-astra",
+            max_tokens = 4096,
+            edit_format = "codeblock",
+            chat_edit_format = "apply_patch",
+            context = vim.ai.context_policies.hybrid,
+            syntax_check = true,
+            retry = { max = 1 },
+            reasoning_effort = "medium",
+        },
+
         codex_sol = {
             scope = "project",
             scope_network = true,
             provider = "codex",
-            model = "gpt-5.6-sol",
+            model = "gpt-6.1-sol",
             max_tokens = 4096,
             edit_format = "codeblock",
             chat_edit_format = "apply_patch",
@@ -156,7 +176,7 @@ vim.ai.setup({
         codex_luna = {
             scope = "project",
             provider = "codex",
-            model = "gpt-5.6-luna",
+            model = "gpt-6-luna",
             max_tokens = 4096,
             edit_format = "codeblock",
             chat_edit_format = "apply_patch",
@@ -197,8 +217,9 @@ No explanation. No placeholders. Complete code only.]],
         openai_fast = {
             scope = "project",
             provider = "openai",
-            model = "gpt-4.1-mini",
+            model = "gpt-6-luna",
             api_key = "openai",
+            reasoning_effort = "none", -- Required for Chat Completions tool calls.
             temperature = 0.2,
             max_tokens = 2048,
             edit_format = "codeblock",
@@ -211,8 +232,9 @@ No explanation. No placeholders. Complete code only.]],
         openai = {
             scope = "project",
             provider = "openai",
-            model = "gpt-4.1",
+            model = "gpt-6-sol",
             api_key = "openai",
+            reasoning_effort = "none", -- Required for Chat Completions tool calls.
             temperature = 0.2,
             max_tokens = 4096,
             edit_format = "codeblock",
@@ -225,6 +247,7 @@ No explanation. No placeholders. Complete code only.]],
         openai_frontier = {
             scope = "project",
             provider = "openai",
+            -- GPT-6 Astra tool calls require a Responses API adapter.
             model = "gpt-5.2",
             api_key = "openai",
             temperature = 0.2,
@@ -240,9 +263,11 @@ No explanation. No placeholders. Complete code only.]],
         anthropic = {
             scope = "project",
             provider = "anthropic",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             api_key = "anthropic",
-            max_tokens = 4096,
+            -- Thinking tokens count against max_tokens; 4096 cut replies and
+            -- tool calls short.
+            max_tokens = 16384,
             edit_format = "codeblock",
             chat_edit_format = "str_replace",
             context = vim.ai.context_policies.hybrid,
@@ -253,9 +278,11 @@ No explanation. No placeholders. Complete code only.]],
         anthropic_frontier = {
             scope = "project",
             provider = "anthropic",
-            model = "claude-opus-4-6",
+            model = "claude-opus-5-5",
             api_key = "anthropic",
-            max_tokens = 4096,
+            -- Thinking tokens count against max_tokens; 4096 cut replies and
+            -- tool calls short.
+            max_tokens = 16384,
             edit_format = "codeblock",
             chat_edit_format = "str_replace",
             context = vim.ai.context_policies.hybrid,

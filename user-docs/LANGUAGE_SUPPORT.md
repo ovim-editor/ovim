@@ -11,7 +11,8 @@ These languages have full LSP support and will auto-install the language server 
 | Language | Extensions | LSP Server | Install Method |
 |----------|------------|------------|----------------|
 | Rust | `.rs` | rust-analyzer | GitHub release |
-| TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` | typescript-language-server | npm |
+| TypeScript | `.ts`, `.mts`, `.cts` | typescript-language-server | npm |
+| TSX | `.tsx` | typescript-language-server | npm |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs`, `.es`, `.es6`, `.es7` | typescript-language-server | npm |
 | Python | `.py`, `.pyw`, `.pyi` | pyright-langserver | npm |
 | Go | `.go` | gopls | go install |
@@ -25,14 +26,18 @@ These languages have full LSP support and will auto-install the language server 
 | CSS | `.css`, `.scss`, `.sass` | vscode-css-language-server | npm |
 | TOML | `.toml` | taplo | cargo |
 | Ruby | `.rb`, `.rake`, `.rbw`, `.gemspec` | solargraph | gem |
-| Java | `.java` | hyperion-lsp | auto-download |
-| Kotlin | `.kt`, `.kts` | hyperion-lsp | auto-download |
-| Scala | `.scala`, `.sc` | hyperion-lsp | auto-download |
-| Groovy | `.groovy`, `.gradle` | hyperion-lsp | auto-download |
 | Zig | `.zig`, `.zon` | zls | GitHub release |
 | Lua | `.lua` | lua-language-server | GitHub release |
 | Terraform | `.tf`, `.tfvars` | terraform-ls | GitHub release |
 | Elixir | `.ex`, `.exs` | elixir-ls | GitHub release |
+| Java | `.java` | hyperion-lsp | GitHub release (macOS and Linux) |
+| Kotlin | `.kt`, `.kts` | hyperion-lsp | GitHub release (macOS and Linux) |
+| Scala | `.scala`, `.sc` | hyperion-lsp | GitHub release (macOS and Linux) |
+| Groovy | `.groovy`, `.gradle` | hyperion-lsp | GitHub release (macOS and Linux) |
+
+For Java, Kotlin, Scala and Groovy, `hyperion-lsp` gives both the language server and the debugger (`hyperion-lsp dap`).
+When ovim installs it, it goes to `~/.local/share/ovim/lsp/hyperion-lsp`, and the debugger uses the same binary.
+A `hyperion-lsp` on `PATH` takes precedence.
 
 ### Languages with LSP (Manual Install Required)
 
@@ -41,6 +46,10 @@ These languages have full LSP support and will auto-install the language server 
 | C | `.c`, `.h` | clangd | `brew install llvm` / `pacman -S clang` |
 | C++ | `.cpp`, `.hpp` | clangd | `brew install llvm` / `pacman -S clang` |
 | XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.plist` | Eclipse LemMinX | Install `lemminx` on `PATH` |
+| Ghostty | `ghostty/config` | ghostty-lsp | `cargo install --git https://github.com/matthewmturner/ghostty-lsp` |
+
+Syntax highlighting uses a dedicated tree-sitter grammar for each of these: Kotlin (`.kt`, `.kts`, `build.gradle.kts`) uses the
+`tree-sitter-kotlin-sg` grammar (data/sealed classes, coroutines, string templates, lambdas, `when`), not the Java grammar.
 
 ### Syntax Highlighting Only
 
@@ -50,6 +59,20 @@ These languages have full LSP support and will auto-install the language server 
 - HCL (`.hcl`, `.nomad`, `.vault`)
 - Diff (`.diff`, `.patch`, `.rej`) — also used by the branch diff review (`<Space>gd`)
 - WGSL (`.wgsl`), including Bevy shader preprocessor directives
+- Java Properties (`.properties`, `.prefs`)
+- INI (`.ini`), plus `.editorconfig`, `.gitconfig`, `.gitmodules`, `.git/config`, and `.git/config.worktree`
+
+Properties and INI highlighting also works in Markdown fences tagged `properties` or
+`ini` (aliases: `prefs`, `editorconfig`, `gitconfig`). Generic `.conf` and `.cfg`
+extensions are left unassigned because they are used by several different formats.
+
+## Diagnostic Navigation
+
+Use `]d` / `[d` to visit the next / previous diagnostic of any severity.
+Use `]D` / `[D` to visit errors only, skipping warnings, information, and hints.
+Both wrap at the end of the file; uppercase navigation accepts counts, such as
+`3]D`. If there are no errors, the cursor stays in place. Diagnostics without an
+explicit severity follow ovim’s existing convention and count as errors.
 
 ## Auto-Install
 
@@ -83,6 +106,37 @@ Servers you've installed yourself always win: ovim checks `PATH` and
 project-local `node_modules/.bin` before its own sandbox. To reclaim disk
 space, deleting `~/.local/share/ovim/lsp/` is always safe — ovim reinstalls
 on demand.
+
+### Updates
+
+Servers that ovim downloads from GitHub releases (rust-analyzer, hyperion-lsp
+for Java, Kotlin, Scala and Groovy, and the others whose install method is
+`github`) are kept current. ovim records which release it installed, and once a
+day, when such a server starts, asks GitHub for the latest one:
+
+| `autoinstall` | What happens when a newer release exists |
+| --- | --- |
+| `auto` | It is downloaded in the background. The running server keeps going; the new one starts with the next session or `:LspRestart`. |
+| `prompt` | The status bar says so, once per release. Nothing is installed. |
+| `off` | ovim never asks GitHub. |
+
+A release is only picked up this way once it is 3 days old, the same
+quarantine as for npm packages.
+
+To update right away, run `:LspUpdate` (the current file's language) or
+`:LspUpdate java`, or press `u` on the server in `:LspManager`. That installs
+the latest release whatever its age and whatever `autoinstall` says, and
+reports `already at v1.2.3, the latest release` when there is nothing to do.
+`:LspManager` shows the installed release in the details pane, and
+`v1.2.3 (v1.3.0 available)` when ovim has seen a newer one.
+
+For npm, cargo and shell installs there is no release to compare, so
+`:LspUpdate` runs the installer again and nothing is checked in the
+background.
+
+A server found on `PATH` is yours: ovim does not check it, and `:LspUpdate`
+tells you so. Update it with whatever installed it (`brew upgrade`, `rustup
+update`, ...).
 
 ### Configuring Auto-Install Behavior
 

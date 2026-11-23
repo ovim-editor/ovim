@@ -545,6 +545,7 @@ impl LanguageCatalog {
                         args: args.to_vec(),
                         fallback_commands: Vec::new(),
                         root_markers: lsp.root_markers,
+                        outermost_root_markers: Vec::new(),
                         install_hint: None,
                         auto_install: None,
                     }),

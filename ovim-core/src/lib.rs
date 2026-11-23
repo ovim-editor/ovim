@@ -4,8 +4,6 @@ mod auto_indent;
 pub mod browser;
 pub mod buffer;
 pub mod change;
-pub mod cmd_buffer;
-pub mod cmd_set;
 pub mod color;
 pub mod command_result;
 pub mod commands;
@@ -25,8 +23,11 @@ pub mod indentation;
 pub mod key;
 pub mod language_catalog;
 pub mod language_config;
+pub mod launch;
+pub mod line_layout;
 pub mod log;
 pub mod lsp;
+pub mod lsp_init;
 #[cfg(feature = "lua")]
 pub mod lua;
 pub mod markdown_conceal;
@@ -37,13 +38,21 @@ pub mod motion_range;
 pub mod native_diff;
 pub mod navigation_types;
 pub mod number_ops;
+pub mod project_root;
+pub mod project_search;
+pub mod pseudocode;
+pub mod recent_files;
 pub mod rect;
 pub mod repeat_action;
 pub mod run_log;
 pub mod search;
+pub mod search_pattern;
 pub mod session;
+pub mod snippet;
 pub mod syntax;
+pub mod text_index;
 pub mod textobjects;
+pub mod tick;
 pub mod unicode;
 pub mod wrap;
 
@@ -56,3 +65,6 @@ pub use navigation_types::{
     OutlineInfo, OutlineSymbol, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode,
 };
 pub use rect::Rect;
+
+/// Shared Model Context Protocol contracts.
+pub mod mcp;

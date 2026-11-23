@@ -43,52 +43,43 @@ ovim session cleanup --dry-run
 ovim session cleanup --max-age 7
 ```
 
-**Sessions are opt-in.** TUI mode doesn't register a session. Headless mode requires `--session NAME`. A session must be explicit at process startup — `:session start NAME` is deliberately kept as a migration error so an ordinary TUI instance never exposes a latent mutation surface. `:session stop` and `:session list` do work.
+**Sessions are opt-in.** TUI mode doesn't register a session. Headless mode requires `--session NAME`. TUI users can opt in with `:session start NAME`.
 
 ## Architecture
 
 ```
-ovim-core/                 # Shared library crate — the editor itself
+ovim-core/               # Shared library crate
 ├── src/
-│   ├── editor/            # Core logic, operators, motions, AI, LSP actions
-│   │   ├── input/         # Key event handling (normal/, insert_mode.rs, commands/)
-│   │   │   └── normal/operators.rs  # d, c, y operator dispatch
-│   │   ├── operators.rs   # The `Operator` enum (d, c, y, >, <, gu, ...)
-│   │   ├── motions/       # Cursor movement (word.rs, paragraph.rs, ...)
-│   │   ├── lsp_integration.rs # Editor-side LSP actions + intent dispatch
-│   │   └── mod.rs         # Main editor state
-│   ├── syntax/            # Tree-sitter grammars & highlighting
-│   │   ├── languages.rs   # Language enum & detection
-│   │   └── queries/       # Custom .scm highlight queries
-│   ├── buffer/            # Rope-based text buffer (ropey)
-│   ├── lsp/               # LSP client implementation
-│   ├── session.rs         # Session descriptors (PID, port, capability)
+│   ├── editor/          # Core logic, operators, motions, LSP actions
+│   │   ├── input/       # Key event handling
+│   │   ├── operators.rs # d, c, y operators
+│   │   ├── motions/     # Cursor movement
+│   │   └── mod.rs       # Main editor state + LSP integration
+│   ├── syntax/          # Tree-sitter grammars & highlighting
+│   │   ├── languages.rs # Language enum & detection
+│   │   └── queries/     # Custom .scm highlight queries
+│   ├── buffer/          # Rope-based text buffer (ropey)
+│   ├── lsp/             # LSP client implementation
 │   └── ...
-└── languages.toml         # Language configurations (embedded at compile time)
+└── languages.toml       # Language configurations (embedded at compile time)
 
-ovim/                      # Binary crate — frontends, CLI, API
+ovim/                    # Binary crate
 ├── src/
-│   ├── api/               # REST API (Axum) — /v1/health, /v1/snapshot, ...
-│   │   └── gui.rs         # /v1/gui/command + /v1/gui/stream (remote editing)
-│   ├── gui/               # Native GUI backend (Tauri host side)
-│   │   ├── mod.rs         # Snapshot projection + request handling
-│   │   ├── protocol.rs    # Serializable GuiCommand / GuiSnapshot
-│   │   ├── bridge.rs      # GuiBridge — the frontend's typed API
-│   │   ├── remote.rs      # RemoteTransport (HTTP + SSE)
-│   │   ├── reconnect.rs   # Connection state, backoff, reattach
-│   │   ├── ssh.rs         # `--remote` bootstrap, tunnel, version check
-│   │   └── clipboard.rs   # Clipboard bridging across the link
-│   ├── frontend/          # Frontend-agnostic runtime plumbing (TUI/headless/GUI)
-│   ├── ui/                # Terminal UI (ratatui + crossterm)
-│   ├── bin/ovim-gui/      # Standalone GUI binary
-│   ├── cli.rs             # CLI argument parsing (clap)
-│   ├── subcommands.rs     # CLI subcommand handlers
-│   ├── client.rs          # Blocking HTTP client for session-addressed commands
-│   ├── event_loop.rs      # Event loops (TUI & headless)
-│   ├── api_dispatch.rs    # handle_api_request() — API request → editor
-│   └── main.rs            # Startup, session registration, signal handling
-└── gui/                   # GUI frontend (SolidJS + Vite)
-    └── src/               # App.tsx, stateProjection.ts, predictiveEcho.ts, ...
+│   ├── api/             # REST API (Axum) - /health, /lsp/status, /snapshot, etc.
+│   │   └── gui.rs       # /v1/gui/command + /v1/gui/stream (remote editing)
+│   ├── gui/             # Native GUI backend (Tauri host side)
+│   │   ├── mod.rs       # Snapshot projection + request handling
+│   │   ├── protocol.rs  # Serializable GuiCommand / GuiReply
+│   │   ├── bridge.rs    # GuiBridge + GuiTransport (the frontend's typed API)
+│   │   ├── remote.rs    # RemoteTransport (HTTP + SSE)
+│   │   ├── reconnect.rs # Connection state, backoff, reattach
+│   │   ├── ssh.rs       # `--remote` bootstrap, tunnel, version check
+│   │   └── clipboard.rs # Clipboard bridging across the link
+│   ├── frontend/        # Frontend-agnostic runtime plumbing (shared by TUI/headless/future GUI)
+│   ├── ui/              # Terminal UI (ratatui + crossterm)
+│   ├── cli.rs           # CLI argument parsing
+│   ├── subcommands.rs   # CLI subcommand handlers
+│   └── main.rs          # Event loops (TUI & headless)
 ```
 
 ## Gotchas
@@ -97,7 +88,7 @@ ovim/                      # Binary crate — frontends, CLI, API
 - **Workspace structure**: `ovim-core` contains shared logic (syntax, buffer, LSP types), `ovim` is the binary. Language/syntax code lives in ovim-core.
 - **Highlight queries**: Some grammars export `HIGHLIGHTS_QUERY`, others `HIGHLIGHT_QUERY` (singular). Some export neither and need custom `.scm` files.
 - **eprintln!()**: Breaks TUI rendering. Use only for headless debugging, then remove before committing.
-- **Large files**: `ovim-core/src/editor/mod.rs` (~2.8k) and `ovim/src/gui/mod.rs` (~2.9k) are both at the refactor threshold. Split before adding more code there.
+- **Large files**: `editor/mod.rs` is already ~3k lines. Refactor before adding more code there.
 - **Multi-agent work**: If tests fail unexpectedly, another agent may be working on the codebase. Don't `git stash` their changes.
 
 ## Common Tasks
@@ -128,19 +119,15 @@ ovim/                      # Binary crate — frontends, CLI, API
 4. Fire it from `dispatch_pending_intents()`, which every frontend's tick calls
 
 **Add new operator:**
-1. Add a variant to the `Operator` enum in `ovim-core/src/editor/operators.rs`
-2. Handle it in `ovim-core/src/editor/input/normal/operators.rs` (key dispatch
-   and motion/range application) and `input/normal/text_objects.rs`
-3. Arm it from `input/normal/pending_commands.rs` if it takes a pending key
-4. Add tests in `ovim/tests/`
+1. Add function in `editor/operators.rs`
+2. Call from operator dispatch in `editor/input/`
+3. Add tests in `tests/`
 
 **Add new GUI command (Tauri ↔ editor):**
-1. Add a variant to `GuiCommand` (and a `GuiReply` shape) in `gui/protocol.rs`
-2. Map it to/from `GuiRequest` in `gui/bridge.rs`, and add the typed helper
-3. Handle it in `handle_request()` in `gui/mod.rs`
-4. Add the `#[tauri::command]` wrapper in `gui/app.rs` and register it
-5. It works remotely for free — but decide `must_keep_its_place()`: ordering is
-   the default, and only read-only queries may be overtaken
+1. Add the request to `GuiRequest` in `gui/bridge.rs` and a matching `GuiCommand` variant (and reply shape) in `gui/protocol.rs`; map both ways in `from_parts`/`into_parts`, and add the typed helper on `GuiBridge`
+2. Handle it in `handle_request()` in `gui/mod.rs`
+3. Add the `#[tauri::command]` wrapper in `gui/app.rs` and register it
+4. It works remotely for free — but decide `must_keep_its_place()`: ordering is the default, and only read-only queries may be overtaken
 
 **Add new language support:**
 1. Check tree-sitter grammar crate compatibility with `tree-sitter = "0.25"` on docs.rs
@@ -180,17 +167,15 @@ ovim lsp check test.sql --verbose    # Check language detection
 ovim lsp languages                   # List all languages
 ```
 
-**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [notes/TESTING_VIM_SEMANTICS.md](notes/TESTING_VIM_SEMANTICS.md).
+**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [docs/testing-vim-semantics.md](docs/testing-vim-semantics.md). `tools/nvim_parity.py` runs the same keys in nvim and ovim and prints the differences, or the rows for `ovim/tests/nvim_parity_test.rs`.
 
 ## Language Support
 
 Run `ovim lsp languages` to see all supported languages.
 
-**Languages with LSP**: Rust, TypeScript, TSX, JavaScript, Astro, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, XML, CSS, TOML, Zig, Lua, Elixir, Ghostty
+**Languages with LSP**: Rust, TypeScript, JavaScript, Astro, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, XML, CSS, TOML, Zig, Lua, Elixir, Ghostty
 
-**Syntax highlighting only**: Markdown, Dockerfile, Tree-sitter Query, HCL, Diff, WGSL
-
-The list above drifts; `ovim lsp languages` is authoritative.
+**Syntax highlighting only**: Markdown, HCL, Diff, WGSL, Dockerfile, Tree-sitter queries, Properties, INI
 
 See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for installation instructions.
 
@@ -243,7 +228,7 @@ For MCP protocol details, see [user-docs/MCP.md](user-docs/MCP.md).
   (`GuiCommand::must_keep_its_place`); only read-only queries may be overtaken.
 - Input is **dropped** while disconnected, never queued: a replayed key means
   something different against a buffer that moved.
-- Design record: `planning/remote-editing/PLAN.md`. User docs:
+- Design record: `docs/engineering/remote-editing-2026-09/PLAN.md`. User docs:
   `user-docs/remote.md`.
 
 ### API Architecture
@@ -275,10 +260,7 @@ curl http://127.0.0.1:PORT/v1/health | jq '.'
 
 ## Documentation
 
-- **notes/**: Internal design docs, implementation status, architecture decisions
-- **code-docs/**: Codebase structure documentation
 - **user-docs/**: User-facing documentation (language support, MCP, etc.)
-
-## User Instructions
-
-Check `ISSUE_TRACKER.md` for current priorities. Only check off tasks when done and verified.
+- **docs/**: Contributor documentation: `frontend-api.md`, `testing-vim-semantics.md`, `adr/`, release notes in `releases/`, dated reports in `engineering/`
+- **gui-design-guide/**: Desktop app design system and the icon source the GUI build reads
+- **ISSUE_TRACKER.md**: Open issues only. Delete a row in the change that closes it

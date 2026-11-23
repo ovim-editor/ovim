@@ -195,3 +195,151 @@ fn test_vim_keymap_set_insert_mode_mapping() {
     let line = editor.buffer().line_text(0).unwrap_or_default();
     assert_eq!(line.trim_end_matches('\n'), "abc");
 }
+
+#[test]
+fn pullbase_lua_options_set_and_clear_through_editor_commands() {
+    let mut editor = Editor::new();
+    editor.enable_lua().unwrap();
+    for namespace in ["ovim", "vim"] {
+        editor
+            .execute_lua(&format!("{namespace}.opt.pullbase = 'release/stable'"))
+            .unwrap();
+        editor.process_lua_commands().unwrap();
+        assert_eq!(editor.options.pullbase.as_deref(), Some("release/stable"));
+        for invalid in ["true", "42", "'main..feature'", "'main\\nquit'"] {
+            assert!(editor
+                .execute_lua(&format!("{namespace}.opt.pullbase = {invalid}"))
+                .is_err());
+        }
+        editor
+            .execute_lua(&format!("{namespace}.opt.pullbase = nil"))
+            .unwrap();
+        editor.process_lua_commands().unwrap();
+        assert_eq!(editor.options.pullbase, None);
+    }
+    assert_eq!(
+        editor
+            .execute_lua("return type(ovim.languages.register)")
+            .unwrap(),
+        "function"
+    );
+}
+
+#[test]
+fn pullbase_lua_path_overrides_support_spaces_and_clear_individually() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("project with spaces");
+    std::fs::create_dir(&path).unwrap();
+    let canonical = path.canonicalize().unwrap();
+    let path_literal = format!("{:?}", path.to_str().unwrap());
+    let mut editor = Editor::new();
+    editor.enable_lua().unwrap();
+    editor.execute_lua("ovim.opt.pullbase = 'main'").unwrap();
+    for namespace in ["ovim", "vim"] {
+        editor
+            .execute_lua(&format!(
+                "{namespace}.opt.pullbase = {{ path = {path_literal}, branch = 'develop' }}"
+            ))
+            .unwrap();
+        editor.process_lua_commands().unwrap();
+        assert_eq!(
+            editor
+                .options
+                .pullbase_paths
+                .get(&canonical)
+                .map(String::as_str),
+            Some("develop")
+        );
+        assert_eq!(editor.options.pullbase.as_deref(), Some("main"));
+        for fields in [
+            "branch = true",
+            "branch = 'main..feature'",
+            "brnach = 'develop'",
+        ] {
+            assert!(editor
+                .execute_lua(&format!(
+                    "{namespace}.opt.pullbase = {{ path = {path_literal}, {fields} }}"
+                ))
+                .is_err());
+        }
+        editor
+            .execute_lua(&format!(
+                "{namespace}.opt.pullbase = {{ path = {path_literal}, branch = nil }}"
+            ))
+            .unwrap();
+        editor.process_lua_commands().unwrap();
+        assert!(editor.options.pullbase_paths.is_empty());
+        assert_eq!(editor.options.pullbase.as_deref(), Some("main"));
+    }
+}
+
+#[test]
+fn idle_lua_ticks_do_not_copy_the_buffer() {
+    // 20 MB of text: copying it into a String every tick (what the bridge
+    // used to do) costs several milliseconds per tick, so 200 idle ticks
+    // would take seconds. Handing the bridge a rope handle is O(1).
+    let line = format!("{}\n", "x".repeat(79));
+    let mut editor = Editor::with_content(&line.repeat(250_000));
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    let started = std::time::Instant::now();
+    for _ in 0..200 {
+        editor.process_lua_commands().unwrap();
+    }
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "200 idle Lua ticks took {elapsed:?} on a 20 MB buffer"
+    );
+}
+
+#[test]
+fn lua_reads_the_current_line_and_line_count_after_edits() {
+    let mut editor = Editor::with_content("one\ntwo\nthree\n");
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    assert_eq!(editor.execute_lua("return vim.fn.line('$')").unwrap(), "3");
+
+    // Edit the second line, tick, and read it back through Lua.
+    for ch in "jccchanged".chars() {
+        InputHandler::handle_key_event(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char(ch), Modifiers::NONE),
+        )
+        .unwrap();
+    }
+    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
+        .unwrap();
+    editor.process_lua_commands().unwrap();
+
+    assert_eq!(
+        editor
+            .execute_lua("return vim.api.nvim_get_current_line()")
+            .unwrap(),
+        "changed"
+    );
+    assert_eq!(editor.execute_lua("return vim.fn.line('$')").unwrap(), "3");
+}
+
+#[test]
+fn sourcing_a_file_that_sources_itself_terminates() {
+    // nvim --clean: a script that `:source`s itself stops with
+    // "E169: Command too recursive". Before the guard ovim overflowed its
+    // stack and aborted.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("loop.lua");
+    std::fs::write(&path, format!("vim.cmd('source {}')\n", path.display())).unwrap();
+    let mut editor = Editor::new();
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    // The innermost failure is reported by log and a "N command(s) failed"
+    // suffix on the message; what matters is that this returns at all.
+    let result =
+        ovim::commands::execute_command(&mut editor, &format!("source {}", path.display()));
+
+    assert!(
+        matches!(result, ovim::command_result::CommandResult::Success(_)),
+        "unexpected result: {result:?}"
+    );
+}

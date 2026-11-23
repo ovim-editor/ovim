@@ -1,8 +1,8 @@
 //! Debug run configuration loading.
 //!
-//! Reads `.ovim/debug.toml` for project-local debug launch/attach configs.
-//! Optionally imports IntelliJ run configurations from `.idea/runConfigurations/`
-//! and `.run/` directories.
+//! Reads `.ovim/debug.toml` for project-local run/debug configs (`gradle`,
+//! `attach` and `launch` kinds) and parses the `hyperion.runConfigurations`
+//! the language server offers. There is no IntelliJ import.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -40,6 +40,9 @@ pub enum DebugRunKind {
         jvm_args: Vec<String>,
         cwd: Option<String>,
         project_root: Option<String>,
+        /// Command run (asynchronously) before launching, e.g.
+        /// `["./gradlew", "classes"]`. Its failure aborts the launch.
+        build: Option<Vec<String>>,
     },
 }
 
@@ -78,6 +81,8 @@ struct RawConfig {
     cwd: Option<String>,
     #[serde(default)]
     project_root: Option<String>,
+    #[serde(default)]
+    build: Option<Vec<String>>,
 }
 
 impl RawConfig {
@@ -100,6 +105,7 @@ impl RawConfig {
                 jvm_args: self.jvm_args.unwrap_or_default(),
                 cwd: self.cwd,
                 project_root: self.project_root,
+                build: self.build,
             },
             _ => return None,
         };
@@ -110,24 +116,49 @@ impl RawConfig {
     }
 }
 
+/// Configurations read from `.ovim/debug.toml`, plus anything wrong with the
+/// file (a parse error, entries that were skipped and why).
+#[derive(Debug, Default)]
+pub struct LoadedDebugConfigs {
+    pub configs: Vec<DebugRunConfig>,
+    pub problems: Vec<String>,
+}
+
 /// Load debug configurations from `.ovim/debug.toml` relative to `project_root`.
 pub fn load_debug_configs(project_root: &Path) -> Vec<DebugRunConfig> {
+    load_debug_configs_reporting(project_root).configs
+}
+
+/// Like [`load_debug_configs`], but reports problems instead of dropping
+/// them silently (printing to stderr would corrupt the TUI).
+pub fn load_debug_configs_reporting(project_root: &Path) -> LoadedDebugConfigs {
     let config_path = project_root.join(".ovim").join("debug.toml");
     let content = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(_) => return LoadedDebugConfigs::default(),
     };
     let toml: DebugToml = match toml::from_str(&content) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("warning: failed to parse {}: {e}", config_path.display());
-            return Vec::new();
+            return LoadedDebugConfigs {
+                configs: Vec::new(),
+                problems: vec![format!("{}: {}", config_path.display(), e.message())],
+            };
         }
     };
-    toml.config
-        .into_iter()
-        .filter_map(|c| c.into_run_config())
-        .collect()
+    let mut loaded = LoadedDebugConfigs::default();
+    for raw in toml.config {
+        let (name, config_type) = (raw.name.clone(), raw.config_type.clone());
+        match raw.into_run_config() {
+            Some(config) => loaded.configs.push(config),
+            None => loaded.problems.push(format!(
+                "{}: config '{name}' (type \"{config_type}\") is incomplete or has an unknown type; \
+                 expected type gradle (task), attach (port), or launch (main_class)",
+                config_path.display()
+            )),
+        }
+    }
+    loaded
 }
 
 /// Convert launch.json-shaped JSON values (from hyperion LSP `executeCommand`) into
@@ -171,6 +202,10 @@ fn parse_single_lsp_config(value: &Value) -> Option<DebugRunConfig> {
                 .get("projectRoot")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            build: value
+                .get("build")
+                .map(|b| json_string_array(Some(b)))
+                .filter(|argv| !argv.is_empty()),
         },
         "gradle" => DebugRunKind::Gradle {
             task: value

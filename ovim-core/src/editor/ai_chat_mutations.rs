@@ -584,7 +584,45 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.last_save_outcome = None;
         }
-        let mut result = match name {
+        // The agent can run a tool while the user types in Insert mode. Every
+        // tool here but `snapshot_file` changes the buffer.
+        let mut result = if name == "snapshot_file" {
+            self.dispatch_mutation_tool(name, args)
+        } else {
+            self.with_insert_undo_break(|editor| editor.dispatch_mutation_tool(name, args))
+        };
+
+        if let ToolResult::Success(message) = &mut result {
+            let revision_after = self.buffer().version();
+            let content_after = self.buffer().rope().to_string();
+            let diffstat = mutation_diffstat(&content_before, &content_after);
+            let save_outcome = self
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.last_save_outcome.as_deref());
+            append_mutation_envelope(
+                message,
+                name,
+                &file_label,
+                revision_before,
+                revision_after,
+                &diffstat,
+                save_outcome,
+            );
+        }
+
+        // Only restore if active_buffer_id didn't change during the mutation
+        // (e.g., open_file could have changed it)
+        let current_active = self.ai_state.chat.as_ref().map(|c| c.active_buffer_id);
+        if current_active == Some(target_buffer_id) {
+            self.current_buffer_index = original;
+        }
+        result
+    }
+
+    fn dispatch_mutation_tool(&mut self, name: &str, args: &serde_json::Value) -> ToolResult {
+        match name {
             "edit_range" => match parse_args(args) {
                 Ok(a) => self.handle_edit_range(a),
                 Err(e) => e,
@@ -618,35 +656,7 @@ impl Editor {
                 Err(e) => e,
             },
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
-        };
-
-        if let ToolResult::Success(message) = &mut result {
-            let revision_after = self.buffer().version();
-            let content_after = self.buffer().rope().to_string();
-            let diffstat = mutation_diffstat(&content_before, &content_after);
-            let save_outcome = self
-                .ai_state
-                .chat
-                .as_ref()
-                .and_then(|chat| chat.last_save_outcome.as_deref());
-            append_mutation_envelope(
-                message,
-                name,
-                &file_label,
-                revision_before,
-                revision_after,
-                &diffstat,
-                save_outcome,
-            );
         }
-
-        // Only restore if active_buffer_id didn't change during the mutation
-        // (e.g., open_file could have changed it)
-        let current_active = self.ai_state.chat.as_ref().map(|c| c.active_buffer_id);
-        if current_active == Some(target_buffer_id) {
-            self.current_buffer_index = original;
-        }
-        result
     }
 
     /// Shared post-mutation refresh: rehighlight, diagnostics, mark dirty.
@@ -666,6 +676,17 @@ impl Editor {
         outcome
     }
 
+    fn ensure_current_buffer_unchanged_on_disk(&self) -> Result<(), String> {
+        match self.buffer().check_external_modification() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err(
+                "file changed on disk; edits remain in the buffer. Review and resolve the conflict before saving"
+                    .to_string(),
+            ),
+            Err(error) => Err(format!("could not check file before saving: {error}")),
+        }
+    }
+
     fn auto_save_current_buffer_if_configured(&mut self) -> String {
         if self.buffer().file_path().is_none() {
             return self.record_ai_chat_save_outcome(
@@ -682,6 +703,10 @@ impl Editor {
             return self.record_ai_chat_save_outcome(
                 "not auto-saved (policy only_if_clean_at_start)".to_string(),
             );
+        }
+
+        if let Err(reason) = self.ensure_current_buffer_unchanged_on_disk() {
+            return self.record_ai_chat_save_outcome(format!("not auto-saved ({reason})"));
         }
 
         match self.buffer_mut().save() {
@@ -705,6 +730,12 @@ impl Editor {
                 "cannot save '{path_hint}': target buffer has no file path"
             )));
         };
+        if let Err(reason) = self.ensure_current_buffer_unchanged_on_disk() {
+            self.record_ai_chat_save_outcome(format!("save failed: {reason}"));
+            return Err(ToolResult::Error(format!(
+                "cannot save '{path_hint}': {reason}"
+            )));
+        }
         if let Some(parent) = target_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 self.record_ai_chat_save_outcome(format!("save failed: {e}"));

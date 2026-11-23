@@ -195,21 +195,16 @@ impl Editor {
         let file_path_for_task = file_path.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let doc_version = lsp.get_document_version(&uri).await;
-            let last_sent = lsp.get_last_sent_version(&uri).await;
-            let diagnostics = if last_sent < doc_version {
-                Vec::new()
-            } else {
-                lsp.get_diagnostics(&uri).await
-            };
+            let snapshot = lsp.display_diagnostic_snapshot(&uri).await;
             let task_result = crate::editor::lsp_slot::DiagnosticResult {
                 file_path: file_path_for_task,
                 buffer_version,
-                lsp_version: doc_version,
-                lsp_sent_version: last_sent,
-                count: diagnostic_counts(&diagnostics),
-                diagnostics,
-                deferred: last_sent < doc_version,
+                lsp_version: snapshot.doc_version,
+                lsp_sent_version: snapshot.last_sent,
+                count: diagnostic_counts(&snapshot.diagnostics),
+                deferred: snapshot.last_sent < snapshot.doc_version,
+                current: snapshot.current,
+                diagnostics: snapshot.diagnostics,
             };
 
             let _ = tx.send(Ok(task_result));
@@ -238,22 +233,26 @@ impl Editor {
                     return false;
                 }
 
-                // Stamp version fields only after both guards: a refresh
-                // spawned for file A that completes after switching to file B
-                // must not poison B's version state (OV-00335). And only when
-                // the buffer hasn't advanced since the refresh was spawned —
-                // stamping an old lsp_version would move the tracked version
-                // BACKWARD, letting a stale versioned workspace edit pass the
-                // OV-00330 guard (external review finding).
-                if self.buffer().version() == result.buffer_version {
-                    self.lsp.state.current_file_lsp_version = result.lsp_version;
-                    self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
+                // A fetch carries positions for its original buffer. Keep the
+                // existing projected anchors until a current refresh arrives.
+                if self.buffer().version() != result.buffer_version {
+                    self.lsp.slots.diagnostics.invalidate();
+                    return false;
+                }
+                self.lsp.state.current_file_lsp_version = result.lsp_version;
+                self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
+
+                // The servers have not published since the last edits. What is
+                // on screen is projected through them already; an older
+                // publication would only put the diagnostics back where they
+                // were before the edit, and an empty one would blank the file.
+                if !result.current
+                    && self.lsp.state.diagnostics_file_path.as_deref()
+                        == Some(result.file_path.as_str())
+                {
+                    return false;
                 }
 
-                // Always store and display the latest diagnostics — they're the
-                // best data we have.  Showing slightly stale positions during
-                // editing is better UX than hiding all feedback for 150ms+.
-                // If the buffer changed since spawn, also request a fresh set.
                 self.lsp.state.diagnostic_count = result.count;
                 self.on_diagnostic_counts_changed(result.count.0, result.count.1);
                 self.lsp
@@ -287,13 +286,6 @@ impl Editor {
                     diag_decs,
                     &rope,
                 );
-
-                if self.buffer().version() != result.buffer_version {
-                    // Buffer was edited during the fetch — request a fresh set
-                    // for the current content.  The stale diagnostics stay visible
-                    // until the refresh completes (better than blank).
-                    self.lsp.slots.diagnostics.invalidate();
-                }
 
                 true
             }
@@ -381,7 +373,9 @@ impl Editor {
                     let original_line = diag.range.start.line as usize;
                     let mut projected = diag.clone();
                     let delta = derived_line as i64 - original_line as i64;
-                    let shift = |line: u32| -> u32 { (line as i64 + delta).max(0) as u32 };
+                    let shift = |line: u32| -> u32 {
+                        (i64::from(line) + delta).clamp(0, i64::from(u32::MAX)) as u32
+                    };
                     projected.range.start.line = shift(projected.range.start.line);
                     projected.range.end.line = shift(projected.range.end.line);
                     by_line.entry(derived_line).or_default().push(projected);
@@ -399,33 +393,33 @@ impl Editor {
         ProjectedDiagnostics::new(by_line)
     }
 
-    /// Get diagnostics for a specific line from cached diagnostics, with
-    /// ranges projected through the edit log. (OV-00328)
+    /// Diagnostics covering the line, projected through edits when needed.
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<lsp_types::Diagnostic> {
         if self.diagnostics_cache_stale() {
             return Vec::new();
         }
         if self.diagnostics_need_projection() {
-            return self.project_diagnostics().take_line(line);
+            return self.project_diagnostics().covering_line(line);
         }
-        let Some(indices) = self.lsp.state.diagnostics_by_line.get(&line) else {
-            return Vec::new();
-        };
-        let diagnostics = &self.lsp.state.current_file_diagnostics;
-        indices.iter().map(|&i| diagnostics[i].clone()).collect()
+        self.lsp
+            .state
+            .diagnostics_covering_line(line)
+            .cloned()
+            .collect()
     }
 
-    /// Returns true if any diagnostics are cached for the given line (in the
-    /// projected view). Cheaper than building a Vec when there are no edits
-    /// to replay.
     pub fn has_diagnostics_on_line(&self, line: usize) -> bool {
         if self.diagnostics_cache_stale() {
             return false;
         }
         if self.diagnostics_need_projection() {
-            return !self.project_diagnostics().for_line(line).is_empty();
+            return self.project_diagnostics().covering(line).next().is_some();
         }
-        self.lsp.state.diagnostics_by_line.contains_key(&line)
+        self.lsp
+            .state
+            .diagnostics_covering_line(line)
+            .next()
+            .is_some()
     }
 
     /// Get the current diagnostic at the cursor position
@@ -496,15 +490,20 @@ impl Editor {
             message.push_str(&format!(" `{}`", code_str));
         }
         self.lsp.state.hover_info = Some(message);
+        self.lsp.state.hover_scroll = 0;
+        self.lsp.state.hover_h_scroll = 0;
         self.lsp.state.hover_position = Some((line, col));
         self.lsp.state.hover_content_type = crate::editor::lsp_state::HoverContentType::Diagnostic;
+        // Match successful LSP hover: old progress/status must not suppress
+        // the diagnostic echo when the user closes this float.
+        self.set_lsp_status(String::new());
         self.set_mode(Mode::HoverPreview);
     }
 
-    /// Pick the diagnostic under the cursor, or the nearest diagnostic on the
-    /// same line. LSP columns are UTF-16 offsets while the editor cursor is
-    /// grapheme-indexed, so both are normalized to scalar-value columns before
-    /// comparing them.
+    /// Pick the diagnostic under the cursor, or the nearest diagnostic
+    /// covering the cursor line. LSP columns are UTF-16 offsets while the
+    /// editor cursor is grapheme-indexed, so both are normalized to
+    /// scalar-value columns before comparing them.
     fn diagnostic_nearest_to_cursor(&self) -> Option<lsp_types::Diagnostic> {
         let line = self.buffer().cursor().line();
         let diagnostics = self.diagnostics_for_line(line);
@@ -512,26 +511,20 @@ impl Editor {
             return None;
         }
 
-        let line_text: String = {
-            let rope = self.buffer().rope();
-            if line < rope.len_lines() {
-                rope.line(line).chars().take_while(|&c| c != '\n').collect()
-            } else {
-                String::new()
-            }
-        };
+        let line_text = crate::display::line_content(self.buffer().rope(), line);
         let col = crate::unicode::grapheme_to_char_col(&line_text, self.buffer().cursor().col()).0;
-
         diagnostics.into_iter().min_by_key(|diagnostic| {
-            let start = crate::lsp::utf16_to_char_col(&line_text, diagnostic.range.start.character);
-            let end = crate::lsp::utf16_to_char_col(&line_text, diagnostic.range.end.character);
-            if col >= start && col <= end {
-                0
-            } else if col < start {
-                start - col
+            let range = crate::lsp::diagnostic_char_range(diagnostic, line, &line_text)
+                .expect("covering diagnostics have valid line ranges");
+            let contains = range.contains(&col) || (range.is_empty() && col == range.start);
+            let distance = if col < range.start {
+                range.start - col
             } else {
-                col.saturating_sub(end)
-            }
+                col.saturating_sub(range.end)
+            };
+            // An exclusive endpoint is adjacent to the cursor, but a range
+            // containing the cursor takes priority over that zero distance.
+            (!contains, distance)
         })
     }
 }
@@ -626,6 +619,54 @@ mod tests {
         editor.lsp.slots.diagnostics.fire(task, rx);
     }
 
+    /// Apply a publication through the real refresh path, including anchors
+    /// and decorations. Tests of delayed results use `fire_diagnostic_result`.
+    fn apply_diagnostics(editor: &mut Editor, diagnostics: Vec<Diagnostic>) {
+        let result = DiagnosticResult {
+            file_path: editor.buffer().file_path().unwrap().to_owned(),
+            buffer_version: editor.buffer().version(),
+            lsp_version: 1,
+            lsp_sent_version: 1,
+            count: diagnostic_counts(&diagnostics),
+            diagnostics,
+            deferred: false,
+            current: true,
+        };
+        fire_diagnostic_result(editor, result);
+        assert!(editor.poll_pending_diagnostic_refresh_response());
+    }
+
+    /// After an edit the servers have not published for, the refresh finds only
+    /// an older publication: what is on screen (already projected through the
+    /// edit) stays, instead of being replaced by it or by nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_older_publication_does_not_replace_what_is_shown() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        editor.set_file_path("/tmp/Test.java".to_string());
+        let warning = ranged_diag(0, 5, "published on save");
+        apply_diagnostics(&mut editor, vec![warning]);
+        assert_eq!(editor.diagnostics_for_line(0).len(), 1);
+
+        let file_path = editor.buffer().file_path().unwrap().to_owned();
+        let buffer_version = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version,
+                lsp_version: 2,
+                lsp_sent_version: 2,
+                diagnostics: Vec::new(),
+                count: (0, 0, 0, 0),
+                deferred: false,
+                current: false,
+            },
+        );
+        assert!(!editor.poll_pending_diagnostic_refresh_response());
+        assert_eq!(editor.diagnostics_for_line(0).len(), 1);
+        assert_eq!(editor.lsp.state.current_file_lsp_version, 2);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn poll_pending_diagnostic_refresh_response_applies_latest_result() {
         let mut editor = Editor::with_content("class Test {}\n");
@@ -650,6 +691,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (0, 1, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
@@ -661,10 +703,10 @@ mod tests {
     }
 
     /// When the buffer is edited between spawning a diagnostic refresh and
-    /// receiving the result, diagnostics should still be stored and displayed
-    /// (stale data is better than no data), and a re-request should be scheduled.
+    /// receiving the result, existing anchors must survive and the stale
+    /// result must be rejected, with a fresh request scheduled.
     #[tokio::test(flavor = "current_thread")]
-    async fn poll_keeps_diagnostics_when_buffer_edited_during_fetch() {
+    async fn poll_preserves_existing_anchors_when_buffer_edited_during_fetch() {
         use crate::editor::decoration::{
             Decoration, DecorationPlacement, DecorationSource, DecorationStyle,
         };
@@ -710,13 +752,16 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
-        // Simulate a buffer edit AFTER the refresh was spawned.
-        editor
-            .buffer_mut()
-            .insert_text_at(0, crate::unicode::CharCol::ZERO, "// ");
+        // Insert lines AFTER the refresh was spawned; its positions are now stale.
+        editor.buffer_mut().insert_text_at(
+            0,
+            crate::unicode::CharCol::ZERO,
+            "// inserted\n// guard\n",
+        );
 
         assert_ne!(
             editor.buffer().version(),
@@ -724,12 +769,10 @@ mod tests {
             "buffer version should have changed after edit"
         );
 
-        // Poll should succeed (result ready) and detect the version mismatch.
+        // Reject the stale refresh without replacing the existing anchors.
         let changed = editor.poll_pending_diagnostic_refresh_response();
-        assert!(changed);
-
-        // File path still matches, so diagnostics are NOT stale (show-until-replaced).
-        assert!(!editor.diagnostics_cache_stale());
+        assert!(!changed);
+        assert_eq!(editor.decorations.for_line(0)[0].text, "old error");
         // A refresh should be requested for the current buffer content.
         assert!(editor.lsp.slots.diagnostics.is_stale());
 
@@ -767,6 +810,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
@@ -799,6 +843,7 @@ mod tests {
                 diagnostics: Vec::new(),
                 count: (0, 0, 0, 0),
                 deferred: true,
+                current: true,
             },
         );
 
@@ -831,12 +876,78 @@ mod tests {
                 diagnostics: Vec::new(),
                 count: (0, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
         assert!(!editor.poll_pending_diagnostic_refresh_response());
         assert_eq!(editor.lsp.state.current_file_lsp_version, 7);
         assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 7);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn diagnostic_refresh_reaches_every_covered_line() {
+        let mut editor = Editor::with_content("before\nfirst\nmiddle\nlast\nafter\n");
+        editor.set_file_path("/tmp/multiline.rs".to_owned());
+
+        for (end_column, covered_lines) in [(2, vec![1, 2, 3]), (0, vec![1, 2])] {
+            apply_diagnostics(
+                &mut editor,
+                vec![Diagnostic {
+                    range: Range::new(Position::new(1, 1), Position::new(3, end_column)),
+                    message: "spanning diagnostic".into(),
+                    ..Diagnostic::default()
+                }],
+            );
+            for line in 0..5 {
+                let covered = covered_lines.contains(&line);
+                assert_eq!(editor.has_diagnostics_on_line(line), covered, "line {line}");
+                assert_eq!(
+                    editor.diagnostics_for_line(line).len(),
+                    usize::from(covered)
+                );
+                editor.buffer_mut().cursor_mut().set_line(line);
+                assert_eq!(
+                    editor.current_diagnostic().as_deref(),
+                    covered.then_some("spanning diagnostic")
+                );
+            }
+        }
+        apply_diagnostics(&mut editor, vec![]);
+        assert!((0..5).all(|line| !editor.has_diagnostics_on_line(line)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eviction_fallback_saturates_oversized_range_endpoints() {
+        let mut editor = Editor::with_content("abcdefghij\nmiddle\nlast\n");
+        editor.set_file_path("/tmp/oversized.rs".to_owned());
+        let source_version = editor.buffer().version() as u64;
+        apply_diagnostics(
+            &mut editor,
+            vec![Diagnostic {
+                range: Range::new(Position::new(1, 0), Position::new(u32::MAX, u32::MAX)),
+                message: "file-wide diagnostic".into(),
+                ..Diagnostic::default()
+            }],
+        );
+
+        // Evict the publication's history. The stored line-start offset now
+        // resolves to a later line, so shifting u32::MAX must saturate.
+        for _ in 0..=crate::edit_log::DEFAULT_CAPACITY {
+            editor
+                .buffer_mut()
+                .insert_text_at(0, crate::unicode::CharCol::ZERO, "\n");
+        }
+        assert!(editor
+            .buffer()
+            .edit_log()
+            .edits_since(source_version)
+            .is_none());
+        let projected = editor.project_diagnostics();
+        let diagnostics = projected.covering_line(editor.buffer().line_count() - 1);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].range.start.line > 1);
+        assert_eq!(diagnostics[0].range.end.line, u32::MAX);
     }
 
     /// OV-00328 regression: after a line-inserting edit recorded in the edit
@@ -867,6 +978,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
         assert!(editor.poll_pending_diagnostic_refresh_response());
@@ -902,13 +1014,9 @@ mod tests {
 
         // And the raw-diagnostic view lands on the same line as the projected
         // EOL decoration (the other rendering pipeline).
-        let rope = editor.buffer().rope().clone();
-        let eol = editor
-            .decorations
-            .eol_for_line_projected(3, &rope, editor.buffer().edit_log());
+        let eol = editor.projected_decorations().eol_for_line(3).len();
         assert_eq!(
-            eol.len(),
-            1,
+            eol, 1,
             "eol decoration and diagnostics must agree on the shifted line"
         );
     }
@@ -942,6 +1050,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
         assert!(editor.poll_pending_diagnostic_refresh_response());
@@ -959,18 +1068,13 @@ mod tests {
         }
 
         // Whatever lines the two pipelines land on, they must AGREE.
-        let rope = editor.buffer().rope().clone();
         let projected = editor.project_diagnostics();
         let diag_lines: Vec<usize> = (0..editor.buffer().line_count())
             .filter(|&line| !projected.for_line(line).is_empty())
             .collect();
+        let projected_decorations = editor.projected_decorations();
         let eol_lines: Vec<usize> = (0..editor.buffer().line_count())
-            .filter(|&line| {
-                !editor
-                    .decorations
-                    .eol_for_line_projected(line, &rope, editor.buffer().edit_log())
-                    .is_empty()
-            })
+            .filter(|&line| !projected_decorations.eol_for_line(line).is_empty())
             .collect();
         assert_eq!(
             diag_lines, eol_lines,
@@ -1004,6 +1108,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
         assert!(editor.poll_pending_diagnostic_refresh_response());

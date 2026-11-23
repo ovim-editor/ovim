@@ -272,11 +272,11 @@ fn test_visual_reselect_indent() {
         .keys("gv") // Reselect
         .press('>'); // Indent again (lines 1 and 2 again)
 
-    // After first >, cursor goes to start line (0, 4). gv reselects using saved visual marks,
-    // but since cursor moved to line 0, gv selects only line 0. Second > indents only line 0.
+    // nvim (`normal! Vj>gv>` with shiftwidth=4): gv reselects both lines even though the first
+    // `>` left the cursor on line 1, so the second `>` indents both again.
     assert_eq!(
         test.buffer_content(),
-        "        line 1\n    line 2\nline 3\n"
+        "        line 1\n        line 2\nline 3\n"
     );
     test.assert_cursor(0, 8);
 }
@@ -331,11 +331,12 @@ fn test_indent_paragraph() {
 
     test.keys(">ip"); // Indent inner paragraph
 
+    // nvim --clean: both lines of the paragraph are shifted, the blank line is not.
     assert_eq!(
         test.buffer_content(),
-        "para line 1\npara line 2\n\nnext para\n"
+        "    para line 1\n    para line 2\n\nnext para\n"
     );
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -344,8 +345,12 @@ fn test_indent_around_paragraph() {
 
     test.keys(">ap"); // Indent around paragraph
 
-    assert_eq!(test.buffer_content(), "para 1\npara 1 cont\n\npara 2\n");
-    test.assert_cursor(0, 0);
+    // nvim --clean: the blank line that `ap` includes stays empty.
+    assert_eq!(
+        test.buffer_content(),
+        "    para 1\n    para 1 cont\n\npara 2\n"
+    );
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -448,10 +453,10 @@ fn test_indent_at_eof() {
 
     test.keys("G") // Last line
         .keys(">>")
-        .keys(">j"); // Try to indent beyond EOF (no effect, already at last line)
+        .keys(">j"); // Beyond EOF: `j` fails on the last line, so nothing is indented (nvim)
 
-    assert_eq!(test.buffer_content(), "line 1\n        line 2\n");
-    test.assert_cursor(1, 8);
+    assert_eq!(test.buffer_content(), "line 1\n    line 2\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]

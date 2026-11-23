@@ -142,7 +142,9 @@ impl ProfileAgentProvider {
                 "configured profile no longer matches the resolved child route",
             ));
         }
-        if profile.provider == AiProviderKind::CodexAppServer {
+        if !profile.provider.supports_ovim_tools()
+            || profile.provider == AiProviderKind::CodexAppServer
+        {
             return Err(AgentProviderError::new(
                 "Codex app-server is not supported for Ovim child sessions: its provider-owned harness and editor-coupled dynamic-tool session cannot prove snapshot-only authority or independent resumability; use the direct Codex provider",
             ));
@@ -315,6 +317,17 @@ impl ProfileAgentSession {
         chunk: StreamChunk,
     ) -> Result<Option<AgentProviderEvent>, AgentProviderError> {
         match chunk {
+            StreamChunk::ExternalEditorRequest { .. }
+            | StreamChunk::ExternalEditorCancelled(_)
+            | StreamChunk::ExternalToolStart(_)
+            | StreamChunk::ExternalToolResult { .. }
+            | StreamChunk::ExternalPermission { .. }
+            | StreamChunk::ExternalSession(_)
+            | StreamChunk::ExternalPermissionCancelled => {
+                return Err(AgentProviderError::new(
+                    "External agent events cannot enter Ovim's delegated inference loop",
+                ));
+            }
             StreamChunk::Thinking(text) => {
                 if !text.is_empty() && !self.round_state.reasoning_progress_emitted {
                     self.round_state.reasoning_progress_emitted = true;
@@ -750,7 +763,8 @@ fn provider_tool_schemas(provider: AiProviderKind, tools: &[ScopedTool]) -> Vec<
                 "description": tool.description,
                 "input_schema": tool.input_schema.as_value(),
             }),
-            AiProviderKind::Codex
+            AiProviderKind::ClaudeCode
+            | AiProviderKind::Codex
             | AiProviderKind::CodexAppServer
             | AiProviderKind::OpenAi
             | AiProviderKind::Ollama => json!({

@@ -14,6 +14,9 @@ impl Buffer {
         if text.is_empty() {
             return;
         }
+        if !self.accepts_edits() {
+            return;
+        }
 
         // Track buffer edit metrics
         crate::metrics::BUFFER_EDITS_TOTAL.inc();
@@ -42,7 +45,11 @@ impl Buffer {
         // Shift highlights BEFORE modifying rope
         self.shift_highlights_for_insertion(line, byte_col, text);
 
+        let text_edit = self.prepare_text_edit(insert_pos, insert_pos);
+        let lines_before = self.rope.len_lines();
         self.rope.insert(insert_pos, text);
+        self.adjust_marks_for_insert(line, col_clamped, text, lines_before);
+        self.finish_text_edit(text_edit, text);
         self.modified = true;
 
         let recorded_edit = Edit::Insert {
@@ -152,6 +159,9 @@ impl Buffer {
         end_line: usize,
         end_col: CharCol,
     ) -> String {
+        if !self.accepts_edits() {
+            return String::new();
+        }
         // Track buffer edit metrics
         crate::metrics::BUFFER_EDITS_TOTAL.inc();
 
@@ -217,7 +227,10 @@ impl Buffer {
             end_byte_col,
         );
 
+        let text_edit = self.prepare_text_edit(start_pos, end_pos);
+        self.adjust_marks_for_removal(start_pos, end_pos);
         self.rope.remove(start_pos..end_pos);
+        self.finish_text_edit(text_edit, "");
         self.modified = true;
 
         let recorded_edit = Edit::Delete {
@@ -260,6 +273,9 @@ impl Buffer {
     /// for undo of insertions at positions past the content of a line (e.g.,
     /// after the newline character).
     pub fn delete_char_range(&mut self, start_char: usize, end_char: usize) {
+        if !self.accepts_edits() {
+            return;
+        }
         crate::metrics::BUFFER_EDITS_TOTAL.inc();
 
         let start_pos = start_char.min(self.rope.len_chars());
@@ -292,7 +308,10 @@ impl Buffer {
         );
         self.shift_highlights_for_deletion(start_line, start_byte_col, end_line, end_byte_col);
 
+        let text_edit = self.prepare_text_edit(start_pos, end_pos);
+        self.adjust_marks_for_removal(start_pos, end_pos);
         self.rope.remove(start_pos..end_pos);
+        self.finish_text_edit(text_edit, "");
         self.modified = true;
 
         let recorded_edit = Edit::Delete {
@@ -385,20 +404,29 @@ impl Buffer {
 
             // Trim leading whitespace from next line
             let next_trimmed = next_line_text.trim_start();
+            let current_len = current_line_text.chars().count();
 
-            // Build the joined line
-            let joined = if next_trimmed.is_empty() {
-                // Next line is all whitespace, just use current line
-                current_line_text.clone()
+            // Join with edits at the seam only, so the marks on the next line
+            // follow its text up to this one.
+            if next_trimmed.is_empty() {
+                // Next line is all whitespace, just keep the current line
+                let next_len = next_line_text.chars().count();
+                self.delete_range(
+                    start_line,
+                    CharCol(current_len),
+                    start_line + 1,
+                    CharCol(next_len),
+                );
             } else {
-                format!("{}{}{}", current_line_text, separator, next_trimmed)
-            };
-
-            // Delete both lines (from start_line to start_line+2)
-            self.delete_range(start_line, CharCol::ZERO, start_line + 2, CharCol::ZERO);
-
-            // Insert the joined line with newline
-            self.insert_text_at(start_line, CharCol::ZERO, &format!("{}\n", joined));
+                self.insert_text_at(start_line, CharCol(current_len), separator);
+                let next_indent = next_line_text.chars().count() - next_trimmed.chars().count();
+                self.delete_range(
+                    start_line,
+                    CharCol(current_len + separator.chars().count()),
+                    start_line + 1,
+                    CharCol(next_indent),
+                );
+            }
 
             // Position cursor at the junction point (end of original first line).
             // cursor.col() is a grapheme index, so use grapheme_count (not chars().count()).
@@ -451,6 +479,29 @@ impl Buffer {
                 current.saturating_sub(options.shift_width),
                 options,
             );
+        }
+    }
+
+    /// Pulls the cursor back inside the text after edits that did not move it
+    /// (LSP edits, external reloads). A cursor on a line that no longer exists
+    /// panics in scroll/render code, so this must follow any such edit.
+    ///
+    /// With `past_end`, as in Insert mode, the cursor may stay just after the
+    /// last character of its line. Otherwise it stays on the last character.
+    pub fn clamp_cursor_to_content(&mut self, past_end: bool) {
+        let last_line = self.line_count().saturating_sub(1);
+        if self.cursor().line() > last_line {
+            self.cursor_mut().set_line(last_line);
+        }
+        if !past_end {
+            self.clamp_cursor_col();
+            return;
+        }
+        let line_len = self
+            .line_text(self.cursor().line())
+            .map_or(0, |text| grapheme_count(&text));
+        if self.cursor().col().0 > line_len {
+            self.cursor_mut().set_col(GraphemeCol(line_len));
         }
     }
 
@@ -638,8 +689,8 @@ impl Buffer {
     }
 
     /// Finds and deletes a text object at the current cursor position.
-    pub fn delete_text_object(&mut self, object_type: &TextObjectType) {
-        if let Some(range) = object_type.resolve(self) {
+    pub fn delete_text_object(&mut self, object_type: &TextObjectType, count: usize) {
+        if let Some((range, _)) = object_type.resolve_for_operator(self, count, false) {
             self.delete_range(
                 range.start_line,
                 range.start_col,
@@ -706,8 +757,11 @@ impl Buffer {
             .line_text(start_line)
             .map(|line| crate::indentation::leading_str(&line).to_string())
             .unwrap_or_default();
+        // The first line is rewritten, not removed: its marks stay (Vim).
+        let marks = self.marks_on_line(start_line);
         let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         self.insert_text_at(start_line, CharCol::ZERO, &format!("{indent}\n"));
+        self.restore_marks_on_line(start_line, marks);
         self.set_cursor_char_col(start_line, CharCol(indent.chars().count()));
         deleted
     }
@@ -797,49 +851,63 @@ impl Buffer {
         deleted
     }
 
-    /// Deletes from cursor to next word boundary (dw command).
-    /// Returns the deleted text.
-    pub fn delete_word_forward(&mut self, count: usize) -> String {
+    /// Where an operator's `w` (`W` when `big`) stops, as `(line, column)` in chars:
+    /// the next word start, except that vim's eol rule applies to the LAST word
+    /// moved over — when the final `w` crosses a line boundary the operated range
+    /// ends at the eol of the line it crossed FROM, while earlier words (and their
+    /// newlines) are covered in full. Truncating whenever the whole motion crossed
+    /// a line made `d2w` discard everything past the first newline (OV-00289).
+    ///
+    /// Leaves the cursor on the motion's target; callers restore it.
+    pub fn operator_word_forward_end(&mut self, count: usize, big: bool) -> (usize, CharCol) {
         use crate::editor::Motions;
+        let word_forward =
+            |buffer: &mut Self, count: usize| Motions::word_forward_or_stay(buffer, count, big);
 
         let start_line = self.cursor().line();
-        let start_grapheme = self.cursor().col();
         let start_col = self.cursor_char_col();
-
-        // Vim's eol rule applies only to the LAST word moved over: when the
-        // final `w` crosses a line boundary, the operated range ends at the
-        // eol of the line it crossed FROM — but earlier words (and their
-        // newlines) are deleted in full. Truncating whenever the whole
-        // motion crossed a line made `d2w` discard everything past the
-        // first newline (OV-00289).
         let (prev_line, prev_col) = if count > 1 {
-            Motions::word_forward(self, count - 1);
+            word_forward(self, count - 1);
             (self.cursor().line(), self.cursor_char_col())
         } else {
             (start_line, start_col)
         };
-        Motions::word_forward(self, 1);
+        word_forward(self, 1);
 
         let end_line = self.cursor().line();
-        let mut del_end_line = end_line;
-        let mut end_col = self.cursor_char_col();
+        let end_col = self.cursor_char_col();
+        let line_end = |buffer: &Self, line: usize| {
+            buffer
+                .line_text(line)
+                .map(|text| CharCol(text.chars().count()))
+        };
 
         if end_line > prev_line {
             // Final word motion crossed a newline: stop at eol of the line
             // holding the last word actually moved over.
-            if let Some(line) = self.line_text(prev_line) {
-                del_end_line = prev_line;
-                end_col = CharCol(line.chars().count());
+            if let Some(end) = line_end(self, prev_line) {
+                return (prev_line, end);
             }
         } else if end_line == prev_line && end_col == prev_col && end_line + 1 >= self.line_count()
         {
-            // Motion didn't move — last word on last line. Delete to end of line.
-            if let Some(line) = self.line_text(end_line) {
-                end_col = CharCol(line.chars().count());
+            // Motion didn't move — last word on last line. Run to end of line.
+            if let Some(end) = line_end(self, end_line) {
+                return (end_line, end);
             }
         }
+        (end_line, end_col)
+    }
 
-        let deleted = self.delete_range(start_line, start_col, del_end_line, end_col);
+    /// Deletes from cursor to next word boundary (dw command).
+    /// Returns the deleted text.
+    pub fn delete_word_forward(&mut self, count: usize) -> String {
+        let start_line = self.cursor().line();
+        let start_grapheme = self.cursor().col();
+        let start_col = self.cursor_char_col();
+
+        let (end_line, end_col) = self.operator_word_forward_end(count, false);
+
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
         self.cursor_mut().set_position(start_line, start_grapheme);
         self.clamp_cursor_col();
         deleted
@@ -875,6 +943,23 @@ impl Buffer {
         &mut self,
         count: usize,
     ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_forward(count, true)
+    }
+
+    /// `c}` delete phase: like [`Self::delete_paragraph_forward`] but a range over
+    /// several lines stays characterwise (only `d` makes it linewise).
+    pub fn change_paragraph_forward(
+        &mut self,
+        count: usize,
+    ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_forward(count, false)
+    }
+
+    fn remove_paragraph_forward(
+        &mut self,
+        count: usize,
+        linewise_when_possible: bool,
+    ) -> (String, crate::motion_range::Wise) {
         use crate::editor::Motions;
         use crate::motion_range::MotionRange;
 
@@ -882,18 +967,38 @@ impl Buffer {
         let start_grapheme = self.cursor().col();
         let start_col = self.cursor_char_col();
 
-        Motions::paragraph_forward(self, count);
-        let end = (self.cursor().line(), self.cursor_char_col());
+        if !Motions::paragraph_forward(self, count) {
+            return (String::new(), crate::motion_range::Wise::Charwise);
+        }
+        let mut end = (self.cursor().line(), self.cursor_char_col());
+        if Motions::paragraph_end_is_inclusive(self) {
+            // Ending on the buffer's last character takes it too.
+            end.1 = CharCol(self.line_len(end.0));
+        }
 
         // } is an exclusive motion: normalize with vim's exclusive
         // adjustments so a d} from mid-line keeps the blank separator line
         // and yields a charwise register (OV-00293).
-        let range = MotionRange::from_exclusive(self, (start_line, start_col), end);
+        let mut range = MotionRange::from_exclusive(self, (start_line, start_col), end);
+        if linewise_when_possible {
+            range = range.linewise_for_delete(self);
+        }
         let deleted = self.delete_motion_range(range);
         self.cursor_mut().set_position(start_line, start_grapheme);
         // validate_cursor_position clamps both line (may be past EOF after delete)
-        // and column, which is a superset of clamp_cursor_col
-        self.validate_cursor_position();
+        // and column, which is a superset of clamp_cursor_col. A change types at
+        // the start of the deleted range, even past the end of the line left.
+        if linewise_when_possible {
+            self.validate_cursor_position();
+            if range.wise == crate::motion_range::Wise::Linewise {
+                // Like `dd`: the cursor goes to the first non-blank of the line left there.
+                let line = self.cursor().line();
+                let first_non_blank = self.first_non_blank_col(line);
+                self.set_cursor_char_col(line, first_non_blank);
+            }
+        } else {
+            self.validate_cursor_line();
+        }
         (deleted, range.wise)
     }
 
@@ -903,18 +1008,39 @@ impl Buffer {
         &mut self,
         count: usize,
     ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_backward(count, true)
+    }
+
+    /// `c{` delete phase: see [`Self::change_paragraph_forward`].
+    pub fn change_paragraph_backward(
+        &mut self,
+        count: usize,
+    ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_backward(count, false)
+    }
+
+    fn remove_paragraph_backward(
+        &mut self,
+        count: usize,
+        linewise_when_possible: bool,
+    ) -> (String, crate::motion_range::Wise) {
         use crate::editor::Motions;
         use crate::motion_range::MotionRange;
 
         let end_line = self.cursor().line();
         let end_col = self.cursor_char_col();
 
-        Motions::paragraph_backward(self, count);
+        if !Motions::paragraph_backward(self, count) {
+            return (String::new(), crate::motion_range::Wise::Charwise);
+        }
         let start = (self.cursor().line(), self.cursor_char_col());
 
         // { is exclusive: the original cursor position is excluded from the
         // operated range, with vim's col-0 adjustments applied (OV-00293).
-        let range = MotionRange::from_exclusive(self, start, (end_line, end_col));
+        let mut range = MotionRange::from_exclusive(self, start, (end_line, end_col));
+        if linewise_when_possible {
+            range = range.linewise_for_delete(self);
+        }
         let deleted = self.delete_motion_range(range);
         self.cursor_mut()
             .set_position(range.start.0, GraphemeCol(0));
@@ -934,84 +1060,6 @@ impl Buffer {
         let new_line = start_line.min(self.line_count().saturating_sub(1));
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
         self.clamp_cursor_col();
-        deleted
-    }
-
-    /// Deletes from cursor to matching bracket (d% command).
-    /// Returns the deleted text, or empty string if no bracket at cursor.
-    pub fn delete_to_matching_bracket(&mut self) -> String {
-        self.delete_to_matching_bracket_inner(true)
-    }
-
-    /// `c%` delete phase — like [`delete_to_matching_bracket`] but leaves the
-    /// insert point un-clamped (the bracket span may end at EOL; the change
-    /// then appends there). See [`delete_to_word_end`].
-    pub fn change_to_matching_bracket(&mut self) -> String {
-        self.delete_to_matching_bracket_inner(false)
-    }
-
-    fn delete_to_matching_bracket_inner(&mut self, clamp: bool) -> String {
-        use crate::editor::Motions;
-
-        let start_line = self.cursor().line();
-        let start_col = self.cursor_char_col();
-
-        let rope = &self.rope;
-        let text = rope.to_string();
-        let chars: Vec<char> = text.chars().collect();
-
-        // Compute absolute position from line/col
-        let mut abs_start = 0;
-        for i in 0..start_line {
-            if i < rope.len_lines() {
-                abs_start += rope.line(i).len_chars();
-            }
-        }
-        abs_start += start_col.0;
-
-        if abs_start >= chars.len() {
-            return String::new();
-        }
-
-        let current_char = chars[abs_start];
-
-        let (is_opening, matching_char) = match current_char {
-            '(' => (true, ')'),
-            ')' => (false, '('),
-            '[' => (true, ']'),
-            ']' => (false, '['),
-            '{' => (true, '}'),
-            '}' => (false, '{'),
-            '<' => (true, '>'),
-            '>' => (false, '<'),
-            _ => return String::new(),
-        };
-
-        let match_abs_pos = if is_opening {
-            Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
-        } else {
-            Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
-        };
-
-        let Some(abs_end) = match_abs_pos else {
-            return String::new();
-        };
-
-        let (delete_start, delete_end) = if abs_start < abs_end {
-            (abs_start, abs_end + 1)
-        } else {
-            (abs_end, abs_start + 1)
-        };
-
-        let (del_start_line, del_start_col) =
-            Motions::abs_pos_to_line_col(&self.rope, delete_start);
-        let (del_end_line, del_end_col) = Motions::abs_pos_to_line_col(&self.rope, delete_end);
-
-        let deleted = self.delete_range(del_start_line, del_start_col, del_end_line, del_end_col);
-        self.set_cursor_char_col(del_start_line, del_start_col);
-        if clamp {
-            self.clamp_cursor_col();
-        }
         deleted
     }
 
@@ -1037,6 +1085,13 @@ impl Buffer {
         let end_char = grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 + count));
 
         let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
+        if ch == '\n' {
+            // `r<CR>`: the characters give way to a single line break.
+            self.insert_text_at(line_idx, start_char, "\n");
+            self.cursor_mut()
+                .set_position(line_idx + 1, GraphemeCol::ZERO);
+            return deleted;
+        }
         let replacement = ch.to_string().repeat(count);
         self.insert_text_at(line_idx, start_char, &replacement);
 
@@ -1253,38 +1308,13 @@ impl Buffer {
     /// Deletes from cursor to next WORD boundary (dW command).
     /// Returns the deleted text.
     pub fn delete_word_forward_big(&mut self, count: usize) -> String {
-        use crate::editor::Motions;
-
         let start_line = self.cursor().line();
         let start_col = self.cursor_char_col();
 
         // Same last-word-only eol rule as delete_word_forward (OV-00289).
-        let (prev_line, prev_col) = if count > 1 {
-            Motions::word_forward_big(self, count - 1);
-            (self.cursor().line(), self.cursor_char_col())
-        } else {
-            (start_line, start_col)
-        };
-        Motions::word_forward_big(self, 1);
+        let (end_line, end_col) = self.operator_word_forward_end(count, true);
 
-        let end_line = self.cursor().line();
-        let mut del_end_line = end_line;
-        let mut end_col = self.cursor_char_col();
-
-        if end_line > prev_line {
-            if let Some(line) = self.line_text(prev_line) {
-                del_end_line = prev_line;
-                end_col = CharCol(line.chars().count());
-            }
-        } else if end_line == prev_line && end_col == prev_col && end_line + 1 >= self.line_count()
-        {
-            // Motion didn't move — last WORD on last line. Delete to end of line.
-            if let Some(line) = self.line_text(end_line) {
-                end_col = CharCol(line.chars().count());
-            }
-        }
-
-        let deleted = self.delete_range(start_line, start_col, del_end_line, end_col);
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
         self.set_cursor_char_col(start_line, start_col);
         self.clamp_cursor_col();
         deleted

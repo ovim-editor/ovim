@@ -29,7 +29,10 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
 
     // Create vim.opt (options) namespace with metatable
     let opt = create_opt_table(lua, bridge.clone())?;
-    vim.set("opt", opt)?;
+    vim.set("opt", opt.clone())?;
+    let ovim = lua.create_table()?;
+    ovim.set("opt", opt)?;
+    lua.globals().set("ovim", ovim)?;
 
     // Create vim.api_keys namespace
     let api_keys = crate::lua::ai_api::setup_api_keys_api(lua, bridge.clone())?;
@@ -385,6 +388,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Number(n) => format!("set textwidth={}", n as i64),
                     _ => return Err(mlua::Error::external("textwidth must be number")),
                 },
+                "inlay_hints" | "inlayhints" => match value {
+                    mlua::Value::Boolean(true) => "set inlay_hints".to_string(),
+                    mlua::Value::Boolean(false) => "set noinlay_hints".to_string(),
+                    _ => return Err(mlua::Error::external("inlay_hints must be boolean")),
+                },
                 "filetreereveal" => match value {
                     mlua::Value::Boolean(true) => "set filetreereveal".to_string(),
                     mlua::Value::Boolean(false) => "set nofiletreereveal".to_string(),
@@ -394,6 +402,56 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Boolean(true) => "set blame".to_string(),
                     mlua::Value::Boolean(false) => "set noblame".to_string(),
                     _ => return Err(mlua::Error::external("blame must be boolean")),
+                },
+                "pseudo" | "pseudocode" => match value {
+                    mlua::Value::Boolean(enabled) => format!("set pseudocode={enabled}"),
+                    _ => return Err(mlua::Error::external("pseudocode must be boolean")),
+                },
+                "pullbase" => match value {
+                    mlua::Value::Nil => "set pullbase=".to_string(),
+                    mlua::Value::String(s) => {
+                        let branch = s.to_str()?;
+                        if !branch.is_empty() && !crate::native_diff::valid_pullbase(branch) {
+                            return Err(mlua::Error::external("pullbase must be a branch name"));
+                        }
+                        format!("set pullbase={branch}")
+                    }
+                    mlua::Value::Table(table) => {
+                        for pair in table.clone().pairs::<String, mlua::Value>() {
+                            let (key, _) = pair?;
+                            if !matches!(key.as_str(), "path" | "branch") {
+                                return Err(mlua::Error::external(format!(
+                                    "Unknown pullbase field: {key}"
+                                )));
+                            }
+                        }
+                        let path = match table.get::<_, mlua::Value>("path")? {
+                            mlua::Value::String(path) => path.to_str()?.to_string(),
+                            _ => {
+                                return Err(mlua::Error::external("pullbase.path must be a string"))
+                            }
+                        };
+                        let branch = match table.get::<_, mlua::Value>("branch")? {
+                            mlua::Value::Nil => String::new(),
+                            mlua::Value::String(branch) => branch.to_str()?.to_string(),
+                            _ => {
+                                return Err(mlua::Error::external(
+                                    "pullbase.branch must be a string or nil",
+                                ))
+                            }
+                        };
+                        if !branch.is_empty() && !crate::native_diff::valid_pullbase(&branch) {
+                            return Err(mlua::Error::external("pullbase must be a branch name"));
+                        }
+                        let path = crate::native_diff::pullbase_directory(&path)
+                            .map_err(mlua::Error::external)?;
+                        format!("set pullbase={branch} path={}", path.display())
+                    }
+                    _ => {
+                        return Err(mlua::Error::external(
+                            "pullbase must be a string, nil, or a table with path and branch",
+                        ))
+                    }
                 },
                 "margincolor" => match value {
                     mlua::Value::String(s) => {

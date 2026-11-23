@@ -1,0 +1,623 @@
+//! Files: writing (`:w`, `:wq`, `:x`, `:wa`, `:up`, `:sav`), editing and
+//! reloading (`:e`, `:checkt`, `:rec`) and the working directory.
+
+use super::Ex;
+use crate::command_result::{err, ok, ok_silent, CommandResult};
+use crate::editor::Editor;
+
+/// Expands `~` to the home directory.
+pub(crate) fn expand_tilde(path: &str) -> Result<std::path::PathBuf, String> {
+    if path == "~" || path.starts_with("~/") {
+        let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+        return Ok(if path == "~" {
+            home
+        } else {
+            home.join(&path[2..])
+        });
+    }
+    Ok(std::path::PathBuf::from(path))
+}
+
+/// Options for [`save_buffer`].
+pub(super) struct SaveOpts<'a> {
+    /// Path to save to (None = the buffer's own file).
+    pub path: Option<&'a str>,
+    /// Skip the read-only and changed-on-disk checks.
+    pub force: bool,
+}
+
+fn same_file(a: &str, b: &str) -> bool {
+    let (a, b) = (std::path::Path::new(a), std::path::Path::new(b));
+    a == b
+        || match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
+fn written(path: &str, editor: &Editor) -> String {
+    report(
+        path,
+        editor.buffer().line_count(),
+        editor.buffer().rope().len_chars(),
+        "written",
+    )
+}
+
+fn report(path: &str, lines: usize, chars: usize, verb: &str) -> String {
+    format!("\"{path}\" {lines}L, {chars}C {verb}")
+}
+
+/// Save the buffer to its file, or make `opts.path` its file.
+pub(super) fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
+    if !opts.force && editor.buffer().is_read_only() {
+        return err("E45: 'readonly' option is set (add ! to override)");
+    }
+
+    let resolved = match opts.path {
+        Some(path) => path.to_string(),
+        None => match editor.buffer().file_path().map(|s| s.to_string()) {
+            Some(p) => p,
+            None => return err("No file name"),
+        },
+    };
+
+    let old_path = editor.buffer().file_path().map(|s| s.to_string());
+
+    // Do not silently overwrite changes made by another process. Save-as to a
+    // different file remains valid, and the bang variants are the explicit
+    // escape hatch when the user intentionally wants the in-memory copy to win.
+    // A file that was deleted meanwhile has nothing to overwrite: vim writes
+    // it again as new.
+    let targets_current_file = old_path
+        .as_deref()
+        .is_some_and(|current| same_file(current, &resolved));
+    if !opts.force
+        && opts.path.is_some()
+        && !targets_current_file
+        && std::path::Path::new(&resolved).exists()
+    {
+        return err("E13: File exists (add ! to override)");
+    }
+    if !opts.force && targets_current_file && std::path::Path::new(&resolved).exists() {
+        if editor.buffer().file_mtime().is_none() {
+            return err("E13: File exists (add ! to override)");
+        }
+        match editor.buffer().check_external_modification() {
+            Ok(true) => return err("E211: File changed since editing started (add ! to override)"),
+            Ok(false) => {}
+            Err(error) => return err(format!("Failed to check file before saving: {error}")),
+        }
+    }
+
+    match editor.buffer_mut().save_as(&resolved) {
+        Ok(_) => {
+            let new_path = editor.buffer().file_path().map(|s| s.to_string());
+            editor.handle_file_path_transition_after_save(old_path, new_path);
+            // Git refresh runs on a background thread to avoid blocking the UI.
+            editor.spawn_git_refresh(&resolved, editor.options.blame);
+            if opts.force {
+                editor.buffer_mut().set_read_only(false);
+            }
+            editor.mark_saved();
+            editor.mark_buffer_saved();
+
+            let saved_path = editor
+                .buffer()
+                .file_path()
+                .map(|p| p.to_string())
+                .unwrap_or(resolved);
+            ok(written(&saved_path, editor))
+        }
+        Err(e) => err(format!("Failed to save: {}", e)),
+    }
+}
+
+/// `:[range]w[rite][!] [file]`, `:[range]w[rite][!] >> [file]` and
+/// `:[range]w[rite] !{cmd}`.
+///
+/// Like vim, `:w {file}` on a named buffer writes a copy and keeps editing
+/// the buffer's own file (`:saveas` renames); an unnamed buffer takes the
+/// name. An existing other file needs `!` (E13). Part of the buffer is
+/// written without touching the buffer's state, and to the buffer's own file
+/// only with `!` (E140). `>>` appends to a file that exists (E212; `!`
+/// creates it).
+pub(super) fn write(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let range = ex.range.expect("whole-buffer default");
+    if let Some(command) = ex.args.strip_prefix('!') {
+        return super::shell::write_to_command(editor, range, command.trim());
+    }
+    let (append, file) = match ex.args.strip_prefix(">>") {
+        Some(file) => (true, file.trim_start()),
+        None => (false, ex.args),
+    };
+    let current = editor.buffer().file_path().map(str::to_string);
+    let partial = range.start > 1 || range.end < super::range::last_line(editor);
+    let own_file = file.is_empty()
+        || current
+            .as_deref()
+            .is_some_and(|current| same_file(current, file));
+
+    if append {
+        let Some(target) = (!file.is_empty()).then(|| file.to_string()).or(current) else {
+            return err("E32: No file name");
+        };
+        if !ex.bang && !std::path::Path::new(&target).exists() {
+            return err("E212: Can't open file for writing: no such file or directory");
+        }
+        return write_lines(editor, &target, range, true);
+    }
+    if own_file {
+        if !partial {
+            return save_buffer(
+                editor,
+                SaveOpts {
+                    path: None,
+                    force: ex.bang,
+                },
+            );
+        }
+        let Some(current) = current else {
+            return err("No file name");
+        };
+        if !ex.bang {
+            return err("E140: Use ! to write partial buffer");
+        }
+        return write_lines(editor, &current, range, false);
+    }
+    if !ex.bang && std::path::Path::new(file).exists() {
+        return err("E13: File exists (add ! to override)");
+    }
+    if partial {
+        return write_lines(editor, file, range, false);
+    }
+    if current.is_none() {
+        return save_buffer(
+            editor,
+            SaveOpts {
+                path: Some(file),
+                force: ex.bang,
+            },
+        );
+    }
+    match editor.buffer().write_copy(file) {
+        Ok(()) => ok(written(file, editor)),
+        Err(error) => err(format!("Failed to save: {error}")),
+    }
+}
+
+/// Write the lines of `range` to `target` (replacing it, or appending) and
+/// leave the buffer's own state alone: it stays modified.
+fn write_lines(
+    editor: &mut Editor,
+    target: &str,
+    range: super::range::LineRange,
+    append: bool,
+) -> CommandResult {
+    let (start, end) = range.indexes();
+    match editor.buffer().write_lines(target, start, end, append) {
+        Ok(chars) => ok(report(
+            target,
+            end - start + 1,
+            chars,
+            if append { "appended" } else { "written" },
+        )),
+        Err(error) => err(format!("Failed to save: {error}")),
+    }
+}
+
+/// `:wq[!] [file]`, and `:x[it]` / `:exi[t]` which only write a modified
+/// buffer; both then quit like `:q`.
+fn write_then_quit(editor: &mut Editor, ex: &Ex, only_if_modified: bool) -> CommandResult {
+    let needs_write = !only_if_modified || !ex.args.is_empty() || editor.is_modified();
+    if needs_write {
+        let saved = save_buffer(
+            editor,
+            SaveOpts {
+                path: (!ex.args.is_empty()).then_some(ex.args),
+                force: ex.bang,
+            },
+        );
+        if let CommandResult::Error(_) = saved {
+            return saved;
+        }
+    }
+    match super::windows::close_or_quit(editor, ex.bang) {
+        CommandResult::Success(_) if editor.should_quit() && needs_write => {
+            ok("Saved and quitting")
+        }
+        other => other,
+    }
+}
+
+pub(super) fn write_quit(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    write_then_quit(editor, ex, false)
+}
+
+pub(super) fn xit(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    write_then_quit(editor, ex, true)
+}
+
+/// `:wa[ll][!]`: write every modified buffer. vim (nvim --clean): a
+/// modified unnamed buffer reports "E141: No file name for buffer N"
+/// without stopping the other writes.
+pub(super) fn write_all(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let (written, errors) = editor.write_all_modified_buffers(ex.bang);
+    if !errors.is_empty() {
+        return err(errors.join("; "));
+    }
+    if written == 0 {
+        return ok_silent();
+    }
+    ok(format!(
+        "{} buffer{} written",
+        written,
+        if written == 1 { "" } else { "s" }
+    ))
+}
+
+/// `:wqa[ll]` / `:xa[ll]`: write all, then quit.
+pub(super) fn write_all_quit(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let written = write_all(editor, ex);
+    if let CommandResult::Error(_) = written {
+        return written;
+    }
+    editor.quit();
+    ok("Quitting all")
+}
+
+/// `:up[date]`: write only when the buffer has unsaved changes.
+pub(super) fn update(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    if !editor.current_buffer_needs_write() {
+        return ok_silent();
+    }
+    save_buffer(
+        editor,
+        SaveOpts {
+            path: (!ex.args.is_empty()).then_some(ex.args),
+            force: ex.bang,
+        },
+    )
+}
+
+/// `:sav[eas][!] {file}`: write to `file` and make it the buffer's file.
+pub(super) fn save_as(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    if ex.args.is_empty() {
+        return err("E471: Argument required");
+    }
+    if !ex.bang && std::path::Path::new(ex.args).exists() {
+        return err("E13: File exists (add ! to override)");
+    }
+    save_buffer(
+        editor,
+        SaveOpts {
+            path: Some(ex.args),
+            force: ex.bang,
+        },
+    )
+}
+
+/// `:e[dit][!]` reloads the buffer's file; `:e[dit][!] {file}` opens one
+/// (a directory opens the file explorer).
+pub(super) fn edit(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    if ex.args.is_empty() {
+        reload_buffer(editor, ex.bang)
+    } else {
+        edit_file(editor, ex.args, ex.bang)
+    }
+}
+
+fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
+    if !force && editor.is_modified() {
+        return err("No write since last change (add ! to override)");
+    }
+    let Some(path) = editor.buffer().file_path().map(str::to_string) else {
+        return err(if force {
+            "No file to reload"
+        } else {
+            "No file name"
+        });
+    };
+    match editor.buffer_mut().reload_from_disk() {
+        Ok(_) => {
+            editor.mark_saved();
+            editor.mark_buffer_modified_force_send();
+            editor.refresh_git_state_after_reload(editor.current_buffer_index());
+            let line_count = editor.buffer().line_count();
+            ok(format!("\"{}\" {}L reloaded", path, line_count))
+        }
+        Err(e) => err(format!("Failed to reload: {}", e)),
+    }
+}
+
+fn edit_file(editor: &mut Editor, filename: &str, force: bool) -> CommandResult {
+    if !force && editor.is_modified() {
+        return err("No write since last change (add ! to override)");
+    }
+    open_file(editor, filename)
+}
+
+/// Open a file in the current window. The buffer it was showing stays loaded,
+/// so callers that keep it visible elsewhere (`:sp file`) skip the
+/// unsaved-changes check of [`edit_file`].
+pub(super) fn open_file(editor: &mut Editor, filename: &str) -> CommandResult {
+    let path = std::path::Path::new(filename);
+    if path.is_dir() {
+        return match editor.open_directory(path) {
+            Ok(()) => ok(format!("Exploring: {}", path.display())),
+            Err(error) => err(format!("Failed to open directory: {error}")),
+        };
+    }
+    match super::windows::open_or_create(editor, filename) {
+        Ok(false) => {
+            let name = editor
+                .buffer()
+                .file_path()
+                .map(str::to_string)
+                .unwrap_or_else(|| "[No Name]".to_string());
+            ok(format!("Editing: {}", name))
+        }
+        // vim: a file that does not exist yet opens as a new buffer.
+        Ok(true) => ok(format!("\"{filename}\" [New]")),
+        Err(e) => err(format!("Failed to load file: {}", e)),
+    }
+}
+
+/// `:checkt[ime]`: reload the file if another process changed it.
+pub(super) fn checktime(editor: &mut Editor, _ex: &Ex) -> CommandResult {
+    match editor.buffer().check_external_modification() {
+        Ok(true) if editor.is_modified() => err(
+            "W12: File changed on disk; local changes were kept (use :e! to reload or :w! to overwrite)",
+        ),
+        Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
+            Ok(true) => {
+                editor.mark_buffer_modified_force_send();
+                editor.refresh_git_state_after_reload(editor.current_buffer_index());
+                ok("File reloaded from disk (external changes detected)")
+            }
+            Ok(false) => ok("No external changes detected"),
+            Err(e) => err(format!("Failed to reload: {}", e)),
+        },
+        Ok(false) => ok("No external changes detected"),
+        Err(e) => err(format!("Failed to check file: {}", e)),
+    }
+}
+
+/// `:rec[over]`: restore the buffer from its swap file.
+pub(super) fn recover(editor: &mut Editor, _ex: &Ex) -> CommandResult {
+    if !editor.buffer().has_swap_file() {
+        return err("No swap file exists for this buffer");
+    }
+    match editor.buffer_mut().recover_from_swap_file() {
+        Ok(true) => ok("Buffer recovered from swap file"),
+        Ok(false) => err("Failed to recover: swap file is empty or missing"),
+        Err(e) => err(format!("Failed to recover: {}", e)),
+    }
+}
+
+/// `:f[ile]`: name, modified flag and position, like CTRL-G.
+pub(super) fn file_info(editor: &mut Editor, _ex: &Ex) -> CommandResult {
+    let name = editor
+        .buffer()
+        .file_path()
+        .map(|path| format!("\"{path}\""))
+        .unwrap_or_else(|| "\"[No Name]\"".to_string());
+    let modified = if editor.is_modified() {
+        " [Modified]"
+    } else {
+        ""
+    };
+    let line = editor.buffer().cursor().line() + 1;
+    let total = editor.buffer().line_count();
+    let percent = (line * 100).checked_div(total).unwrap_or(0);
+    ok(format!(
+        "{name}{modified} line {line} of {total} --{percent}%--"
+    ))
+}
+
+pub(super) fn pwd(_editor: &mut Editor, _ex: &Ex) -> CommandResult {
+    ok(std::env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "(unknown)".to_string()))
+}
+
+/// `:cd [dir]` / `:lc[d] [dir]` (no argument: the home directory).
+pub(super) fn cd(_editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let target = if ex.args.is_empty() {
+        match dirs::home_dir() {
+            Some(home) => home,
+            None => return err("Could not determine home directory"),
+        }
+    } else {
+        std::path::PathBuf::from(ex.args)
+    };
+    match std::env::set_current_dir(&target) {
+        Ok(()) => ok(target.display().to_string()),
+        Err(e) if ex.args.is_empty() => err(format!("Failed to cd: {e}")),
+        Err(e) => err(format!(
+            "E344: Can't find directory \"{}\" ({})",
+            ex.args, e
+        )),
+    }
+}
+
+#[cfg(test)]
+mod data_safety_tests {
+    use super::*;
+    use crate::command_result::CommandResult;
+
+    fn error_message(result: CommandResult) -> String {
+        match result {
+            CommandResult::Error(error) => error.error,
+            other => panic!("expected a command error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn checktime_keeps_local_edits_and_undo_when_the_file_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&path).unwrap();
+        assert!(matches!(
+            crate::commands::execute_command(&mut editor, "s/original/LOCAL/"),
+            CommandResult::Success(_)
+        ));
+        assert!(editor.is_modified());
+        assert_eq!(editor.buffer().change_manager().undo_stack.len(), 1);
+
+        std::fs::write(&path, "external content\n").unwrap();
+        editor
+            .buffer_mut()
+            .set_file_mtime(Some(std::time::UNIX_EPOCH));
+
+        let message = error_message(crate::commands::execute_command(&mut editor, "checktime"));
+        assert!(message.contains("File changed on disk"), "{message}");
+        assert!(message.contains(":e!"), "{message}");
+        assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+        assert!(editor.is_modified());
+        assert_eq!(editor.buffer().change_manager().undo_stack.len(), 1);
+
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "original\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn checktime_reloads_a_clean_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&path).unwrap();
+        std::fs::write(&path, "external content\n").unwrap();
+        editor
+            .buffer_mut()
+            .set_file_mtime(Some(std::time::UNIX_EPOCH));
+
+        let result = crate::commands::execute_command(&mut editor, "checktime");
+        assert!(matches!(&result, CommandResult::Success(_)), "{result:?}");
+        assert_eq!(editor.buffer().rope().to_string(), "external content\n");
+        assert!(!editor.is_modified());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn write_and_quit_commands_refuse_an_existing_other_file_without_bang() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+
+        for command in ["wq", "x"] {
+            let source = dir.path().join(format!("source-{command}.txt"));
+            std::fs::write(&source, "SOURCE\n").unwrap();
+            std::fs::write(&target, "KEEP ME\n").unwrap();
+
+            let mut editor = Editor::default();
+            editor.open_file(&source).unwrap();
+            crate::commands::execute_command(&mut editor, "s/SOURCE/EDITED/");
+
+            let result = crate::commands::execute_command(
+                &mut editor,
+                &format!("{command} {}", target.display()),
+            );
+            assert_eq!(
+                error_message(result),
+                "E13: File exists (add ! to override)"
+            );
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "KEEP ME\n");
+            let canonical_source = std::fs::canonicalize(&source).unwrap();
+            assert_eq!(editor.buffer().file_path(), canonical_source.to_str());
+            assert!(editor.is_modified());
+            assert!(!editor.should_quit());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn write_and_quit_allows_the_same_file_or_explicit_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+
+        for command in ["wq", "x"] {
+            let source = dir.path().join(format!("source-{command}.txt"));
+            std::fs::write(&source, "SOURCE\n").unwrap();
+            std::fs::write(&target, "OLD TARGET\n").unwrap();
+
+            let mut same_file = Editor::default();
+            same_file.open_file(&source).unwrap();
+            crate::commands::execute_command(&mut same_file, "s/SOURCE/EDITED/");
+            let result = crate::commands::execute_command(
+                &mut same_file,
+                &format!("{command} {}", source.display()),
+            );
+            assert!(matches!(&result, CommandResult::Success(_)), "{result:?}");
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "EDITED\n");
+            assert!(!same_file.is_modified());
+            assert!(same_file.should_quit());
+
+            let mut forced = Editor::default();
+            forced.open_file(&source).unwrap();
+            let result = crate::commands::execute_command(
+                &mut forced,
+                &format!("{command}! {}", target.display()),
+            );
+            assert!(matches!(&result, CommandResult::Success(_)), "{result:?}");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "EDITED\n");
+            assert!(!forced.is_modified());
+            assert!(forced.should_quit());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ordinary_writes_preserve_a_file_created_after_opening_a_new_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        for command in ["w", "wq", "x", "up", "wa"] {
+            let path = dir.path().join(format!("{command}.txt"));
+            let mut editor = Editor::default();
+            let opened =
+                crate::commands::execute_command(&mut editor, &format!("e {}", path.display()));
+            assert!(matches!(opened, CommandResult::Success(_)), "{opened:?}");
+            editor
+                .buffer_mut()
+                .insert_text_at(0, crate::unicode::CharCol(0), "LOCAL");
+            assert!(editor.is_modified());
+            assert!(editor.buffer().file_mtime().is_none());
+            std::fs::write(&path, "EXTERNAL\n").unwrap();
+
+            let message = error_message(crate::commands::execute_command(&mut editor, command));
+            assert!(message.contains("E13: File exists"), "{command}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "EXTERNAL\n");
+            assert!(editor.is_modified());
+            assert!(!editor.should_quit());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn forced_first_save_overwrites_and_deleted_loaded_file_is_recreated() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_path = dir.path().join("new.txt");
+        let mut new_editor = Editor::default();
+        crate::commands::execute_command(&mut new_editor, &format!("e {}", new_path.display()));
+        new_editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "LOCAL");
+        std::fs::write(&new_path, "EXTERNAL\n").unwrap();
+        let saved = crate::commands::execute_command(&mut new_editor, "w!");
+        assert!(matches!(saved, CommandResult::Success(_)), "{saved:?}");
+        assert!(std::fs::read_to_string(&new_path)
+            .unwrap()
+            .starts_with("LOCAL"));
+
+        let old_path = dir.path().join("old.txt");
+        std::fs::write(&old_path, "OLD\n").unwrap();
+        let mut loaded_editor = Editor::default();
+        loaded_editor.open_file(&old_path).unwrap();
+        loaded_editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "LOCAL ");
+        std::fs::remove_file(&old_path).unwrap();
+        let saved = crate::commands::execute_command(&mut loaded_editor, "w");
+        assert!(matches!(saved, CommandResult::Success(_)), "{saved:?}");
+        assert_eq!(std::fs::read_to_string(&old_path).unwrap(), "LOCAL OLD\n");
+    }
+}

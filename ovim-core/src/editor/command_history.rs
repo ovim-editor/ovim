@@ -38,6 +38,20 @@ impl Editor {
         }
     }
 
+    /// Removes everything before the command-line cursor (`CTRL-U`)
+    pub fn delete_command_line_to_start(&mut self) {
+        if self.command.input.delete_to_start() {
+            self.command.command_history_index = None;
+        }
+    }
+
+    /// Removes the word before the command-line cursor (`CTRL-W`)
+    pub fn delete_command_line_word(&mut self) {
+        if self.command.input.delete_word_backward() {
+            self.command.command_history_index = None;
+        }
+    }
+
     /// Removes the character at the command-line cursor
     pub fn delete_command_line_char(&mut self) {
         if self.command.input.delete() {

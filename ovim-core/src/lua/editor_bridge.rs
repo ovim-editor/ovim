@@ -1,10 +1,11 @@
 use crate::ai::{
-    default_api_key_env, infer_provider, parse_edit_format_str, parse_provider_str,
+    default_api_key_env, infer_provider_with_openai_key, parse_edit_format_str, parse_provider_str,
     AgentLoopConfig, AiProfileConfig, ApiKeyConfig, ChatContextConfig, ContextGatheringPolicy,
     DiagnosticScope, EditFormat, FileScope, ProfileScope, ProjectContextConfig, RetryPolicy,
 };
 use anyhow::Result;
-use std::collections::HashMap;
+use ropey::Rope;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// A thread-safe bridge between Lua and the Editor
@@ -19,8 +20,10 @@ struct EditorBridgeInner {
     pending_commands: Vec<String>,
     /// Current cursor position (line, column)
     cursor_pos: Option<(usize, usize)>,
-    /// Current buffer content (cached)
-    buffer_content: Option<String>,
+    /// Current buffer content. A rope clone is a cheap shared handle, so the
+    /// editor can refresh it every tick; text is only copied out when Lua
+    /// asks for it.
+    buffer_content: Option<Rope>,
     /// Current mode
     mode: Option<String>,
     /// Global variables (vim.g namespace)
@@ -47,6 +50,9 @@ struct EditorBridgeInner {
     agent_loop: AgentLoopConfig,
     /// Whether AI config has been modified since last sync
     ai_dirty: bool,
+    /// Pending authored chat context assignment, consumed by the editor.
+    ai_chat_context_assigned: bool,
+    ai_profiles_assigned: HashSet<String>,
 }
 
 /// AI profile configuration from Lua (before conversion to AiProfileConfig).
@@ -82,14 +88,37 @@ pub struct LuaProfileConfig {
     pub retry_fallback: Option<String>,
 }
 
+/// Whether the process environment holds an OpenAI API key.
+fn openai_key_in_environment() -> bool {
+    ["OPENAI_API_KEY", "OVIM_OPENAI_API_KEY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
 impl LuaProfileConfig {
     /// Convert to the engine's AiProfileConfig.
     pub fn into_profile_config(self, name: String) -> AiProfileConfig {
+        self.into_profile_config_with_environment(name, openai_key_in_environment())
+    }
+
+    fn into_profile_config_with_environment(
+        self,
+        name: String,
+        openai_key_in_environment: bool,
+    ) -> AiProfileConfig {
+        // A profile that names no provider but carries an API key means an
+        // API provider, not the Codex login a bare model name would select.
+        let openai_key_configured = openai_key_in_environment
+            || self.api_key.is_some()
+            || self
+                .api_key_env
+                .as_deref()
+                .is_some_and(|env| !env.is_empty());
         let provider = self
             .provider
             .as_deref()
             .and_then(parse_provider_str)
-            .unwrap_or_else(|| infer_provider(&self.model));
+            .unwrap_or_else(|| infer_provider_with_openai_key(&self.model, openai_key_configured));
 
         let scope = ProfileScope {
             files: match self.scope.as_deref() {
@@ -220,6 +249,8 @@ impl EditorBridge {
                 chat_context: ChatContextConfig::default(),
                 agent_loop: AgentLoopConfig::default(),
                 ai_dirty: false,
+                ai_chat_context_assigned: false,
+                ai_profiles_assigned: HashSet::new(),
             })),
         }
     }
@@ -271,7 +302,7 @@ impl EditorBridge {
     }
 
     /// Update the cached buffer content
-    pub fn update_buffer(&self, content: String) {
+    pub fn update_buffer(&self, content: Rope) {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -285,7 +316,7 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        inner.buffer_content.clone()
+        inner.buffer_content.as_ref().map(|rope| rope.to_string())
     }
 
     /// Update the cached mode
@@ -321,11 +352,14 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(ref content) = inner.buffer_content {
-            content.lines().nth(line).map(|s| s.to_string())
-        } else {
-            None
-        }
+        let slice = inner.buffer_content.as_ref()?.get_line(line)?;
+        let text = String::from(slice);
+        let text = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .or_else(|| text.strip_suffix('\r'))
+            .unwrap_or(&text);
+        Some(text.to_string())
     }
 
     // -----------------------------------------------------------------
@@ -337,8 +371,27 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        inner.ai_chat_context_assigned |= name == "chat";
         inner.ai_contexts.insert(name, profile);
         inner.ai_dirty = true;
+    }
+
+    /// Call once after builtins to distinguish defaults from authored settings,
+    /// then consume at each sync (including assignments of the same value).
+    pub fn take_ai_chat_context_assignment(&self) -> bool {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut inner.ai_chat_context_assigned)
+    }
+
+    pub fn take_ai_profile_assignments(&self) -> HashSet<String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut inner.ai_profiles_assigned)
     }
 
     pub fn get_ai_context(&self, name: &str) -> Option<String> {
@@ -371,6 +424,7 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        inner.ai_profiles_assigned.insert(name.clone());
         inner.ai_profiles.insert(name, config);
         inner.ai_dirty = true;
     }
@@ -483,10 +537,17 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(ref content) = inner.buffer_content {
-            content.lines().count()
-        } else {
+        let Some(ref content) = inner.buffer_content else {
+            return 0;
+        };
+        // Ropey counts an empty line after a trailing newline; `lines()` does not.
+        let lines = content.len_lines();
+        if content.len_chars() == 0 {
             0
+        } else if content.char(content.len_chars() - 1) == '\n' {
+            lines - 1
+        } else {
+            lines
         }
     }
 }
@@ -494,5 +555,78 @@ impl EditorBridge {
 impl Default for EditorBridge {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::AiProviderKind;
+
+    fn profile(model: &str) -> LuaProfileConfig {
+        LuaProfileConfig {
+            model: model.into(),
+            provider: None,
+            base_url: None,
+            api_key: None,
+            api_key_env: None,
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            tools: Vec::new(),
+            scope: None,
+            scope_shell: false,
+            scope_network: false,
+            edit_format: None,
+            chat_edit_format: None,
+            context_surrounding_lines: None,
+            context_symbols: None,
+            context_diagnostics: None,
+            context_related_slices: None,
+            context_budget: None,
+            max_tool_calls: None,
+            edit_prompt: None,
+            chat_prompt: None,
+            chat_edit_prompt: None,
+            reasoning_effort: None,
+            verbosity: None,
+            syntax_check: None,
+            retry_max: None,
+            retry_fallback: None,
+        }
+    }
+
+    fn provider_of(config: LuaProfileConfig, openai_key_in_environment: bool) -> AiProviderKind {
+        config
+            .into_profile_config_with_environment("p".into(), openai_key_in_environment)
+            .provider
+    }
+
+    #[test]
+    fn omitted_provider_keeps_a_configured_openai_key_on_the_api() {
+        for model in ["gpt-6-sol", "gpt-6-luna"] {
+            // No key anywhere: the Codex login.
+            assert_eq!(provider_of(profile(model), false), AiProviderKind::Codex);
+            // A key in the environment, as older configs relied on.
+            assert_eq!(provider_of(profile(model), true), AiProviderKind::OpenAi);
+            // A key configured on the profile itself.
+            let mut named = profile(model);
+            named.api_key = Some("openai".into());
+            assert_eq!(provider_of(named, false), AiProviderKind::OpenAi);
+            let mut env_named = profile(model);
+            env_named.api_key_env = Some("MY_OPENAI_KEY".into());
+            assert_eq!(provider_of(env_named, false), AiProviderKind::OpenAi);
+        }
+    }
+
+    #[test]
+    fn an_explicit_provider_always_wins_over_a_configured_key() {
+        let mut codex = profile("gpt-6-sol");
+        codex.provider = Some("codex".into());
+        codex.api_key_env = Some("OPENAI_API_KEY".into());
+        assert_eq!(provider_of(codex, true), AiProviderKind::Codex);
+        let mut openai = profile("gpt-6-sol");
+        openai.provider = Some("openai".into());
+        assert_eq!(provider_of(openai, false), AiProviderKind::OpenAi);
     }
 }

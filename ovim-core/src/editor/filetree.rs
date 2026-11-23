@@ -179,6 +179,8 @@ pub struct FileTree {
     root: Option<TreeNode>,
     /// Currently selected index in the flattened tree
     selected_index: usize,
+    /// Explicit reveal intent, including repeated reveals of the same selection.
+    reveal_generation: u32,
     /// Whether the file tree is visible
     visible: bool,
     /// Cached flattened tree for rendering
@@ -207,6 +209,7 @@ impl FileTree {
         Self {
             root: None,
             selected_index: 0,
+            reveal_generation: 0,
             visible: false,
             flattened: Vec::new(),
             scroll_offset: 0,
@@ -540,8 +543,14 @@ impl FileTree {
         false
     }
 
-    /// Reveals a path in the tree: expands all parent directories and selects the target
+    /// Changes only when a caller explicitly asks to reveal a path.
+    pub fn reveal_generation(&self) -> u32 {
+        self.reveal_generation
+    }
+
+    /// Expands ancestors and selects the target; frontends observe the reveal generation.
     pub fn reveal_path(&mut self, target: &Path) {
+        self.reveal_generation = self.reveal_generation.wrapping_add(1);
         let normalized = target
             .canonicalize()
             .unwrap_or_else(|_| target.to_path_buf());
@@ -850,6 +859,28 @@ impl FileTree {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Cannot rename a filesystem root"))?;
         Ok(parent.join(name))
+    }
+
+    /// Validates a rename and returns `(current path, new path)` without
+    /// touching the disk; `None` when the name is unchanged or empty. Lets
+    /// callers consult language servers (`willRenameFiles`) before renaming.
+    pub fn plan_rename(
+        &self,
+        original: &Path,
+        input: &str,
+    ) -> anyhow::Result<Option<(PathBuf, PathBuf)>> {
+        if input.is_empty() {
+            return Ok(None);
+        }
+        let target = self.resolve_rename_path(original, input)?;
+        let original = self.resolve_mutable_entry_path(original, "renamed")?;
+        if target == original {
+            return Ok(None);
+        }
+        if target.exists() {
+            anyhow::bail!("{} already exists", target.display());
+        }
+        Ok(Some((original, target)))
     }
 
     /// Rename an entry, returning `None` when the name is unchanged or empty.

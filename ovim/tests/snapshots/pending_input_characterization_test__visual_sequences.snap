@@ -1,0 +1,103 @@
+---
+source: ovim/tests/pending_input_characterization_test.rs
+expression: snapshot(visual_cases())
+---
+viw           | v[-] i[cmd=i] w[-] => Visual (1,11)
+vaw           | v[-] a[cmd=a] w[-] => Visual (1,12)
+vi(           | v[-] i[cmd=i] ([-] => Visual (1,8)
+va"           | v[-] a[cmd=a] "[-] => Visual (1,8)
+vip           | v[-] i[cmd=i] p[-] => VisualLine (2,5)
+vgg           | v[-] g[cmd=g] g[-] => Visual (0,0)
+vgn           | v[-] g[cmd=g] n[-] => Visual (1,8)
+vg<Esc>       | v[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+vgx           | v[-] g[cmd=g] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+v"ay          | v[-] "[cmd="] a[reg=a] y[-] => Normal (1,8) @"="b" @a="b"
+v"<Esc>       | v[-] "[cmd="] <Esc>[-] => Normal (1,8)
+vi<Esc>       | v[-] i[cmd=i] <Esc>[-] => Normal (1,8)
+vfa           | v[-] f[char=Find/None] a[-] => Visual (1,11)
+vta           | v[-] t[char=Till/None] a[-] => Visual (1,10)
+vra           | v[-] r[char=Replace/None] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha aeta gamma\nxdelta\n\nlast line here\n"
+vd            | v[-] d[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+vy            | v[-] y[-] => Normal (1,8) @"="b"
+vc<Esc>       | v[-] c[-] <Esc>[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+v<Esc>        | v[-] <Esc>[-] => Normal (1,8)
+vjd           | v[-] j[-] d[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta"
+vu            | v[-] u[-] => Normal (1,8)
+vU            | v[-] U[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+v~            | v[-] ~[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+v>            | v[-] >[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+v<Space><Esc> | v[-] <Space>[leader=[]] <Esc>[-] => Visual (1,8)
+v2iw          | v[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,12)
+vIX<Esc>      | v[-] I[-] X[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nX  alpha beta gamma\nxdelta\n\nlast line here\n"
+vAX<Esc>      | v[-] A[-] X[-] <Esc>[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha bXeta gamma\nxdelta\n\nlast line here\n"
+v$AX<Esc>     | v[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,18) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
+vjIX<Esc>     | v[-] j[-] I[-] X[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nX  alpha beta gamma\nxdelta\n\nlast line here\n"
+vjAX<Esc>     | v[-] j[-] A[-] X[-] <Esc>[-] => Normal (2,6) text="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdeltaX\n\nlast line here\n"
+vjcX<Esc>     | v[-] j[-] c[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha X\n\nlast line here\n" @"="beta gamma\nxdelta"
+vj$AX<Esc>    | v[-] j[-] $[-] A[-] X[-] <Esc>[-] => Normal (2,6) text="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdeltaX\n\nlast line here\n"
+Viw           | V[-] i[cmd=i] w[-] => Visual (1,11)
+Vaw           | V[-] a[cmd=a] w[-] => Visual (1,12)
+Vi(           | V[-] i[cmd=i] ([-] => VisualLine (1,8)
+Va"           | V[-] a[cmd=a] "[-] => VisualLine (1,8)
+Vip           | V[-] i[cmd=i] p[-] => VisualLine (2,5)
+Vgg           | V[-] g[cmd=g] g[-] => VisualLine (0,0)
+Vgn           | V[-] g[cmd=g] n[-] => VisualLine (1,8)
+Vg<Esc>       | V[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+Vgx           | V[-] g[cmd=g] x[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+V"ay          | V[-] "[cmd="] a[reg=a] y[-] => Normal (1,0) @"="  alpha beta gamma\n" @a="  alpha beta gamma\n"
+V"<Esc>       | V[-] "[cmd="] <Esc>[-] => Normal (1,8)
+Vi<Esc>       | V[-] i[cmd=i] <Esc>[-] => Normal (1,8)
+Vfa           | V[-] f[char=Find/None] a[-] => VisualLine (1,11)
+Vta           | V[-] t[char=Till/None] a[-] => VisualLine (1,10)
+Vra           | V[-] r[char=Replace/None] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\naaaaaaaaaaaaaaaaaa\nxdelta\n\nlast line here\n"
+Vd            | V[-] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+Vy            | V[-] y[-] => Normal (1,0) @"="  alpha beta gamma\n"
+Vc<Esc>       | V[-] c[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+V<Esc>        | V[-] <Esc>[-] => Normal (1,8)
+Vjd           | V[-] j[-] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
+Vu            | V[-] u[-] => Normal (1,0)
+VU            | V[-] U[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+V~            | V[-] ~[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+V>            | V[-] >[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+V<Space><Esc> | V[-] <Space>[leader=[]] <Esc>[-] => VisualLine (1,8)
+V2iw          | V[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,12)
+VIX<Esc>      | V[-] I[-] X[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nX  alpha beta gamma\nxdelta\n\nlast line here\n"
+VAX<Esc>      | V[-] A[-] X[-] <Esc>[-] => Normal (1,18) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
+V$AX<Esc>     | V[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,18) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
+VjIX<Esc>     | V[-] j[-] I[-] X[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nX  alpha beta gamma\nxdelta\n\nlast line here\n"
+VjAX<Esc>     | V[-] j[-] A[-] X[-] <Esc>[-] => Normal (2,6) text="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdeltaX\n\nlast line here\n"
+VjcX<Esc>     | V[-] j[-] c[-] X[-] <Esc>[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  X\n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
+Vj$AX<Esc>    | V[-] j[-] $[-] A[-] X[-] <Esc>[-] => Normal (2,6) text="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdeltaX\n\nlast line here\n"
+<C-v>iw       | <C-v>[-] i[cmd=i] w[-] => Visual (1,11)
+<C-v>aw       | <C-v>[-] a[cmd=a] w[-] => Visual (1,12)
+<C-v>i(       | <C-v>[-] i[cmd=i] ([-] => VisualBlock (1,8)
+<C-v>a"       | <C-v>[-] a[cmd=a] "[-] => VisualBlock (1,8)
+<C-v>ip       | <C-v>[-] i[cmd=i] p[-] => VisualLine (2,5)
+<C-v>gg       | <C-v>[-] g[cmd=g] g[-] => VisualBlock (0,8)
+<C-v>gn       | <C-v>[-] g[cmd=g] n[-] => VisualBlock (1,8)
+<C-v>g<Esc>   | <C-v>[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+<C-v>gx       | <C-v>[-] g[cmd=g] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+<C-v>"ay      | <C-v>[-] "[cmd="] a[reg=a] y[-] => Normal (1,8) @"="b" @a="b"
+<C-v>"<Esc>   | <C-v>[-] "[cmd="] <Esc>[-] => Normal (1,8)
+<C-v>i<Esc>   | <C-v>[-] i[cmd=i] <Esc>[-] => Normal (1,8)
+<C-v>fa       | <C-v>[-] f[char=Find/None] a[-] => VisualBlock (1,11)
+<C-v>ta       | <C-v>[-] t[char=Till/None] a[-] => VisualBlock (1,10)
+<C-v>ra       | <C-v>[-] r[char=Replace/None] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha aeta gamma\nxdelta\n\nlast line here\n"
+<C-v>d        | <C-v>[-] d[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+<C-v>y        | <C-v>[-] y[-] => Normal (1,8) @"="b"
+<C-v>c<Esc>   | <C-v>[-] c[-] <Esc>[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+<C-v><Esc>    | <C-v>[-] <Esc>[-] => Normal (1,8)
+<C-v>jd       | <C-v>[-] j[-] d[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b\n"
+<C-v>u        | <C-v>[-] u[-] => Normal (1,8)
+<C-v>U        | <C-v>[-] U[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+<C-v>~        | <C-v>[-] ~[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+<C-v>>        | <C-v>[-] >[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+<C-v><Space><Esc>| <C-v>[-] <Space>[leader=[]] <Esc>[-] => VisualBlock (1,8)
+<C-v>2iw      | <C-v>[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,12)
+<C-v>IX<Esc>  | <C-v>[-] I[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Xbeta gamma\nxdelta\n\nlast line here\n"
+<C-v>AX<Esc>  | <C-v>[-] A[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha bXeta gamma\nxdelta\n\nlast line here\n"
+<C-v>$AX<Esc> | <C-v>[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
+<C-v>jIX<Esc> | <C-v>[-] j[-] I[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Xbeta gamma\nxdelta\n\nlast line here\n"
+<C-v>jAX<Esc> | <C-v>[-] j[-] A[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha bXeta gamma\nxdelta   X\n\nlast line here\n"
+<C-v>jcX<Esc> | <C-v>[-] j[-] c[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Xeta gamma\nxdelta\n\nlast line here\n" @"="b\n"
+<C-v>j$AX<Esc>| <C-v>[-] j[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdeltaX\n\nlast line here\n"

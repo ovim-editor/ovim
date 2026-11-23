@@ -2,14 +2,15 @@
 
 use super::browser::BrowserHost;
 use super::{
-    GuiBridge, GuiConnection, GuiKeyInput, GuiSnapshot, GuiVectorSource, RemoteLaunch,
-    RemoteTransport,
+    GuiBridge, GuiChatInputState, GuiConnection, GuiKeyInput, GuiMouseKind, GuiSnapshot,
+    GuiTerminalRequest, GuiVectorSource, RemoteLaunch, RemoteTransport,
 };
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use serde::Serialize;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -22,32 +23,153 @@ use tauri::{DragDropEvent, Emitter, EventTarget, Manager, RunEvent, State, Windo
 #[derive(Clone, Default)]
 struct GuiExitGate(Arc<AtomicBool>);
 
-// The diff is computed by whichever host runs the editor, not here. Reading a
-// Git worktree from this process would only work while the editor happens to
-// be local, so both commands are plain passthroughs to the bridge.
 #[tauri::command]
-async fn gui_diff_state(
+async fn gui_diff_action(
     bridge: State<'_, GuiBridge>,
-    spec: Option<String>,
-) -> Result<ovim_core::native_diff::DiffReview, String> {
-    bridge
-        .diff_review(spec)
-        .await
-        .map_err(|error| format!("Could not read diff: {error}"))
+    pane: usize,
+    buffer_id: u64,
+    action: String,
+) -> Result<(), String> {
+    bridge.diff_action(pane, buffer_id, action).await
 }
 
 #[tauri::command]
-async fn gui_diff_open_file(
+async fn gui_diff_comment(
     bridge: State<'_, GuiBridge>,
-    spec: Option<String>,
-    path: String,
+    pane: usize,
+    buffer_id: u64,
+    comment: super::diff::GuiDiffCommentInput,
 ) -> Result<(), String> {
-    let content = bridge
-        .diff_file_patch(spec, path.clone())
+    bridge.diff_comment(pane, buffer_id, comment).await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffExportKind {
+    Png,
+    Zip,
+}
+
+impl DiffExportKind {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Zip => "zip",
+        }
+    }
+
+    fn filter_name(self) -> &'static str {
+        match self {
+            Self::Png => "PNG image",
+            Self::Zip => "ZIP archive",
+        }
+    }
+}
+
+fn validate_diff_export(filename: &str, data: &[u8]) -> Result<DiffExportKind, String> {
+    if filename.is_empty()
+        || filename.len() > 128
+        || filename.starts_with('.')
+        || filename.chars().any(|character| {
+            !character.is_ascii_alphanumeric()
+                && !matches!(character, ' ' | '-' | '_' | '.' | '(' | ')')
+        })
+    {
+        return Err("Diff export filename must be a simple filename".to_string());
+    }
+    let kind = match Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => DiffExportKind::Png,
+        Some("zip") => DiffExportKind::Zip,
+        _ => return Err("Diff export must be a PNG or ZIP file".to_string()),
+    };
+    if data.is_empty() {
+        return Err("Diff export must not be empty".to_string());
+    }
+    let valid_signature = match kind {
+        DiffExportKind::Png => data.starts_with(b"\x89PNG\r\n\x1a\n"),
+        DiffExportKind::Zip => data.starts_with(b"PK\x03\x04"),
+    };
+    if !valid_signature {
+        return Err(format!(
+            "Diff export is not a valid {} file",
+            kind.extension()
+        ));
+    }
+    Ok(kind)
+}
+
+fn save_diff_export_at(path: &Path, data: &[u8], kind: DiffExportKind) -> Result<(), String> {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(kind.extension()))
+    {
+        return Err(format!("Choose a .{} filename", kind.extension()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Choose a destination folder for the diff export".to_string())?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".ovim-diff-export-")
+        .tempfile_in(parent)
+        .map_err(|error| format!("Could not prepare diff export: {error}"))?;
+    temporary
+        .write_all(data)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("Could not write diff export: {error}"))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("Could not save diff export: {}", error.error))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn gui_save_diff_export(request: Request<'_>, window: Window) -> Result<bool, String> {
+    let data = match request.body() {
+        InvokeBody::Raw(data) => data.clone(),
+        InvokeBody::Json(_) => {
+            return Err("Diff export requires a binary request body".to_string());
+        }
+    };
+    let filename = request
+        .headers()
+        .get("x-ovim-export-filename")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "Diff export filename is missing".to_string())?;
+    let kind = validate_diff_export(filename, &data)?;
+    let destination = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("Save diff export")
+        .set_file_name(filename)
+        .add_filter(kind.filter_name(), &[kind.extension()])
+        .save_file()
+        .await;
+    let Some(destination) = destination else {
+        return Ok(false);
+    };
+    let path = destination.path().to_path_buf();
+    tokio::task::spawn_blocking(move || save_diff_export_at(&path, &data, kind))
         .await
-        .map_err(|error| format!("Could not open diff: {error}"))?;
+        .map_err(|error| format!("Diff export task stopped: {error}"))??;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn gui_open_diff_source(
+    bridge: State<'_, GuiBridge>,
+    pane: usize,
+    buffer_id: u64,
+    path: String,
+    line: usize,
+    side: String,
+    definition_column: Option<u32>,
+) -> Result<(), String> {
     bridge
-        .open_diff_buffer(format!("Diff · {path}"), content)
+        .open_diff_source(pane, buffer_id, path, line, side, definition_column)
         .await
 }
 
@@ -202,7 +324,9 @@ async fn gui_subscribe(
     columns: u16,
     rows: u16,
     on_event: Channel<GuiSnapshot>,
+    on_terminal_request: Channel<GuiTerminalRequest>,
 ) -> Result<(), String> {
+    let mut terminals = bridge.subscribe_terminal_requests();
     bridge.snapshot(columns, rows).await?;
     let mut updates = bridge.subscribe();
     if let Some(snapshot) = updates.borrow_and_update().clone() {
@@ -210,11 +334,26 @@ async fn gui_subscribe(
     }
 
     tauri::async_runtime::spawn(async move {
-        while updates.changed().await.is_ok() {
-            let update = updates.borrow_and_update().clone();
-            let Some(snapshot) = update else { continue };
-            if on_event.send(snapshot).is_err() {
-                break;
+        // A remote editor hands this window no terminals (its sender is gone
+        // from the start), which must not end the snapshot stream with it.
+        let mut terminals_open = true;
+        loop {
+            tokio::select! {
+                changed = updates.changed() => {
+                    if changed.is_err() { break; }
+                    let update = updates.borrow_and_update().clone();
+                    let Some(snapshot) = update else { continue };
+                    if on_event.send(snapshot).is_err() { break; }
+                }
+                changed = terminals.changed(), if terminals_open => {
+                    if changed.is_err() {
+                        terminals_open = false;
+                        continue;
+                    }
+                    let request = terminals.borrow_and_update().clone();
+                    let Some(request) = request else { continue };
+                    if on_terminal_request.send(request).is_err() { break; }
+                }
             }
         }
     });
@@ -305,6 +444,15 @@ async fn gui_attach_image(
 }
 
 #[tauri::command]
+async fn gui_position_walkthrough(
+    bridge: State<'_, GuiBridge>,
+    current: usize,
+    rows: usize,
+) -> Result<(), String> {
+    bridge.position_walkthrough(current, rows).await
+}
+
+#[tauri::command]
 async fn gui_set_cursor(
     bridge: State<'_, GuiBridge>,
     pane: usize,
@@ -312,6 +460,36 @@ async fn gui_set_cursor(
     display_column: usize,
 ) -> Result<(), String> {
     bridge.set_cursor(pane, line, display_column).await
+}
+
+#[tauri::command]
+async fn gui_code_lens(
+    bridge: State<'_, GuiBridge>,
+    pane: usize,
+    file_path: String,
+    version: usize,
+    index: usize,
+    generation: u64,
+    mode: String,
+) -> Result<(), String> {
+    bridge
+        .code_lens(pane, file_path, version, index, generation, mode)
+        .await
+}
+
+#[tauri::command]
+async fn gui_mouse(
+    bridge: State<'_, GuiBridge>,
+    pane: usize,
+    line: usize,
+    display_column: usize,
+    kind: GuiMouseKind,
+    click_count: u8,
+    shift: bool,
+) -> Result<(), String> {
+    bridge
+        .mouse(pane, line, display_column, kind, click_count, shift)
+        .await
 }
 
 #[tauri::command]
@@ -335,7 +513,7 @@ async fn gui_update_chat_input(
     input: String,
     cursor: usize,
     action: Option<GuiKeyInput>,
-) -> Result<(), String> {
+) -> Result<GuiChatInputState, String> {
     bridge
         .update_chat_input(expected_input, expected_cursor, input, cursor, action)
         .await
@@ -358,8 +536,9 @@ async fn gui_remove_chat_image(bridge: State<'_, GuiBridge>, index: usize) -> Re
 async fn gui_select_ai_profile(
     bridge: State<'_, GuiBridge>,
     profile: String,
+    model: Option<String>,
 ) -> Result<(), String> {
-    bridge.select_ai_profile(profile).await
+    bridge.select_ai_profile(profile, model).await
 }
 
 #[tauri::command]
@@ -371,13 +550,33 @@ async fn gui_select_reasoning_effort(
 }
 
 #[tauri::command]
-async fn gui_ai_policy(bridge: State<'_, GuiBridge>, action: String) -> Result<(), String> {
-    bridge.ai_policy(action).await
+async fn gui_select_permission_mode(
+    bridge: State<'_, GuiBridge>,
+    mode: String,
+) -> Result<(), String> {
+    bridge.select_permission_mode(mode).await
+}
+
+#[tauri::command]
+async fn gui_ai_policy(
+    bridge: State<'_, GuiBridge>,
+    action: String,
+    target: Option<String>,
+) -> Result<(), String> {
+    bridge.ai_policy(action, target).await
 }
 
 #[tauri::command]
 async fn gui_editor_command(bridge: State<'_, GuiBridge>, command: String) -> Result<(), String> {
     bridge.editor_command(command).await
+}
+
+#[tauri::command]
+async fn gui_replay_chat_tool(
+    bridge: State<'_, GuiBridge>,
+    tool_call_id: String,
+) -> Result<(), String> {
+    bridge.replay_chat_tool(tool_call_id).await
 }
 
 #[tauri::command]
@@ -405,6 +604,11 @@ async fn gui_select_chat_agent(
 #[tauri::command]
 async fn gui_select_tab(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
     bridge.select_tab(index).await
+}
+
+#[tauri::command]
+async fn gui_scroll(bridge: State<'_, GuiBridge>, pane: usize, lines: i32) -> Result<(), String> {
+    bridge.scroll(pane, lines).await
 }
 
 #[tauri::command]
@@ -452,6 +656,34 @@ async fn gui_select_lsp(
     activate: bool,
 ) -> Result<(), String> {
     bridge.select_lsp(index, activate).await
+}
+
+#[tauri::command]
+async fn gui_search_replace_row(
+    bridge: State<'_, GuiBridge>,
+    index: usize,
+    action: String,
+) -> Result<(), String> {
+    bridge.search_replace_row(index, action).await
+}
+
+#[tauri::command]
+async fn gui_debug_panel_row(
+    bridge: State<'_, GuiBridge>,
+    index: usize,
+    action: String,
+) -> Result<(), String> {
+    bridge.debug_panel_row(index, action).await
+}
+
+#[tauri::command]
+async fn gui_toggle_breakpoint(bridge: State<'_, GuiBridge>, line: usize) -> Result<(), String> {
+    bridge.toggle_breakpoint(line).await
+}
+
+#[tauri::command]
+async fn gui_toggle_fold(bridge: State<'_, GuiBridge>, line: usize) -> Result<(), String> {
+    bridge.toggle_fold(line).await
 }
 
 #[tauri::command]
@@ -516,6 +748,8 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
     std::hint::black_box(tauri::utils::platform::bundle_type());
     crate::lsp_init::set_headless_mode(false);
     let _ = crate::lsp::init_lsp_logging();
+    #[cfg(target_os = "macos")]
+    super::mac_text_input::disable_text_substitutions();
 
     let (browser_client, browser_requests) = ovim_core::browser::browser_channel();
     let browser_host = BrowserHost::new(browser_requests);
@@ -548,9 +782,14 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
     let application = tauri::Builder::default()
         .manage(bridge)
         .manage(browser_host)
+        .manage(super::terminal::TerminalHost::new())
         .manage(exit_gate)
         .invoke_handler(tauri::generate_handler![
             gui_snapshot,
+            gui_diff_action,
+            gui_diff_comment,
+            gui_save_diff_export,
+            gui_open_diff_source,
             gui_vector_preview,
             gui_vector_feedback,
             gui_subscribe,
@@ -561,6 +800,9 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
             gui_paste,
             gui_attach_image,
             gui_set_cursor,
+            gui_mouse,
+            gui_code_lens,
+            gui_position_walkthrough,
             gui_open_ai_chat,
             gui_set_chat_input_cursor,
             gui_update_chat_input,
@@ -568,23 +810,33 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
             gui_remove_chat_image,
             gui_select_ai_profile,
             gui_select_reasoning_effort,
+            gui_select_permission_mode,
             gui_ai_policy,
             gui_editor_command,
             gui_select_chat_message,
+            gui_replay_chat_tool,
             gui_manage_queued_chat_input,
             gui_select_chat_agent,
             gui_select_tab,
             gui_focus_pane,
+            gui_scroll,
             gui_select_picker,
             gui_select_completion,
             gui_select_file_tree,
             gui_select_problem,
+            gui_search_replace_row,
             gui_select_lsp,
             gui_select_debug_frame,
+            gui_debug_panel_row,
+            gui_toggle_breakpoint,
+            gui_toggle_fold,
             gui_window_action,
             gui_open_external,
-            gui_diff_state,
-            gui_diff_open_file,
+            super::terminal::gui_terminal_open,
+            super::terminal::gui_terminal_write,
+            super::terminal::gui_terminal_ack,
+            super::terminal::gui_terminal_resize,
+            super::terminal::gui_terminal_close,
             super::menu::gui_set_menu_surface,
             super::window::gui_open_project_dialog,
             super::window::gui_open_project_window,
@@ -603,6 +855,24 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
             let menu = super::menu::install(app)?;
             app.manage(menu);
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(error) = window.with_webview(|webview| {
+                        if let Err(error) = super::mac_arrow_keys::install(webview) {
+                            let _ = std::io::stderr().write_all(
+                                format!("Failed to install macOS arrow-key handler: {error:#}\n")
+                                    .as_bytes(),
+                            );
+                        }
+                    }) {
+                        let _ = std::io::stderr().write_all(
+                            format!(
+                                "Failed to access the main webview for arrow keys: {error:#}\n"
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                }
                 let browser_host = app.state::<BrowserHost>().inner().clone();
                 browser_host
                     .attach(window.as_ref().window())
@@ -687,6 +957,7 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
             }
         }
         RunEvent::Exit => {
+            handle.state::<super::terminal::TerminalHost>().shutdown();
             if let Some(bridge) = &shutdown_bridge {
                 bridge.shutdown();
             }
@@ -715,7 +986,7 @@ mod vector_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_external_url;
+    use super::{save_diff_export_at, validate_diff_export, validate_external_url, DiffExportKind};
 
     #[test]
     fn external_links_are_limited_to_non_executable_schemes() {
@@ -724,5 +995,54 @@ mod tests {
         assert!(validate_external_url("javascript:alert(1)").is_err());
         assert!(validate_external_url("file:///etc/passwd").is_err());
         assert!(validate_external_url("https://example.com\nfile:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn diff_export_rejects_unsafe_names_and_mismatched_content() {
+        let png = b"\x89PNG\r\n\x1a\nimage";
+        let zip = b"PK\x03\x04archive";
+        assert_eq!(
+            validate_diff_export("review.png", png).unwrap(),
+            DiffExportKind::Png
+        );
+        assert_eq!(
+            validate_diff_export("review.zip", zip).unwrap(),
+            DiffExportKind::Zip
+        );
+        for unsafe_name in [
+            "../review.png",
+            "folder/review.png",
+            "folder\\review.png",
+            ".hidden.png",
+            "review:copy.png",
+        ] {
+            assert!(validate_diff_export(unsafe_name, png).is_err());
+        }
+        assert!(validate_diff_export("review.zip", png).is_err());
+        assert!(validate_diff_export("review.png", zip).is_err());
+        assert!(validate_diff_export("review.png", &[]).is_err());
+    }
+
+    #[test]
+    fn diff_export_accepts_content_above_the_previous_size_limit() {
+        let mut data = vec![0; 64 * 1024 * 1024 + 1];
+        data[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            validate_diff_export("review.png", &data).unwrap(),
+            DiffExportKind::Png
+        );
+    }
+
+    #[test]
+    fn diff_export_writes_only_to_the_selected_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("review.png");
+        let data = b"\x89PNG\r\n\x1a\nimage";
+        save_diff_export_at(&path, data, DiffExportKind::Png).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), data);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        let wrong_extension = directory.path().join("review.zip");
+        assert!(save_diff_export_at(&wrong_extension, data, DiffExportKind::Png).is_err());
+        assert!(!wrong_extension.exists());
     }
 }

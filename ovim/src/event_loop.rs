@@ -11,12 +11,33 @@ use tokio::time::{interval, Duration, Instant};
 use ovim::api::ApiRequest;
 use ovim::editor::{handle_mouse_event, Editor, InputHandler};
 use ovim::frontend::{
-    handle_viewport_resize, process_editor_tick, process_external_file_change,
-    process_picker_results, refresh_after_input, FrontendChannels,
+    handle_viewport_resize, process_external_file_change, refresh_after_input, TerminalRequest,
+    TickState,
 };
 use ovim::gui::server::GuiServer;
 use ovim::session::SessionInfo;
 use ovim::ui::UI;
+
+/// Longest the input branch may skip painting while draining queued input.
+/// Two frames at the 16ms tick keeps fast typing smooth while guaranteeing
+/// a repaint during a long backlog.
+const MAX_RENDER_SKIP: Duration = Duration::from_millis(33);
+
+/// Anything awaited inline on the editor task above this budget is a UI
+/// freeze: no input is read and no frame is painted until it returns.
+const SLOW_LOOP_STEP: Duration = Duration::from_millis(100);
+
+fn warn_if_slow(step: &str, started: Instant) {
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_LOOP_STEP {
+        ovim_core::log_warn!(
+            "event_loop",
+            "{} blocked the editor loop for {:?}",
+            step,
+            elapsed
+        );
+    }
+}
 
 fn emit_agent_attention_bell(output: &mut impl Write) -> io::Result<()> {
     output.write_all(b"\x07")?;
@@ -60,7 +81,7 @@ fn execute_terminal_session(ui: &mut UI, editor: &mut Editor, command: Option<&s
         .stderr(Stdio::inherit())
         .status();
 
-    if let Err(e) = ui.terminal_mut().resume() {
+    if let Err(e) = ui.resume() {
         #[allow(clippy::print_stderr)]
         {
             eprintln!("Failed to resume terminal: {e}");
@@ -103,21 +124,18 @@ fn notify_new_agent_attention(editor: &Editor, observed_generation: &mut u64) {
 pub async fn run_headless_loop(
     editor: &mut Editor,
     mut api_rx: mpsc::Receiver<ApiRequest>,
-    java_status_rx: mpsc::Receiver<String>,
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
     initial_dimensions: (u16, u16),
     mut gui: GuiServer,
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut channels = FrontendChannels::new(java_status_rx);
+    let mut tick_state = TickState::new();
     let mut lsp_interval = interval(Duration::from_millis(50));
     lsp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Reused across `GetRender` requests so identical-dimension polls
     // skip the full ratatui+highlight pipeline (OV-00181).
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
-    let mut last_edit = Instant::now();
-    let mut last_external_file_check = Instant::now();
 
     // A TUI paints its first frame before a person can type. Establish the
     // same layout and viewport contract before accepting headless requests.
@@ -130,32 +148,26 @@ pub async fn run_headless_loop(
                 break;
             }
             Some(request) = api_rx.recv() => {
-                let version_before = editor.buffer().version();
                 crate::api_dispatch::handle_api_request(editor, request, start_time, &session_info, &mut render_cache).await;
-                if editor.buffer().version() != version_before {
-                    last_edit = Instant::now();
-                }
                 // Automation and a watching frontend share one editor, so a
                 // keystroke sent over `/v1/keys` has to reach the stream too.
                 gui.publish(editor);
                 if editor.should_quit() { break; }
             }
             Some(request) = gui.recv() => {
-                let version_before = editor.buffer().version();
                 let keep_running = gui.handle(request, editor).await;
-                if editor.buffer().version() != version_before {
-                    last_edit = Instant::now();
-                }
                 // Publish before checking for shutdown so the frontend sees the
                 // result of its own command rather than waiting for the tick.
                 gui.publish(editor);
                 if !keep_running || editor.should_quit() { break; }
             }
-            Some((path, cache)) = channels.preview_rx.recv() => {
+            // The tick delivers picker results too; these arms only make a
+            // headless client see them without waiting for the next tick.
+            Some((path, cache)) = tick_state.preview_rx.recv() => {
                 editor.insert_preview(path, cache);
                 editor.mark_dirty();
             }
-            Some(first) = channels.file_rx.recv() => {
+            Some(first) = tick_state.file_rx.recv() => {
                 let mut added = false;
                 if let Some(picker) = editor.picker_mut() {
                     // Headless has no frame budget to protect; drain whatever
@@ -171,7 +183,7 @@ pub async fn run_headless_loop(
                             }
                             added = true;
                         }
-                        next = channels.file_rx.try_recv().ok();
+                        next = tick_state.file_rx.try_recv().ok();
                     }
                 }
                 if added {
@@ -179,15 +191,19 @@ pub async fn run_headless_loop(
                 }
             }
             _ = lsp_interval.tick() => {
-                process_editor_tick(editor, &mut channels).await;
-                if last_external_file_check.elapsed() >= Duration::from_millis(500) {
-                    process_external_file_change(editor);
-                    last_external_file_check = Instant::now();
+                let report = editor.tick(&mut tick_state).await;
+                if let Some(request) = report.terminal_request {
+                    // No terminal is attached to a headless session. (The API
+                    // `exec` path already rejects `:terminal` synchronously.)
+                    editor.set_status_message(format!(
+                        "{} needs a terminal; a headless session cannot run it",
+                        request.describe()
+                    ));
                 }
-                if editor.buffer().needs_rehighlight()
-                    && last_edit.elapsed() >= Duration::from_millis(200)
-                {
-                    editor.process_pending_rehighlight().await;
+                // A frontend driving this session from another host cannot
+                // have a window opened for it from here.
+                if report.window_open.is_some() {
+                    editor.set_status_message(ovim::editor::WINDOW_FRONTEND_REQUIRED.to_string());
                 }
                 // Also the tick on which a newly arrived subscriber is noticed,
                 // so its first frame never waits for the next edit.
@@ -251,7 +267,7 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
     let _ = std::io::stdin().read_line(&mut String::new());
 
     // Restore the TUI
-    if let Err(e) = ui.terminal_mut().resume() {
+    if let Err(e) = ui.resume() {
         // If resume fails, the Drop impl will try to clean up
         #[allow(clippy::print_stderr)]
         {
@@ -276,19 +292,15 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
 }
 
 /// Process a batch of terminal input events.
-/// Returns true if any events were edit-related (for debounce tracking).
-fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool> {
-    let mut had_edit = false;
+fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<()> {
     for event in events {
         match event {
             Event::Key(key_event) => {
                 let key = convert_key_event(key_event);
                 InputHandler::handle_key_event_no_dirty(editor, key)?;
-                had_edit = true;
             }
             Event::Paste(text) => {
                 editor.handle_paste_event(&text)?;
-                had_edit = true;
             }
             Event::Resize(w, h) => {
                 // Keep cached viewport geometry in sync with the terminal size so vertical
@@ -305,25 +317,23 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                 process_external_file_change(editor);
             }
             Event::Mouse(mouse_event) => {
-                if editor.has_codex_auth_dialog() {
+                if editor.has_codex_auth_dialog() || editor.has_provider_choice_dialog() {
                     continue;
                 }
-                // Skip mouse-move events — they don't change editor state and
-                // would otherwise trigger unnecessary redraws on every movement.
                 if matches!(mouse_event.kind, crossterm::event::MouseEventKind::Moved) {
+                    // Blame hover marks dirty only when the hovered line changes.
+                    handle_mouse_event(editor, convert_mouse_event(mouse_event))?;
                     continue;
                 }
                 let mouse = convert_mouse_event(mouse_event);
                 if let Some(url) = handle_mouse_event(editor, mouse)? {
                     let _ = open::that_in_background(&url);
-                    continue;
                 }
-                had_edit = true;
             }
             _ => {}
         }
     }
-    Ok(had_edit)
+    Ok(())
 }
 
 fn api_session_info(editor: &Editor) -> SessionInfo {
@@ -343,20 +353,55 @@ fn api_session_info(editor: &Editor) -> SessionInfo {
     info
 }
 
+/// The background work the TUI owes every frame: the core tick, plus running
+/// any `:!`/`:terminal` command it hands over with the real terminal.
+///
+/// Factored out because the `select!` tick branch is not the only caller. The
+/// loop is `biased` with terminal input first, so a terminal that generates
+/// input faster than the loop consumes it would otherwise never let the tick
+/// branch run, and results would pile up undelivered. The input branch calls
+/// this too once a frame has elapsed, which makes the tick unstarvable.
+async fn run_tick_work(
+    ui: &mut UI,
+    editor: &mut Editor,
+    tick_state: &mut TickState,
+    event_stream: &mut Option<EventStream>,
+) {
+    let tick_start = Instant::now();
+    let report = editor.tick(tick_state).await;
+    warn_if_slow("editor tick", tick_start);
+    // `:openwin` targets the GUI, where each project window is its own
+    // process. A terminal frontend has no window to spawn.
+    if report.window_open.is_some() {
+        editor.set_status_message(ovim::editor::WINDOW_FRONTEND_REQUIRED.to_string());
+    }
+    let Some(request) = report.terminal_request else {
+        return;
+    };
+    // A pending EventStream poll has a background reader. Stop it before
+    // handing stdin to a child (or the :! acknowledgement prompt).
+    drop(event_stream.take());
+    match request {
+        TerminalRequest::Shell(shell) => execute_shell_command(ui, editor, &shell.command),
+        TerminalRequest::Session(session) => {
+            execute_terminal_session(ui, editor, session.command.as_deref())
+        }
+    }
+    *event_stream = Some(EventStream::new());
+}
+
 /// TUI event loop (optionally with API).
 pub async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
     mut api_rx: Option<mpsc::Receiver<ApiRequest>>,
-    java_status_rx: mpsc::Receiver<String>,
     start_time: SystemTime,
+    mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut last_edit = Instant::now();
-    let debounce_delay = Duration::from_millis(200);
     let mut last_input_time: Option<Instant> = None;
-    let mut channels = FrontendChannels::new(java_status_rx);
+    let mut tick_state = TickState::new();
 
-    let mut event_stream = EventStream::new();
+    let mut event_stream = Some(EventStream::new());
     let mut tick_interval = interval(Duration::from_millis(16));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Reused across `GetRender` requests so identical-dimension polls
@@ -364,17 +409,25 @@ pub async fn run_event_loop(
     // entire TUI session even when `api_rx` is `None` — cheap and keeps
     // the call sites uniform.
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
-    let mut last_external_file_check = Instant::now();
     let mut observed_ai_attention_generation = editor.ai_chat_attention_generation();
     let mut last_terminal_mode_refresh = Instant::now();
+    let mut last_render = Instant::now();
+    let mut last_tick = Instant::now();
+    let tick_period = Duration::from_millis(16);
 
     while !editor.should_quit() {
         // Wait for input, API request, or tick — input has priority via `biased`
         tokio::select! {
             biased;
 
+            // The terminal went away or the process was told to terminate:
+            // leave through the normal exit.
+            Some(()) = shutdown_rx.recv() => {
+                break;
+            }
+
             // Terminal input (highest priority)
-            maybe_event = event_stream.next() => {
+            maybe_event = event_stream.as_mut().expect("TUI input is active between shell sessions").next() => {
                 if let Some(Ok(first_event)) = maybe_event {
                     last_input_time = Some(Instant::now());
 
@@ -393,20 +446,42 @@ pub async fn run_event_loop(
                         }
                     }
 
-                    let had_edit = process_input_events(editor, events)?;
-                    if had_edit {
-                        last_edit = Instant::now();
-                    }
+                    let only_pointer_moves = events.iter().all(|event| matches!(event,
+                        Event::Mouse(mouse) if mouse.kind == crossterm::event::MouseEventKind::Moved
+                    ));
+                    process_input_events(editor, events)?;
 
                     // Mark dirty and immediately refresh the visible syntax
                     // once after all events processed.
-                    refresh_after_input(editor);
+                    if !only_pointer_moves || editor.is_dirty() {
+                        refresh_after_input(editor);
+                    }
 
                     // Immediately process LSP actions triggered by input
+                    let dispatch_start = Instant::now();
                     editor.dispatch_pending_intents().await;
+                    warn_if_slow("dispatch_pending_intents", dispatch_start);
 
-                    // If more input queued, skip render to keep input flowing
-                    if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                    // A terminal that answers our writes with input events can
+                    // keep this branch permanently ready and the tick branch
+                    // permanently unreached. Carry the tick forward from here
+                    // whenever a frame's worth of time has passed, so
+                    // background results still land under sustained input.
+                    // `MAX_RENDER_SKIP` below bounds painting the same way,
+                    // but a bounded repaint of undelivered results still shows
+                    // nothing: the drain happens here.
+                    if last_tick.elapsed() >= tick_period {
+                        run_tick_work(ui, editor, &mut tick_state, &mut event_stream).await;
+                        last_tick = Instant::now();
+                    }
+
+                    // If more input queued, skip render to keep input flowing.
+                    // Bounded: after a stall the backlog can be long, and
+                    // `biased` keeps re-selecting this branch, so without a
+                    // cap nothing is painted until the backlog drains.
+                    if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false)
+                        && last_render.elapsed() < MAX_RENDER_SKIP
+                    {
                         continue;
                     }
                 }
@@ -417,19 +492,11 @@ pub async fn run_event_loop(
                 if let Some(ref mut rx) = api_rx { rx.recv().await } else { std::future::pending().await }
             } => {
                 let api_session = Arc::new(Mutex::new(api_session_info(editor)));
-                let version_before = editor.buffer().version();
                 crate::api_dispatch::handle_api_request(editor, request, start_time, &api_session, &mut render_cache).await;
-                if editor.buffer().version() != version_before {
-                    last_edit = Instant::now();
-                }
                 // Drain remaining queued API requests
                 if let Some(ref mut rx) = api_rx {
                     while let Ok(req) = rx.try_recv() {
-                        let version_before = editor.buffer().version();
                         crate::api_dispatch::handle_api_request(editor, req, start_time, &api_session, &mut render_cache).await;
-                        if editor.buffer().version() != version_before {
-                            last_edit = Instant::now();
-                        }
                     }
                 }
                 // Offscreen API rendering shares the frame renderer, which
@@ -441,13 +508,8 @@ pub async fn run_event_loop(
 
             // Tick timer — background work (LSP, picker, animations)
             _ = tick_interval.tick() => {
-                process_editor_tick(editor, &mut channels).await;
-                process_picker_results(editor, &mut channels);
-                if last_external_file_check.elapsed() >= Duration::from_millis(500) {
-                    process_external_file_change(editor);
-                    last_external_file_check = Instant::now();
-                }
-
+                run_tick_work(ui, editor, &mut tick_state, &mut event_stream).await;
+                last_tick = Instant::now();
             }
         }
 
@@ -466,34 +528,17 @@ pub async fn run_event_loop(
             last_terminal_mode_refresh = Instant::now();
         }
 
-        // Execute pending shell command with full terminal access
-        if let Some(pending) = editor.take_pending_shell_command() {
-            execute_shell_command(ui, editor, &pending.command);
-        }
-        if let Some(pending) = editor.take_pending_terminal_session() {
-            execute_terminal_session(ui, editor, pending.command.as_deref());
-        }
-        // `:openwin` targets the GUI, where each project window is its own
-        // process. A terminal frontend has no window to spawn.
-        if editor.take_pending_window_open().is_some() {
-            editor.set_status_message(ovim::editor::WINDOW_FRONTEND_REQUIRED.to_string());
-        }
-
         // Render after any select branch (if dirty)
         if editor.is_dirty() {
             let start = Instant::now();
             ui.renderer_mut().render(editor)?;
+            last_render = Instant::now();
             editor.record_render_duration(start.elapsed().as_micros() as u64);
             editor.increment_render_count();
             editor.mark_clean();
             if let Some(input_time) = last_input_time.take() {
                 editor.record_input_latency(input_time.elapsed().as_micros() as u64);
             }
-        }
-
-        // Debounced rehighlight
-        if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
-            editor.process_pending_rehighlight().await;
         }
     }
 

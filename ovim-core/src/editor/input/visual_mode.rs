@@ -9,11 +9,12 @@
 //! - Visual mode search (/ and ?)
 
 use crate::editor::{
-    CursorPos, Editor, Motions, PendingChangeRepeat, RegisterType, TextObjectRange, TextObjects,
+    BlockInsert, CursorPos, Editor, Motions, PendingChangeRepeat, RegisterType, TextObjectRange,
+    TextObjectType,
 };
 use crate::indentation::leading_char_count;
 use crate::mode::Mode;
-use crate::repeat_action::RepeatAction;
+use crate::repeat_action::{BlockColumn, RepeatAction};
 use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -21,24 +22,62 @@ use anyhow::Result;
 use super::char_motion;
 use super::helpers;
 use super::numbers;
-use crate::editor::input_state::{CharMotion, InputState};
+use crate::editor::input_state::{CharMotion, InputState, TextObjectPrefix};
 
-/// Apply a text object range to the visual selection.
-/// If `inclusive` is true, end_col is used directly; otherwise it's decremented by 1.
-fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclusive: bool) {
-    if let Some(range) = range {
-        // Phase-15 debt: visual_start stores grapheme cols; range cols are char.
-        editor.set_visual_start(range.start_line, range.start_col.0);
-        let end_col = if inclusive {
-            range.end_col
-        } else {
-            range.end_col.saturating_sub(1)
-        };
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(range.end_line, GraphemeCol(end_col.0));
+/// Convert the half-open character range into inclusive grapheme endpoints.
+/// Subtract in rope space so an end at column zero selects the preceding
+/// newline, and a multi-codepoint final grapheme stays intact.
+/// The selection as a range when it runs forward over more than one
+/// character: a text object then extends it (`:help v_iw`).
+fn selection_to_extend(editor: &Editor) -> Option<TextObjectRange> {
+    let (start_line, start_col) = editor.visual_start()?;
+    let buffer = editor.buffer();
+    let cursor = (buffer.cursor().line(), buffer.cursor().col().0);
+    if (start_line, start_col) >= cursor || editor.mode() == Mode::VisualBlock {
+        return None;
     }
+    // `V` keeps no column for where it started, so on one line there is
+    // nothing to tell a selection from its starting point: `Viw` selects
+    // the word under the cursor.
+    if editor.mode() == Mode::VisualLine && start_line == cursor.0 {
+        return None;
+    }
+    let char_col = |line: usize, grapheme: usize| {
+        buffer
+            .line_index(line)
+            .grapheme_to_char(GraphemeCol(grapheme))
+    };
+    Some(TextObjectRange {
+        start_line,
+        start_col: char_col(start_line, start_col),
+        end_line: cursor.0,
+        end_col: CharCol(char_col(cursor.0, cursor.1).0 + 1),
+    })
+}
+
+fn apply_text_object(editor: &mut Editor, range: TextObjectRange, linewise: bool) {
+    let rope = editor.buffer().rope();
+    let start_offset = rope.line_to_char(range.start_line) + range.start_col.0;
+    let end_offset = rope.line_to_char(range.end_line) + range.end_col.0;
+    if end_offset <= start_offset {
+        return;
+    }
+    let last_offset = end_offset - 1;
+    let end_line = rope.char_to_line(last_offset);
+    let end_col = CharCol(last_offset - rope.line_to_char(end_line));
+    let start_text = editor
+        .buffer()
+        .line_text(range.start_line)
+        .unwrap_or_default();
+    let start_col = crate::unicode::char_to_grapheme_col(&start_text, range.start_col);
+
+    editor.set_mode(if linewise {
+        Mode::VisualLine
+    } else {
+        Mode::Visual
+    });
+    editor.set_visual_start(range.start_line, start_col.0);
+    editor.buffer_mut().set_cursor_char_col(end_line, end_col);
 }
 
 /// Mirror of normal-mode `cc` for a VisualLine-c selection: delete all
@@ -147,6 +186,15 @@ fn handle_visual_leader_input(
 
 /// Handles input in Visual mode (Visual, VisualLine, VisualBlock)
 pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    editor.visual.key_selection = editor
+        .visual_selection()
+        .map(|(start, end)| (start, end, editor.mode()));
+    let result = handle_visual_key(editor, key_event);
+    editor.visual.key_selection = None;
+    result
+}
+
+fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // =====================================================================
     // INPUT STATE CHECK (must happen before mode-specific handling)
     // =====================================================================
@@ -163,9 +211,20 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     }
 
     // Handle pending command prefixes (g, i/a text-objects, etc.)
-    if let Some(pending) = editor.pending_command() {
-        editor.clear_pending_command();
+    if let Some(pending) = editor.input_state().prefix_key() {
+        editor.reset_input_state();
         match (pending, key_event.code) {
+            ('"', key) => {
+                if let KeyCode::Char(register) = key {
+                    if crate::editor::RegisterManager::is_valid_name(register) {
+                        editor.set_pending_register(register);
+                    }
+                    return Ok(());
+                }
+                if key != KeyCode::Esc {
+                    return Ok(());
+                }
+            }
             ('g', KeyCode::Char('g')) => {
                 // gg - go to first line (or line specified by count)
                 let target_line = if let Some(count) = editor.count() {
@@ -191,15 +250,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.clear_count();
                 return Ok(());
             }
-            ('g', KeyCode::Char('a')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
-                // g Ctrl-A: Sequential increment in visual selection
-                numbers::sequential_modify_numbers(editor, 1)?;
-                helpers::exit_visual_mode_to_normal(editor);
-                return Ok(());
-            }
-            ('g', KeyCode::Char('x')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
-                // g Ctrl-X: Sequential decrement in visual selection
-                numbers::sequential_modify_numbers(editor, -1)?;
+            ('g', KeyCode::Char(c @ ('a' | 'x')))
+                if key_event.modifiers.contains(Modifiers::CONTROL) =>
+            {
+                // g Ctrl-A / g Ctrl-X: sequential increment/decrement in the selection
+                let delta = if c == 'a' { 1 } else { -1 };
+                let count = editor.effective_count() as i64;
+                numbers::modify_numbers_in_selection(editor, delta * count, true)?;
+                editor.clear_count();
                 helpers::exit_visual_mode_to_normal(editor);
                 return Ok(());
             }
@@ -219,100 +277,27 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.clear_count();
                 return Ok(());
             }
-            ('i', KeyCode::Char('w')) => {
-                apply_text_object(editor, TextObjects::inner_word(editor.buffer()), false);
-                return Ok(());
-            }
-            ('i', KeyCode::Char('W')) => {
-                apply_text_object(editor, TextObjects::inner_big_word(editor.buffer()), false);
-                return Ok(());
-            }
-            ('a', KeyCode::Char('w')) => {
-                apply_text_object(editor, TextObjects::around_word(editor.buffer()), false);
-                return Ok(());
-            }
-            ('a', KeyCode::Char('W')) => {
-                apply_text_object(editor, TextObjects::around_big_word(editor.buffer()), false);
-                return Ok(());
-            }
-            ('i', KeyCode::Char('p')) => {
-                apply_text_object(editor, TextObjects::inner_paragraph(editor.buffer()), true);
-                return Ok(());
-            }
-            ('a', KeyCode::Char('p')) => {
-                apply_text_object(editor, TextObjects::around_paragraph(editor.buffer()), true);
-                return Ok(());
-            }
-            ('i', KeyCode::Char('"')) | ('i', KeyCode::Char('\'')) | ('i', KeyCode::Char('`')) => {
-                let quote = match key_event.code {
-                    KeyCode::Char(c) => c,
-                    _ => return Ok(()),
-                };
-                apply_text_object(
-                    editor,
-                    TextObjects::quoted_string(editor.buffer(), quote, false),
-                    false,
-                );
-                return Ok(());
-            }
-            ('a', KeyCode::Char('"')) | ('a', KeyCode::Char('\'')) | ('a', KeyCode::Char('`')) => {
-                let quote = match key_event.code {
-                    KeyCode::Char(c) => c,
-                    _ => return Ok(()),
-                };
-                apply_text_object(
-                    editor,
-                    TextObjects::quoted_string(editor.buffer(), quote, true),
-                    false,
-                );
-                return Ok(());
-            }
-            ('i', KeyCode::Char('(')) | ('i', KeyCode::Char(')')) | ('i', KeyCode::Char('b')) => {
-                apply_text_object(
-                    editor,
-                    TextObjects::paired_delimiters(editor.buffer(), '(', ')', false),
-                    false,
-                );
-                return Ok(());
-            }
-            ('a', KeyCode::Char('(')) | ('a', KeyCode::Char(')')) | ('a', KeyCode::Char('b')) => {
-                apply_text_object(
-                    editor,
-                    TextObjects::paired_delimiters(editor.buffer(), '(', ')', true),
-                    false,
-                );
-                return Ok(());
-            }
-            ('i', KeyCode::Char('[')) | ('i', KeyCode::Char(']')) => {
-                apply_text_object(
-                    editor,
-                    TextObjects::paired_delimiters(editor.buffer(), '[', ']', false),
-                    false,
-                );
-                return Ok(());
-            }
-            ('a', KeyCode::Char('[')) | ('a', KeyCode::Char(']')) => {
-                apply_text_object(
-                    editor,
-                    TextObjects::paired_delimiters(editor.buffer(), '[', ']', true),
-                    false,
-                );
-                return Ok(());
-            }
-            ('i', KeyCode::Char('{')) | ('i', KeyCode::Char('}')) | ('i', KeyCode::Char('B')) => {
-                apply_text_object(
-                    editor,
-                    TextObjects::paired_delimiters(editor.buffer(), '{', '}', false),
-                    false,
-                );
-                return Ok(());
-            }
-            ('a', KeyCode::Char('{')) | ('a', KeyCode::Char('}')) | ('a', KeyCode::Char('B')) => {
-                apply_text_object(
-                    editor,
-                    TextObjects::paired_delimiters(editor.buffer(), '{', '}', true),
-                    false,
-                );
+            ('i' | 'a', key) if key != KeyCode::Esc => {
+                if let Some(object) = super::text_objects::from_key(editor, key, pending == 'i') {
+                    let count = editor.effective_count();
+                    // With more than one character selected the object is
+                    // added after the selection instead of replacing it.
+                    let range = match selection_to_extend(editor) {
+                        Some(selected) => object
+                            .resolve_after(editor.buffer_mut(), selected, count)
+                            .map(|added| TextObjectRange {
+                                end_line: added.end_line,
+                                end_col: added.end_col,
+                                ..selected
+                            }),
+                        None => object.resolve_counted(editor.buffer_mut(), count),
+                    };
+                    if let Some(range) = range {
+                        let linewise = matches!(object, TextObjectType::Paragraph { .. });
+                        apply_text_object(editor, range, linewise);
+                    }
+                }
+                editor.clear_count();
                 return Ok(());
             }
             _ => {
@@ -322,40 +307,23 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     }
 
     match key_event.code {
+        KeyCode::Char('"') => editor.set_input_state(InputState::RegisterPending),
         KeyCode::Esc => {
             helpers::exit_visual_mode_to_normal(editor);
         }
         KeyCode::Char(' ') => {
             editor.set_input_state(InputState::Leader { keys: Vec::new() });
         }
-        // Half-page scroll down (Ctrl-D) — must come before 'd' delete handler
-        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            let half_page = editor.half_page_scroll();
-            let count = editor.count().unwrap_or(half_page);
-            let max_line = editor.buffer().line_count().saturating_sub(1);
-
-            let cursor = editor.buffer_mut().cursor_mut();
-            let new_line = (cursor.line() + count).min(max_line);
-            cursor.set_line(new_line);
-            helpers::clamp_cursor_to_line(editor);
-            editor.clear_count();
-        }
-        // Half-page scroll up (Ctrl-U) — must come before 'u' lowercase handler
-        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            let half_page = editor.half_page_scroll();
-            let count = editor.count().unwrap_or(half_page);
-            let cursor = editor.buffer_mut().cursor_mut();
-            let new_line = cursor.line().saturating_sub(count);
-            cursor.set_line(new_line);
-            helpers::clamp_cursor_to_line(editor);
-            editor.clear_count();
+        // Ctrl chords are never the plain-letter command (Ctrl-C is not `c`, Ctrl-X not `x`).
+        KeyCode::Char(c) if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            handle_visual_ctrl(editor, c)?;
         }
         // Text object prefixes in visual mode
-        KeyCode::Char('i') | KeyCode::Char('a') => {
-            // Set pending command to handle text objects (iw, aw, ip, ap, i{, a{, etc.)
-            editor.set_pending_command(match key_event.code {
-                KeyCode::Char(c) => c,
-                _ => unreachable!(),
+        KeyCode::Char(c @ ('i' | 'a')) => {
+            // Text object prefix (iw, aw, ip, ap, i{, a{, etc.)
+            editor.set_input_state(InputState::TextObjectPending {
+                operator: None,
+                prefix: TextObjectPrefix::from_char(c).expect("i or a"),
             });
         }
         // Motion keys work in visual mode too
@@ -391,17 +359,17 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             Motions::word_end_forward(editor.buffer_mut(), count);
             editor.clear_count();
         }
-        KeyCode::Char('0') => {
+        KeyCode::Char('0') | KeyCode::Home => {
             editor.set_visual_block_dollar(false);
-            // If there's already a count, treat this as a digit (e.g., "50j")
-            // Otherwise, treat it as a motion to column 0
-            if editor.count().is_some() {
+            // If there's already a count, treat `0` as a digit (e.g., "50j")
+            // Otherwise (and for <Home>), treat it as a motion to column 0
+            if key_event.code == KeyCode::Char('0') && editor.count().is_some() {
                 editor.append_count(0);
             } else {
                 editor.buffer_mut().cursor_mut().set_col(GraphemeCol(0));
             }
         }
-        KeyCode::Char('$') => {
+        KeyCode::Char('$') | KeyCode::End => {
             if editor.mode() == Mode::VisualBlock {
                 // Set "extend to end-of-line" flag so each line in the block
                 // is deleted/yanked to its own end, not to a fixed column.
@@ -415,16 +383,18 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     cursor.update_desired_col(GraphemeCol(usize::MAX));
                 }
             } else {
-                // Normal visual mode: move to end of current line
-                let line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line_text(line_idx) {
-                    let line_len = line.chars().count();
-                    let col = if line_len > 0 { line_len - 1 } else { 0 };
-                    let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_col(GraphemeCol(col));
-                    // Set desired_col to usize::MAX to indicate "always end of line"
-                    cursor.update_desired_col(GraphemeCol(usize::MAX));
-                }
+                // Characterwise: `$` goes onto the line break, so the
+                // selection includes it (`v$d` joins the next line), and
+                // `[count]$` goes down `count - 1` lines first.
+                let down = editor.effective_count() - 1;
+                let max_line = editor.buffer().line_count().saturating_sub(1);
+                let line_idx = (editor.buffer().cursor().line() + down).min(max_line);
+                let line_len = editor.buffer().line_index(line_idx).grapheme_count();
+                let cursor = editor.buffer_mut().cursor_mut();
+                cursor.set_position(line_idx, GraphemeCol(line_len));
+                // Set desired_col to usize::MAX to indicate "always end of line"
+                cursor.update_desired_col(GraphemeCol(usize::MAX));
+                editor.clear_count();
             }
         }
         KeyCode::Char('G') => {
@@ -452,11 +422,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Char('g') => {
             // g - first key of gg (go to first line with optional count)
-            editor.set_pending_command('g');
+            editor.set_input_state(InputState::GPrefix { operator: None });
         }
         // Find character forward (f)
         KeyCode::Char('f') => {
-            use crate::editor::input_state::{CharMotion, InputState};
             editor.set_input_state(InputState::AwaitingChar {
                 motion: CharMotion::Find,
                 operator: None,
@@ -464,7 +433,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Find character backward (F)
         KeyCode::Char('F') => {
-            use crate::editor::input_state::{CharMotion, InputState};
             editor.set_input_state(InputState::AwaitingChar {
                 motion: CharMotion::FindBack,
                 operator: None,
@@ -472,7 +440,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Till character forward (t)
         KeyCode::Char('t') => {
-            use crate::editor::input_state::{CharMotion, InputState};
             editor.set_input_state(InputState::AwaitingChar {
                 motion: CharMotion::Till,
                 operator: None,
@@ -480,7 +447,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Till character backward (T)
         KeyCode::Char('T') => {
-            use crate::editor::input_state::{CharMotion, InputState};
             editor.set_input_state(InputState::AwaitingChar {
                 motion: CharMotion::TillBack,
                 operator: None,
@@ -488,7 +454,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Jump to mark exact position (`)
         KeyCode::Char('`') => {
-            use crate::editor::input_state::{CharMotion, InputState};
             editor.set_input_state(InputState::AwaitingChar {
                 motion: CharMotion::JumpMarkExact,
                 operator: None,
@@ -496,7 +461,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Jump to mark line (')
         KeyCode::Char('\'') => {
-            use crate::editor::input_state::{CharMotion, InputState};
             editor.set_input_state(InputState::AwaitingChar {
                 motion: CharMotion::JumpMarkLine,
                 operator: None,
@@ -509,10 +473,29 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char(',') => {
             editor.repeat_last_find(true);
         }
+        // Paragraph motions
+        KeyCode::Char(key @ ('}' | '{')) => {
+            editor.set_visual_block_dollar(false);
+            let count = editor.effective_count();
+            editor.record_jump_if_moved(|editor| {
+                if key == '}' {
+                    Motions::paragraph_forward(editor.buffer_mut(), count)
+                } else {
+                    Motions::paragraph_backward(editor.buffer_mut(), count)
+                }
+            });
+            editor.clear_count();
+        }
         // Jump to matching bracket (%)
         KeyCode::Char('%') => {
             Motions::jump_to_matching_bracket(editor.buffer_mut());
             editor.clear_count();
+        }
+        // The command line on the selected lines (`:'<,'>`)
+        KeyCode::Char(':') => {
+            helpers::exit_visual_mode_to_normal(editor);
+            editor.set_command_line("'<,'>");
+            editor.set_mode(Mode::Command);
         }
         // Search forward in visual mode
         KeyCode::Char('/') => {
@@ -521,10 +504,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let mode = editor.mode();
                 editor.set_visual_search_state((anchor_line, anchor_col), mode);
             }
-            editor.clear_search_buffer();
-            editor.set_search_forward(true);
-            editor.save_search_start_position();
-            editor.set_mode(Mode::Search);
+            editor.begin_search(true);
         }
         // Search backward in visual mode
         KeyCode::Char('?') => {
@@ -533,10 +513,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let mode = editor.mode();
                 editor.set_visual_search_state((anchor_line, anchor_col), mode);
             }
-            editor.clear_search_buffer();
-            editor.set_search_forward(false);
-            editor.save_search_start_position();
-            editor.set_mode(Mode::Search);
+            editor.begin_search(false);
         }
         // Search next in visual mode
         KeyCode::Char('n') => {
@@ -560,18 +537,46 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
+        // `s` is `c`; `Y`, `D`, `C`, `X`, `S` and `R` act on whole lines, except in
+        // Visual-block mode, where `D` and `C` go to the end of the line and `X` and
+        // `Y` are `d` and `y` (Vim's `v_visop`).
+        KeyCode::Char(key @ ('s' | 'Y' | 'D' | 'C' | 'X' | 'S' | 'R')) => {
+            let block = editor.mode() == Mode::VisualBlock;
+            let register = editor.pending_register();
+            if block && matches!(key, 'D' | 'C') {
+                let end_of_line = KeyEvent::new(KeyCode::Char('$'), Modifiers::NONE);
+                handle_visual_key(editor, end_of_line)?;
+            } else if key != 's' && (!block || matches!(key, 'S' | 'R')) {
+                editor.set_visual_block_dollar(false);
+                editor.set_mode(Mode::VisualLine);
+                if let Some(register) = register {
+                    editor.set_pending_register(register);
+                }
+            }
+            let operator = match key {
+                'Y' => 'y',
+                'D' | 'X' => 'd',
+                _ => 'c',
+            };
+            return handle_visual_key(
+                editor,
+                KeyEvent::new(KeyCode::Char(operator), Modifiers::NONE),
+            );
+        }
         // Delete selection
-        KeyCode::Char('d') | KeyCode::Char('x') => {
+        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
             helpers::delete_visual_selection(editor)?;
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Yank selection
         KeyCode::Char('y') => {
-            // Move cursor to start of selection before yanking (Vim behavior)
-            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection()
-            {
-                let mode = editor.mode();
-                helpers::yank_visual_selection(editor)?;
+            let selection = editor.visual_selection();
+            let mode = editor.mode();
+            helpers::yank_visual_selection(editor)?;
+            // Save the complete selection before moving to its start; `gv`
+            // must restore the yanked range, not the collapsed cursor position.
+            helpers::exit_visual_mode_to_normal(editor);
+            if let Some(((start_line, start_col), (end_line, end_col))) = selection {
                 editor
                     .buffer_mut()
                     .cursor_mut()
@@ -588,13 +593,11 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     );
                 }
             }
-            helpers::exit_visual_mode_to_normal(editor);
         }
         // Change selection
         KeyCode::Char('c') => {
             let mode_before = editor.mode();
-            editor.set_pending_visual_block_change_repeat(None);
-            editor.editing.pending_visual_block_change_delete_token = None;
+            editor.visual.block_insert = None;
 
             // VisualLine-c must mirror normal-mode `cc`: delete the whole
             // line(s), open a blank line at the deletion site (preserving the
@@ -616,9 +619,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor
                     .visual_selection()
                     .map(|((start_line, start_col), (end_line, end_col))| {
-                        let line_count = end_line.saturating_sub(start_line) + 1;
                         let width = end_col.saturating_sub(start_col) + 1;
-                        (start_line, end_line, start_col, line_count, width)
+                        (start_line, end_line, start_col, width)
                     })
             } else {
                 None
@@ -626,16 +628,22 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
             let delete_token = helpers::delete_visual_selection_with_token(editor)?;
 
-            if let Some((start_line, end_line, start_col, line_count, width)) = visual_block_state {
-                editor.set_pending_visual_block_change_repeat(Some((line_count, width)));
-                editor.editing.pending_visual_block_change_delete_token = delete_token;
-
-                // Set visual block insert state for multi-line replication
-                // For 'c', move cursor to start_line (move_to_end = false)
+            if let Some((start_line, end_line, start_col, width)) = visual_block_state {
+                // Replicated onto the other block lines when Insert mode ends.
+                editor.visual.block_insert = Some(BlockInsert {
+                    start_line,
+                    end_line,
+                    left_col: start_col,
+                    column: BlockColumn::Insert(0),
+                    change: Some((width, delete_token)),
+                });
                 let cursor_before = CursorPos::new(start_line, GraphemeCol(start_col));
-                editor.set_visual_block_insert_state(Some((
-                    start_line, end_line, start_col, false, false,
-                )));
+                // The delete clamps the cursor onto the last character; when the
+                // block reached the end of the line, insertion continues after it.
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(start_line, GraphemeCol(start_col));
                 editor.start_change_building(cursor_before);
             } else if delete_token.is_some() {
                 // Regular visual (v) with a non-empty selection: route the
@@ -749,13 +757,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Switch to other visual modes
-        KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            if editor.mode() == Mode::VisualBlock {
-                helpers::exit_visual_mode_to_normal(editor);
-            } else {
-                editor.set_mode(Mode::VisualBlock);
-            }
-        }
         KeyCode::Char('v') => {
             if editor.mode() == Mode::Visual {
                 helpers::exit_visual_mode_to_normal(editor);
@@ -781,82 +782,71 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Visual block insert/append
         KeyCode::Char('I') => {
             if editor.mode() == Mode::VisualBlock {
-                // Insert at beginning of block on each line
+                // Insert at the block's left edge on each line.
                 if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
-                    let cursor_before = CursorPos::new(start_line, GraphemeCol(start_col));
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(start_line, GraphemeCol(start_col));
-                    // Track visual block insert state: (start_line, end_line, col, is_append, move_to_end)
-                    // For 'I', move cursor to end_line (move_to_end = true)
-                    editor.set_visual_block_insert_state(Some((
-                        start_line, end_line, start_col, false, true,
-                    )));
-                    editor.clear_visual_start();
-                    editor.start_change_building(cursor_before);
-                    editor.set_mode(Mode::Insert);
+                    let block = BlockInsert {
+                        start_line,
+                        end_line,
+                        left_col: start_col,
+                        column: BlockColumn::Insert(0),
+                        change: None,
+                    };
+                    begin_block_insert(editor, block, start_col);
                 }
-            } else {
-                // Regular visual mode - just enter insert at start of selection
-                if let Some(((start_line, start_col), _)) = editor.visual_selection() {
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(start_line, GraphemeCol(start_col));
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Insert);
-                }
+            } else if let Some(((start_line, _), _)) = editor.visual_selection() {
+                // Char/line visual: vim makes `I` linewise, inserting at
+                // column 0 of the first selected line (nvim: `vjIX` puts X
+                // at the very start of the first line only).
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(start_line, GraphemeCol::ZERO);
+                editor.clear_visual_start();
+                editor.start_change_building(editor.cursor_position());
+                editor.set_mode(Mode::Insert);
             }
         }
         KeyCode::Char('A') => {
             if editor.mode() == Mode::VisualBlock {
-                // Append at end of block on each line
-                if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection() {
-                    // Get actual end column - clamp to line length to avoid overflow
+                // Append after the block on each line.
+                if let Some(((start_line, start_col), (end_line, end_col))) =
+                    editor.visual_selection()
+                {
+                    // Clamp to the first line so a ragged block still appends
+                    // right after that line's text.
                     let line_len = editor
                         .buffer()
                         .line_text(start_line)
                         .map(|l| l.chars().count())
                         .unwrap_or(0);
-                    let actual_end_col = end_col.min(line_len.saturating_sub(1));
-                    let append_col = actual_end_col.saturating_add(1);
-
-                    // A block created "to end of line" — either via `$` inside
-                    // block mode (visual_block_dollar) or a `$` before entering
-                    // block mode (which leaves the sticky column at usize::MAX) —
-                    // appends at each line's own EOL. A fixed-column block appends
-                    // at the block column (padding short lines). Fold the sticky
-                    // MAXCOL case into visual_block_dollar so the insert finalize
-                    // has a single flag to consult.
-                    if editor.buffer().cursor().desired_col() == usize::MAX {
-                        editor.set_visual_block_dollar(true);
-                    }
-
-                    let cursor_before = CursorPos::new(start_line, GraphemeCol(append_col));
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(start_line, GraphemeCol(append_col));
-                    // Track visual block append state: (start_line, end_line, col, is_append, move_to_end)
-                    // For 'A', move cursor to end_line (move_to_end = true)
-                    editor.set_visual_block_insert_state(Some((
-                        start_line, end_line, append_col, true, true,
-                    )));
-                    editor.clear_visual_start();
-                    editor.start_change_building(cursor_before);
-                    editor.set_mode(Mode::Insert);
+                    let append_col = end_col.min(line_len.saturating_sub(1)) + 1;
+                    // A block created "to end of line" — via `$` inside block
+                    // mode, or a `$` before entering it (sticky MAXCOL) —
+                    // appends at each line's own end; a fixed-column block at
+                    // the block column (padding short lines).
+                    let column = if editor.visual_block_dollar() {
+                        BlockColumn::EndOfLine
+                    } else {
+                        BlockColumn::Append(append_col.saturating_sub(start_col))
+                    };
+                    let block = BlockInsert {
+                        start_line,
+                        end_line,
+                        left_col: start_col,
+                        column,
+                        change: None,
+                    };
+                    begin_block_insert(editor, block, append_col);
                 }
-            } else {
-                // Regular visual mode - just enter insert at end of selection
-                if let Some((_, (end_line, end_col))) = editor.visual_selection() {
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(end_line, GraphemeCol(end_col + 1));
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Insert);
-                }
+            } else if let Some((_, (end_line, end_col))) = editor.visual_selection() {
+                // Char/line visual: append after the end of the selection.
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(end_line, GraphemeCol(end_col + 1));
+                editor.clear_visual_start();
+                editor.start_change_building(editor.cursor_position());
+                editor.set_mode(Mode::Insert);
             }
         }
         // Replace in visual mode (all visual variants)
@@ -873,51 +863,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Paste in visual mode (replace selection)
-        KeyCode::Char('p') | KeyCode::Char('P') => {
-            let is_visual_line = editor.mode() == Mode::VisualLine;
-
-            // 1. Save paste text + type from register
-            let (paste_text, paste_type) = editor.get_from_register_with_type();
-
-            // 2. Delete the visual selection (saves to numbered registers + unnamed)
-            helpers::delete_visual_selection(editor)?;
-
-            // 3. Save deleted text from unnamed register
-            let (deleted_text, deleted_type) = editor.get_from_register_with_type();
-
-            // 4. Write paste text to unnamed register
-            editor.registers.set_with_type(None, paste_text, paste_type);
-
-            // 5. Branch on paste type
-            if is_visual_line || paste_type == RegisterType::Line {
-                // Linewise: use paste_before to insert at current line
-                helpers::paste_before(editor, 1)?;
-            } else {
-                // Character: paste at the position the selection started. After
-                // deleting the selection the cursor sits on the surviving char at
-                // that column. paste_after inserts *after* the cursor, so step
-                // back one column first — but at column 0 there's nothing to step
-                // back over, so paste_before (which inserts AT the cursor column)
-                // is required to avoid a one-char misplacement.
-                let cursor_col = editor.buffer().cursor().col().0;
-                if cursor_col > 0 {
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_col(GraphemeCol(cursor_col - 1));
-                    helpers::paste_after(editor, 1)?;
-                } else {
-                    helpers::paste_before(editor, 1)?;
-                }
-            }
-
-            // 6. Set unnamed register to deleted text (so next p pastes the replaced text)
-            editor
-                .registers
-                .set_with_type(None, deleted_text, deleted_type);
-
-            helpers::exit_visual_mode_to_normal(editor);
-        }
+        KeyCode::Char(c @ ('p' | 'P')) => visual_put(editor, c == 'P')?,
         // Uppercase in visual mode
         KeyCode::Char('U') => {
             helpers::uppercase_visual_selection(editor)?;
@@ -983,6 +929,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         .buffer_mut()
                         .cursor_mut()
                         .set_position(start_line, GraphemeCol(0));
+                } else {
+                    cursor_to_first_non_blank(editor, start_line);
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);
@@ -999,6 +947,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     // push_recorded_undo() calls mark_buffer_modified() internally
                     editor.push_recorded_undo(edits, cursor_before, cursor_after);
                 }
+                cursor_to_first_non_blank(editor, start_line);
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
@@ -1010,7 +959,201 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.append_count(digit);
             }
         }
+        // Motions that mean the same in Normal mode and need nothing extra
+        // here: the selection follows the cursor.
+        KeyCode::Char(
+            '^' | '_' | '|' | '+' | '-' | 'W' | 'B' | 'E' | 'H' | 'M' | 'L' | '(' | ')',
+        ) => {
+            editor.set_visual_block_dollar(false);
+            super::normal::handle_motion(editor, key_event)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Where `<`, `>` and `=` leave the cursor: the first line they changed.
+fn cursor_to_first_non_blank(editor: &mut Editor, line: usize) {
+    let col = editor.buffer().first_non_blank_col(line);
+    editor.buffer_mut().set_cursor_char_col(line, col);
+}
+
+/// Visual-mode Ctrl chords. Vim's that this editor supports run here; every other
+/// chord is a no-op that leaves the selection alone (it must never fall through to
+/// the plain-letter command, e.g. Ctrl-C deleting the selection as `c`).
+fn handle_visual_ctrl(editor: &mut Editor, c: char) -> Result<()> {
+    match c {
+        // Ctrl-C / Ctrl-[ leave Visual mode like Esc.
+        'c' | '[' => {
+            helpers::exit_visual_mode_to_normal(editor);
+            return Ok(());
+        }
+        // Ctrl-V / Ctrl-Q: switch to (or leave) blockwise Visual mode.
+        'v' | 'q' => {
+            if editor.mode() == Mode::VisualBlock {
+                helpers::exit_visual_mode_to_normal(editor);
+            } else {
+                editor.set_mode(Mode::VisualBlock);
+            }
+            return Ok(());
+        }
+        'a' | 'x' => {
+            let count = editor.effective_count() as i64;
+            let delta = if c == 'a' { count } else { -count };
+            numbers::modify_numbers_in_selection(editor, delta, false)?;
+            editor.clear_count();
+            helpers::exit_visual_mode_to_normal(editor);
+            return Ok(());
+        }
+        // Half-page scroll.
+        'd' => {
+            let half_page = editor.half_page_scroll();
+            let count = editor.count().unwrap_or(half_page);
+            let max_line = editor.buffer().line_count().saturating_sub(1);
+
+            let cursor = editor.buffer_mut().cursor_mut();
+            let new_line = (cursor.line() + count).min(max_line);
+            cursor.set_line(new_line);
+            helpers::clamp_cursor_to_line(editor);
+        }
+        'u' => {
+            let half_page = editor.half_page_scroll();
+            let count = editor.count().unwrap_or(half_page);
+            let cursor = editor.buffer_mut().cursor_mut();
+            let new_line = cursor.line().saturating_sub(count);
+            cursor.set_line(new_line);
+            helpers::clamp_cursor_to_line(editor);
+        }
+        // Line scroll and page scroll move the view (the cursor follows).
+        'e' => editor.scroll_viewport_down(editor.effective_count()),
+        'y' => editor.scroll_viewport_up(editor.effective_count()),
+        'f' => (0..editor.effective_count()).for_each(|_| editor.scroll_page_down()),
+        'b' => (0..editor.effective_count()).for_each(|_| editor.scroll_page_up()),
+        // Ctrl-N / Ctrl-J are `j`, Ctrl-P is `k`, Ctrl-H is `h`.
+        'n' | 'j' => helpers::move_down(editor),
+        'p' => helpers::move_up(editor),
+        'h' => {
+            editor.set_visual_block_dollar(false);
+            helpers::move_left(editor);
+        }
+        _ => {}
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+/// Visual `p` / `P`: replace the selection with the register contents.
+///
+/// The contents are captured *before* the selection is deleted — the delete
+/// overwrites the unnamed register and, under `clipboard=unnamedplus`, the
+/// clipboard — and that capture is what gets put. Afterwards `p` leaves the
+/// replaced text in the unnamed register/clipboard (so a second `p` swaps back);
+/// `P` deletes into the black hole and leaves them alone (nvim).
+fn visual_put(editor: &mut Editor, keep_registers: bool) -> Result<()> {
+    let register = editor.pending_register();
+    let (text, reg_type) = editor.get_from_register_with_type();
+    let selection = editor.visual_selection();
+    let mode = editor.mode();
+    let Some(((start_line, _), (end_line, _))) = selection.filter(|_| !text.is_empty()) else {
+        // Nothing to put (vim: E353) — leave the selection's text alone.
+        helpers::exit_visual_mode_to_normal(editor);
+        return Ok(());
+    };
+    let reached_buffer_end = end_line + 1 >= editor.buffer().line_count();
+
+    // Delete and put undo together.
+    let undo_mark = editor.buffer().change_manager().undo_mark();
+    if keep_registers {
+        editor.set_pending_register('_');
+    }
+    helpers::delete_visual_selection(editor)?;
+    let replaced = (!keep_registers).then(|| {
+        let (text, reg_type) = editor.registers().get_default_with_type();
+        (text.to_string(), reg_type)
+    });
+
+    if mode == Mode::VisualLine {
+        // A characterwise/blockwise register put over whole lines becomes lines.
+        let text = if text.ends_with('\n') || reg_type != RegisterType::Character {
+            text
+        } else {
+            format!("{text}\n")
+        };
+        let emptied = editor.buffer().line_count() == 1
+            && editor.buffer().line_text(0).is_none_or(|l| l.is_empty());
+        if reached_buffer_end && start_line > 0 && !emptied {
+            // The deleted lines were last: the cursor sits on the line above.
+            helpers::paste_text_after(editor, text, RegisterType::Line, register, 1)?;
+        } else {
+            helpers::paste_text_before(editor, text, RegisterType::Line, register, 1)?;
+        }
+    } else if reg_type == RegisterType::Line && mode == Mode::Visual {
+        // Linewise text goes between the two halves of the split line.
+        split_line_at_cursor(editor);
+        helpers::paste_text_after(editor, text, reg_type, register, 1)?;
+    } else {
+        // Character: paste at the position the selection started. After
+        // deleting the selection the cursor sits on the surviving char at
+        // that column. paste_after inserts *after* the cursor, so step
+        // back one column first — but at column 0 there's nothing to step
+        // back over, so paste_before (which inserts AT the cursor column)
+        // is required to avoid a one-char misplacement.
+        let cursor_col = editor.buffer().cursor().col().0;
+        if cursor_col > 0 {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_col(GraphemeCol(cursor_col - 1));
+            helpers::paste_text_after(editor, text, reg_type, register, 1)?;
+        } else {
+            helpers::paste_text_before(editor, text, reg_type, register, 1)?;
+        }
+    }
+
+    editor
+        .buffer_mut()
+        .change_manager_mut()
+        .group_since(undo_mark);
+    if let Some((text, reg_type)) = replaced {
+        if !editor.options.clipboard.is_empty() {
+            editor.registers_mut().set_clipboard(text.clone());
+        }
+        editor.registers_mut().set_with_type(None, text, reg_type);
+    }
+    helpers::exit_visual_mode_to_normal(editor);
+    Ok(())
+}
+
+/// Breaks the cursor line in two at the cursor, leaving the cursor on the first
+/// half (the second half starts with the character that was under the cursor).
+fn split_line_at_cursor(editor: &mut Editor) {
+    let cursor_before = editor.cursor_position();
+    let line = cursor_before.line;
+    let col = editor.buffer().cursor_char_col();
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        buf.insert_text_at(line, col, "\n");
+    });
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(line, cursor_before.col);
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
+}
+
+/// Enter Insert mode for a visual-block `I` / `A` at `col` on the first
+/// block line; the typed text is replicated when Insert mode ends.
+fn begin_block_insert(editor: &mut Editor, block: BlockInsert, col: usize) {
+    let cursor = CursorPos::new(block.start_line, GraphemeCol(col));
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(cursor.line, cursor.col);
+    editor.visual.block_insert = Some(block);
+    editor.set_visual_block_dollar(false);
+    editor.clear_visual_start();
+    editor.start_change_building(cursor);
+    editor.set_mode(Mode::Insert);
 }

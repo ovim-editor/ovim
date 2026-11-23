@@ -295,10 +295,10 @@ fn projection_newline_insert_moves_line_index() {
     assert_projection_matches_expected(&test, &[(anchor, Some(6))]);
 
     // Confirm the renderer's line lookup agrees.
-    let line1 = test.editor.decorations.for_line_projected(
+    let projected = test.editor.projected_decorations();
+    assert_eq!(
+        projected.for_line(1).len(),
         1,
-        test.editor.buffer().rope(),
-        test.editor.buffer().edit_log(),
+        "decoration projects onto line 1"
     );
-    assert_eq!(line1.len(), 1, "decoration projects onto line 1");
 }

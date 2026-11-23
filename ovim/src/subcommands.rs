@@ -161,20 +161,8 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::Gui {
             file,
             resume,
-            remote,
-            fresh,
-            allow_version_mismatch,
-            remote_session,
-            remote_endpoint,
-        } => cmd_gui(GuiLaunch {
-            file,
-            resume,
-            remote,
-            fresh,
-            allow_version_mismatch,
-            remote_session,
-            remote_endpoint,
-        }),
+            remote_args,
+        } => cmd_gui(file, resume, remote_args),
 
         // File operations (direct file I/O, no session needed)
         Command::Edit {
@@ -254,45 +242,30 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
     }
 }
 
-/// Everything `ovim gui` was asked for, before any of it is acted on.
-struct GuiLaunch {
-    file: Option<String>,
-    resume: bool,
-    remote: Option<String>,
-    fresh: bool,
-    allow_version_mismatch: bool,
-    remote_session: Option<std::path::PathBuf>,
-    remote_endpoint: Option<String>,
-}
-
 /// Run the native shell in-process so `ovim gui` works in source builds,
 /// standalone CLI distributions, and desktop packages without path probing.
-fn cmd_gui(launch: GuiLaunch) -> Result<()> {
-    let is_remote = launch.remote.is_some() || launch.remote_session.is_some();
+fn cmd_gui(
+    file: Option<String>,
+    resume: bool,
+    remote_args: crate::cli::GuiRemoteArgs,
+) -> Result<()> {
+    let is_remote = remote_args.is_remote();
     // Resolved before the window exists, so an unreachable host or an
     // unreadable descriptor is a startup error naming the cause rather than a
     // window that never draws.
-    let remote = crate::gui::ssh::RemoteOptions {
-        destination: launch.remote,
-        path: launch.file.clone(),
-        fresh: launch.fresh,
-        allow_version_mismatch: launch.allow_version_mismatch,
-        session_file: launch.remote_session,
-        endpoint: launch.remote_endpoint,
-    }
-    .resolve()?;
+    let remote = crate::gui::ssh::RemoteOptions::from_args(remote_args, file.clone()).resolve()?;
     // A remote launch already told the far side what to open; the path here
     // belongs to that host and must not be opened on this one.
     let file = (!is_remote)
-        .then(|| launch.file.as_deref().map(FileArg::parse))
+        .then(|| file.as_deref().map(FileArg::parse))
         .flatten();
     #[cfg(feature = "gui")]
     {
-        crate::gui::app::run(file, launch.resume, remote)
+        crate::gui::app::run(file, resume, remote)
     }
     #[cfg(not(feature = "gui"))]
     {
-        let _ = (file, launch.resume, remote);
+        let _ = (file, resume, remote);
         anyhow::bail!("This Ovim build does not include the native GUI feature")
     }
 }
@@ -1410,7 +1383,7 @@ fn cmd_list_languages(verbose: bool) -> Result<()> {
 /// detection agrees with what the editor itself does, not just the
 /// built-in set.
 fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
-    use crate::language_config::{find_lsp_command, find_project_root};
+    use crate::language_config::find_lsp_command;
     use std::path::Path;
 
     let path = Path::new(file_path);
@@ -1478,7 +1451,7 @@ fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
 
                 let root_markers = &lsp.root_markers;
                 if !root_markers.is_empty() {
-                    let project_root = find_project_root(&abs_path, root_markers);
+                    let project_root = lsp.find_root(&abs_path);
                     println!("Project Root: {}", project_root.display());
                     println!("  (detected using markers: {})", root_markers.join(", "));
                 }

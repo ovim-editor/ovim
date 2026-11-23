@@ -5,6 +5,7 @@
 //! structural — no sequence counters needed.  Different features use separate
 //! slots, so they can coexist without interference.
 
+use super::Editor;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -377,14 +378,20 @@ mod tests {
         // Simulate a user typing continuously: five invalidations spread
         // across ~200ms, with a small gap between each.
         for _ in 0..5 {
+            let invalidated = Instant::now();
             slot.invalidate();
             std::thread::sleep(Duration::from_millis(40));
             // Each tick of the event loop asks whether we should refresh.
             // Because the last invalidation is very recent, we must NOT.
-            assert!(
-                !slot.needs_refresh(),
-                "needs_refresh must stay false while invalidations are still landing"
-            );
+            // (A loaded machine can oversleep past the window; only a check
+            // that provably ran inside it is meaningful.)
+            let refresh = slot.needs_refresh();
+            if invalidated.elapsed() < Duration::from_millis(100) {
+                assert!(
+                    !refresh,
+                    "needs_refresh must stay false while invalidations are still landing"
+                );
+            }
         }
 
         // Now the user pauses. After the debounce window elapses, we
@@ -418,12 +425,16 @@ mod tests {
         // old "debounce-from-fire" rule this would trip needs_refresh
         // immediately. Under idle-trigger it should wait for the
         // debounce window anchored on *this* invalidation.
+        let invalidated = Instant::now();
         slot.invalidate();
         assert!(slot.is_stale());
-        assert!(
-            !slot.needs_refresh(),
-            "needs_refresh must debounce from the most recent invalidate"
-        );
+        let refresh = slot.needs_refresh();
+        if invalidated.elapsed() < Duration::from_millis(100) {
+            assert!(
+                !refresh,
+                "needs_refresh must debounce from the most recent invalidate"
+            );
+        }
 
         std::thread::sleep(Duration::from_millis(110));
         assert!(
@@ -521,23 +532,83 @@ mod tests {
 
 // ---- Result types for each slot ----
 
+/// Where the editor was when a request was fired. Answers that change what
+/// the user is looking at (a popup, a jump) are applied only if the user is
+/// still where they asked: a late answer must not seize the mode the user has
+/// since moved on to or send typed text into another file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestOrigin {
+    buffer: crate::buffer::BufferId,
+    version: usize,
+    cursor: (usize, usize),
+    mode: crate::mode::Mode,
+}
+
+impl Editor {
+    pub(crate) fn request_origin(&self) -> RequestOrigin {
+        let buffer = self.buffer();
+        RequestOrigin {
+            buffer: buffer.id(),
+            version: buffer.version(),
+            cursor: (buffer.cursor().line(), buffer.cursor().col().0),
+            mode: self.mode,
+        }
+    }
+
+    /// True while buffer, text, cursor and mode are what `origin` recorded.
+    pub(crate) fn request_origin_is_current(&self, origin: &RequestOrigin) -> bool {
+        self.request_origin() == *origin
+    }
+}
+
 /// Result of a goto-definition / goto-implementation / goto-type-definition request.
 pub struct GotoLocationResult {
     pub location: Option<lsp_types::Location>,
     /// Whether to open the result in a new tab.
     pub new_tab: bool,
+    pub origin: RequestOrigin,
 }
 
 /// Result of a hover request.
 pub struct HoverResult {
     /// The rendered hover text, or `None` if the server had nothing to show.
     pub hover_text: Option<String>,
+    pub origin: RequestOrigin,
+}
+
+/// Result of a foldingRange request.
+pub struct FoldingRangesResult {
+    pub ranges: Vec<lsp_types::FoldingRange>,
+    pub file_path: String,
+    /// Buffer version the request was made against; stale answers are dropped.
+    pub buffer_version: usize,
+}
+
+/// Text of a document the server addresses with a non-`file:` URI.
+pub struct VirtualDocumentResult {
+    pub uri: lsp_types::Uri,
+    pub text: String,
+    pub range: lsp_types::Range,
+    pub origin: RequestOrigin,
+}
+
+/// Result of a signature help request.
+pub struct SignatureHelpResult {
+    pub help: Option<lsp_types::SignatureHelp>,
+    /// File the request was made for; late answers for another file drop.
+    pub file_path: String,
 }
 
 /// Result of a completion request.
 #[derive(Debug)]
 pub struct CompletionResult {
     pub items: Vec<lsp_types::CompletionItem>,
+    /// `CompletionList.isIncomplete`: the list must be re-requested as the
+    /// user keeps typing.
+    pub is_incomplete: bool,
+    /// Where the request was made; lets the answer be applied after the user
+    /// typed further (see `Editor::completion_typed_since`).
+    pub anchor: super::completion::CompletionAnchor,
     /// File path at the time the request was fired. Used to drop responses
     /// that arrive after the user switched files.
     pub file_path: String,
@@ -548,6 +619,18 @@ pub struct CompletionResult {
     /// If we successfully flushed content to LSP, record the new synced content.
     pub synced_content: Option<String>,
     pub synced_lsp_version: Option<i32>,
+    /// The server each of `items` came from (empty when unknown).
+    pub sources: Vec<String>,
+}
+
+/// Result of a `completionItem/resolve` request.
+#[derive(Debug)]
+pub struct CompletionResolveResult {
+    /// Index of the item in the menu's item list when it was requested.
+    pub source_index: usize,
+    /// Buffer the menu was opened in; a late answer for another menu drops.
+    pub menu_generation: u64,
+    pub item: lsp_types::CompletionItem,
 }
 
 /// Result of an inlay hint request.
@@ -571,6 +654,9 @@ pub struct DiagnosticResult {
     pub diagnostics: Vec<lsp_types::Diagnostic>,
     pub count: (usize, usize, usize, usize),
     pub deferred: bool,
+    /// The diagnostics were published for the document's current version. If
+    /// not, they are an older publication and replace nothing already shown.
+    pub current: bool,
 }
 
 /// Result of a format-document request.
@@ -588,12 +674,6 @@ pub struct FormatResult {
 /// Result of a find-references request.
 pub struct ReferencesResult {
     pub locations: Vec<lsp_types::Location>,
-}
-
-/// Result of a document-symbols request.
-pub struct DocumentSymbolsResult {
-    pub symbols: Vec<lsp_types::DocumentSymbol>,
-    pub file_path: String,
 }
 
 /// Result of a workspace-symbols request.
@@ -628,22 +708,16 @@ pub struct OrganizeImportsResult {
     pub buffer_version: usize,
 }
 
-/// Result of a call-hierarchy request (incoming or outgoing).
-pub struct CallHierarchyResult {
-    pub locations: Vec<lsp_types::Location>,
-    pub direction: CallHierarchyDirection,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CallHierarchyDirection {
-    Incoming,
-    Outgoing,
-}
-
-/// Result of a type-hierarchy request.
-pub struct TypeHierarchyResult {
-    pub types: Vec<(String, lsp_types::Location)>,
-    pub all_locations: Vec<lsp_types::Location>,
+/// Result of a hierarchy request (call hierarchy, type hierarchy, or drilling
+/// into an entry of either).
+pub struct HierarchyResult {
+    pub title: String,
+    pub entries: Vec<super::lsp_state::HierarchyEntry>,
+    pub empty_message: String,
+    /// True when this expands an entry of the current level (pushes a level),
+    /// false when it starts a new hierarchy.
+    pub expanding: bool,
+    pub language_id: String,
 }
 
 /// Result of a semantic-tokens request.
@@ -662,20 +736,24 @@ pub struct LspSlots {
     pub goto_implementation: Slot<GotoLocationResult>,
     pub goto_type_definition: Slot<GotoLocationResult>,
     pub hover: Slot<HoverResult>,
+    pub signature_help: Slot<SignatureHelpResult>,
+    pub virtual_document: Slot<VirtualDocumentResult>,
+    pub folding_ranges: Slot<FoldingRangesResult>,
     // -- Query (Step 4) --
     pub completion: Slot<CompletionResult>,
+    pub completion_resolve: Slot<CompletionResolveResult>,
     pub inlay_hints: TrackedSlot<InlayHintResult>,
     pub diagnostics: TrackedSlot<DiagnosticResult>,
     // -- Actions (Step 5) --
     pub format: Slot<FormatResult>,
     pub references: Slot<ReferencesResult>,
-    pub document_symbols: Slot<DocumentSymbolsResult>,
     pub workspace_symbols: Slot<WorkspaceSymbolsResult>,
     pub code_actions: Slot<CodeActionsResult>,
     pub rename: Slot<RenameResult>,
     pub organize_imports: Slot<OrganizeImportsResult>,
-    pub call_hierarchy: Slot<CallHierarchyResult>,
-    pub type_hierarchy: Slot<TypeHierarchyResult>,
+    pub call_hierarchy: Slot<HierarchyResult>,
+    pub type_hierarchy: Slot<HierarchyResult>,
+    pub hierarchy_expand: Slot<HierarchyResult>,
     pub semantic_tokens: Slot<SemanticTokensSlotResult>,
 }
 
@@ -686,18 +764,22 @@ impl LspSlots {
         self.goto_implementation.cancel();
         self.goto_type_definition.cancel();
         self.hover.cancel();
+        self.signature_help.cancel();
+        self.virtual_document.cancel();
+        self.folding_ranges.cancel();
         self.completion.cancel();
+        self.completion_resolve.cancel();
         self.inlay_hints.cancel();
         self.diagnostics.cancel();
         self.format.cancel();
         self.references.cancel();
-        self.document_symbols.cancel();
         self.workspace_symbols.cancel();
         self.code_actions.cancel();
         self.rename.cancel();
         self.organize_imports.cancel();
         self.call_hierarchy.cancel();
         self.type_hierarchy.cancel();
+        self.hierarchy_expand.cancel();
         self.semantic_tokens.cancel();
     }
 
@@ -707,18 +789,21 @@ impl LspSlots {
             || self.goto_implementation.is_pending()
             || self.goto_type_definition.is_pending()
             || self.hover.is_pending()
+            || self.signature_help.is_pending()
+            || self.virtual_document.is_pending()
+            || self.folding_ranges.is_pending()
             || self.completion.is_pending()
             || self.inlay_hints.is_pending()
             || self.diagnostics.is_pending()
             || self.format.is_pending()
             || self.references.is_pending()
-            || self.document_symbols.is_pending()
             || self.workspace_symbols.is_pending()
             || self.code_actions.is_pending()
             || self.rename.is_pending()
             || self.organize_imports.is_pending()
             || self.call_hierarchy.is_pending()
             || self.type_hierarchy.is_pending()
+            || self.hierarchy_expand.is_pending()
             || self.semantic_tokens.is_pending()
     }
 }
@@ -730,7 +815,11 @@ impl Default for LspSlots {
             goto_implementation: Slot::new(),
             goto_type_definition: Slot::new(),
             hover: Slot::new(),
+            signature_help: Slot::new(),
+            virtual_document: Slot::new(),
+            folding_ranges: Slot::new(),
             completion: Slot::new(),
+            completion_resolve: Slot::new(),
             // Match CHANGE_DEBOUNCE_MS (150ms) so the first refresh fires
             // promptly after the last edit lands on the server rather
             // than waiting 350ms longer than necessary.
@@ -738,13 +827,13 @@ impl Default for LspSlots {
             diagnostics: TrackedSlot::new(),
             format: Slot::new(),
             references: Slot::new(),
-            document_symbols: Slot::new(),
             workspace_symbols: Slot::new(),
             code_actions: Slot::new(),
             rename: Slot::new(),
             organize_imports: Slot::new(),
             call_hierarchy: Slot::new(),
             type_hierarchy: Slot::new(),
+            hierarchy_expand: Slot::new(),
             semantic_tokens: Slot::new(),
         }
     }

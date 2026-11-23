@@ -7,7 +7,6 @@
 
 use crate::editor::Editor;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 /// Cap on retained output lines per run. Test logs can be huge; the panel is
@@ -15,19 +14,6 @@ use std::time::{Duration, Instant};
 const MAX_RUN_LINES: usize = 5_000;
 /// Cap on retained run history.
 const MAX_RUNS: usize = 10;
-
-/// One event streamed from a running test process.
-pub enum TestEvent {
-    /// A line of combined stdout/stderr output.
-    Line(String),
-    /// Process exited (or failed to spawn).
-    Finished { success: bool },
-}
-
-/// A background test job streaming into the panel.
-pub struct PendingTest {
-    pub receiver: Receiver<TestEvent>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestRunStatus {
@@ -58,6 +44,7 @@ pub struct TestFailure {
 }
 
 /// One test invocation, streamed live and kept in panel history.
+#[derive(Debug, Clone)]
 pub struct TestRun {
     /// Short human label: "nearest", "file", "suite", "re-run".
     pub scope_label: &'static str,
@@ -79,7 +66,7 @@ pub struct TestRun {
 }
 
 impl TestRun {
-    fn push_line(&mut self, line: String) {
+    pub(crate) fn push_line(&mut self, line: String) {
         self.lines.push(line);
         if self.lines.len() > MAX_RUN_LINES {
             let excess = self.lines.len() - MAX_RUN_LINES;
@@ -97,6 +84,8 @@ impl TestRun {
 #[derive(Default)]
 pub struct TestPanelState {
     pub open: bool,
+    /// Columns added to (or taken from) the default panel width.
+    pub width_delta: i16,
     /// Run history, newest last.
     pub runs: Vec<TestRun>,
 }
@@ -107,8 +96,7 @@ impl TestPanelState {
     }
 
     /// Starts tracking a new run; any still-running previous run is marked
-    /// cancelled (its channel receiver has been replaced, so its remaining
-    /// output is discarded).
+    /// cancelled (its process has been stopped by the launch flow).
     pub(crate) fn start_run(&mut self, scope_label: &'static str, command: String, cwd: PathBuf) {
         for run in &mut self.runs {
             if run.status == TestRunStatus::Running {
@@ -150,6 +138,11 @@ impl Editor {
         self.build.test_panel.open
     }
 
+    pub(crate) fn set_test_panel_width_delta(&mut self, delta: i32) {
+        self.build.test_panel.width_delta = delta.clamp(-20, 80) as i16;
+        self.mark_dirty();
+    }
+
     /// `<Space>tt` / `:TestPanel` - toggle the test panel.
     pub fn toggle_test_panel(&mut self) {
         let panel = &mut self.build.test_panel;
@@ -164,6 +157,7 @@ impl Editor {
     /// Hide the test panel without affecting a test running in the background.
     pub fn close_test_panel(&mut self) {
         self.build.test_panel.open = false;
+        self.render_cache.test_panel_drag = None;
     }
 
     /// `<Space>to` / `:TestOutput` - open the raw output of the last
@@ -179,50 +173,9 @@ impl Editor {
         self.set_status_message("Make/test output".to_string());
     }
 
-    /// Drains streamed test output. Returns true if a redraw is needed.
-    ///
-    /// While a run is in flight this always returns true so the elapsed
-    /// timer and spinner stay live.
-    pub fn poll_pending_test(&mut self) -> bool {
-        let Some(pending) = self.build.pending_test.as_ref() else {
-            return false;
-        };
-
-        let mut new_lines: Vec<String> = Vec::new();
-        let mut finished: Option<bool> = None;
-        let mut disconnected = false;
-        loop {
-            match pending.receiver.try_recv() {
-                Ok(TestEvent::Line(line)) => new_lines.push(line),
-                Ok(TestEvent::Finished { success }) => {
-                    finished = Some(success);
-                    break;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
-        }
-
-        if let Some(run) = self.build.test_panel.runs.last_mut() {
-            for line in new_lines {
-                run.push_line(line);
-            }
-        }
-
-        if let Some(success) = finished {
-            self.build.pending_test = None;
-            self.finish_test_run(success);
-        } else if disconnected {
-            self.build.pending_test = None;
-            self.finish_test_run(false);
-        }
-        true
-    }
-
-    fn finish_test_run(&mut self, success: bool) {
+    /// Finishes the panel's latest run of a shell test command: status,
+    /// summary and failures are parsed from the output it streamed.
+    pub(crate) fn finish_shell_test_run(&mut self, success: bool) {
         let Some(run) = self.build.test_panel.runs.last_mut() else {
             return;
         };
@@ -282,7 +235,7 @@ pub fn parse_test_failures(output: &str, cwd: &Path) -> Vec<TestFailure> {
 
     // Preserve compiler errors and Rust panic support already understood by
     // the quickfix parser, then supplement it with runtime stack formats.
-    for entry in crate::commands::parse_compiler_output(output) {
+    for entry in crate::launch::diagnostics::parse_compiler_output(output) {
         if entry.entry_type != crate::editor::QuickfixEntryType::Error {
             continue;
         }

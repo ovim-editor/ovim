@@ -567,11 +567,11 @@ fn test_ca_double_quote() {
     let mut test = EditorTest::new(r#"hello "world" test"#);
 
     test.keys("f\"")
-        .keys("ca\"") // Change around quotes (includes quotes)
+        .keys("ca\"") // nvim: the quotes and the blank after them
         .type_text("'universe'")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello 'universe' test\n");
+    assert_eq!(test.buffer_content(), "hello 'universe'test\n");
     test.assert_cursor(0, 15);
 }
 
@@ -883,11 +883,12 @@ fn test_change_in_indented_context() {
 fn test_change_to_search() {
     let mut test = EditorTest::new("hello world hello");
 
+    // nvim --clean: `c/world<CR>X<Esc>` changes everything before "world" (exclusive).
     test.keys("c/world") // Change to "world"
         .press_enter()
         .type_text("X")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "helloworld hello\n");
-    test.assert_cursor(0, 5);
+    assert_eq!(test.buffer_content(), "Xworld hello\n");
+    test.assert_cursor(0, 0);
 }

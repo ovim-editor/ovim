@@ -29,7 +29,7 @@ pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
         ),
     ]);
 
-    let paragraph = Paragraph::new(progress_line).style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(progress_line).style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, area);
 }
 
@@ -239,7 +239,6 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         .map(|b| format!(" {}", b))
         .unwrap_or_default();
 
-    let status_bg = ui_color(theme, UiGroup::StatusLineBackground);
     let status_fg = ui_color(theme, UiGroup::StatusLineForeground);
     let accent_bg = ui_color(theme, UiGroup::TabActiveBg);
     let accent_fg = ui_color(theme, UiGroup::TabActiveFg);
@@ -267,15 +266,6 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         spans.push(Span::raw(" "));
     }
 
-    spans.push(Span::styled(file, Style::default().fg(status_fg)));
-    spans.push(Span::styled(modified, Style::default().fg(status_fg)));
-    if !branch_display.is_empty() {
-        spans.push(Span::styled(
-            &branch_display,
-            Style::default().fg(status_fg).add_modifier(Modifier::DIM),
-        ));
-    }
-
     // Right-side widgets differ for AI chat mode
     let is_ai_chat = mode == crate::mode::Mode::AiChat;
     let mut right_spans: Vec<Span> = Vec::new();
@@ -288,20 +278,17 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                 format!(" ↳ {followed} "),
                 Style::default()
                     .fg(Color::Rgb(130, 205, 235))
-                    .bg(status_bg)
                     .add_modifier(Modifier::BOLD),
             ));
         }
         let active_profile = editor.ai_chat_effective_profile();
-        let model_display = editor
-            .ai_state
-            .config
-            .resolve_profile(&active_profile)
-            .map(|p| {
-                let short: String = p.model.chars().take(16).collect();
-                format!(" {}:{} ", active_profile, short)
-            })
-            .unwrap_or_else(|| format!(" {} ", active_profile));
+        let model = editor.ai_chat_selected_model();
+        let model_display = if model.is_empty() {
+            format!(" {active_profile} ")
+        } else {
+            let short: String = model.chars().take(16).collect();
+            format!(" {active_profile}:{short} ")
+        };
         right_spans.push(Span::styled(
             model_display,
             Style::default()
@@ -317,10 +304,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                     }
                     None => format!(" \u{26A1}{} ", chat.tool_call_count),
                 };
-                right_spans.push(Span::styled(
-                    iter_text,
-                    Style::default().fg(Color::Yellow).bg(status_bg),
-                ));
+                right_spans.push(Span::styled(iter_text, Style::default().fg(Color::Yellow)));
             }
 
             if chat.waiting {
@@ -335,7 +319,6 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                     status_text,
                     Style::default()
                         .fg(Color::Rgb(120, 180, 255))
-                        .bg(status_bg)
                         .add_modifier(Modifier::ITALIC),
                 ));
             }
@@ -347,14 +330,13 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                 let save_text = format!(" save:{mode} ");
                 right_spans.push(Span::styled(
                     save_text,
-                    Style::default().fg(Color::Rgb(150, 165, 190)).bg(status_bg),
+                    Style::default().fg(Color::Rgb(150, 165, 190)),
                 ));
                 if policy != "only_if_clean_at_start" {
                     right_spans.push(Span::styled(
                         format!(" ({policy}) "),
                         Style::default()
                             .fg(Color::Rgb(126, 140, 165))
-                            .bg(status_bg)
                             .add_modifier(Modifier::DIM),
                     ));
                 }
@@ -384,6 +366,18 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         } else {
             String::new()
         };
+        // A long message must not push the position off the line: keep the
+        // mode, the modified flag and (at least the start of) the file name.
+        let name_room = UnicodeWidthStr::width(path_file_name(file)).min(STATUS_NAME_ROOM) + 2;
+        let message_room = (area.width as usize).saturating_sub(
+            UnicodeWidthStr::width(mode_indicator.as_str())
+                + 1
+                + UnicodeWidthStr::width(modified)
+                + UnicodeWidthStr::width(diagnostics.as_str())
+                + UnicodeWidthStr::width(position.as_str())
+                + name_room,
+        );
+        let status_message = truncate_with_ellipsis(&status_message, message_room);
 
         if !diagnostics.is_empty() {
             right_spans.push(Span::styled(
@@ -421,6 +415,55 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         ));
     }
 
+    // The right side is not negotiable; the file path gives way first (home
+    // becomes `~`, then leading directories drop), then the branch.
+    let right_width: usize = right_spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let left_room = (area.width as usize).saturating_sub(
+        UnicodeWidthStr::width(mode_indicator.as_str())
+            + status_gap_width(&recording_indicator)
+            + UnicodeWidthStr::width(modified)
+            + right_width,
+    );
+    let home = dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
+    let (file, branch_display) = fit_status_left(file, &branch_display, left_room, home.as_deref());
+    let file = file.as_str();
+    spans.push(Span::styled(file, Style::default().fg(status_fg)));
+    spans.push(Span::styled(modified, Style::default().fg(status_fg)));
+    if !branch_display.is_empty() {
+        spans.push(Span::styled(
+            &branch_display,
+            Style::default().fg(status_fg).add_modifier(Modifier::DIM),
+        ));
+    }
+
+    // Breadcrumbs: the enclosing class › method, in whatever room is left.
+    let breadcrumb_text = if is_ai_chat {
+        String::new()
+    } else {
+        let taken: usize = UnicodeWidthStr::width(mode_indicator.as_str())
+            + 1
+            + UnicodeWidthStr::width(file)
+            + UnicodeWidthStr::width(modified)
+            + UnicodeWidthStr::width(branch_display.as_str())
+            + right_spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum::<usize>();
+        fit_breadcrumbs(
+            &editor.breadcrumb_text(),
+            (area.width as usize).saturating_sub(taken + 2),
+        )
+    };
+    if !breadcrumb_text.is_empty() {
+        spans.push(Span::styled(
+            format!(" \u{203a} {breadcrumb_text}"),
+            Style::default().fg(accent_bg),
+        ));
+    }
+
     // Calculate padding (display columns, not bytes: unicode filenames,
     // branches, and status messages must not shift the right-side spans)
     let recording_len = if !recording_indicator.is_empty() {
@@ -428,7 +471,13 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     } else {
         1
     };
+    let breadcrumb_width = if breadcrumb_text.is_empty() {
+        0
+    } else {
+        UnicodeWidthStr::width(breadcrumb_text.as_str()) + 3
+    };
     let left_used = UnicodeWidthStr::width(mode_indicator.as_str())
+        + breadcrumb_width
         + recording_len
         + UnicodeWidthStr::width(file)
         + UnicodeWidthStr::width(modified)
@@ -444,8 +493,123 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
 
     let status_line = Line::from(spans);
 
-    let paragraph = Paragraph::new(status_line).style(Style::default().bg(status_bg).fg(status_fg));
+    let paragraph =
+        Paragraph::new(status_line).style(Style::default().bg(Color::Reset).fg(status_fg));
     frame.render_widget(paragraph, area);
+}
+
+/// Columns of the file name the status line keeps in front of a long status
+/// message.
+const STATUS_NAME_ROOM: usize = 24;
+
+/// Columns before the file path: the separator, plus the recording badge.
+fn status_gap_width(recording_indicator: &str) -> usize {
+    if recording_indicator.is_empty() {
+        1
+    } else {
+        UnicodeWidthStr::width(recording_indicator) + 1
+    }
+}
+
+fn path_file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Shortens a file path to at most `max_width` columns: `home` becomes `~`,
+/// then leading directories drop (`…/dir/file`), and as a last resort the
+/// file name is cut from the left (`…name`).
+fn shorten_status_path(path: &str, home: Option<&str>, max_width: usize) -> String {
+    if UnicodeWidthStr::width(path) <= max_width {
+        return path.to_string();
+    }
+    let home_relative = home
+        .filter(|home| !home.is_empty() && *home != "/")
+        .and_then(|home| path.strip_prefix(home))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(|rest| format!("~/{rest}"));
+    if let Some(shown) = home_relative.as_deref() {
+        if UnicodeWidthStr::width(shown) <= max_width {
+            return shown.to_string();
+        }
+    }
+    let shown = home_relative.as_deref().unwrap_or(path);
+    let parts: Vec<&str> = shown.split('/').filter(|part| !part.is_empty()).collect();
+    // The most trailing components that fit behind the ellipsis.
+    for keep in (1..parts.len()).rev() {
+        let candidate = format!("\u{2026}/{}", parts[parts.len() - keep..].join("/"));
+        if UnicodeWidthStr::width(candidate.as_str()) <= max_width {
+            return candidate;
+        }
+    }
+    // Not even the file name fits: keep its end.
+    let name = parts.last().copied().unwrap_or(shown);
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 1;
+    for c in name.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max_width {
+            break;
+        }
+        tail.push(c);
+        used += w;
+    }
+    tail.reverse();
+    if max_width == 0 {
+        String::new()
+    } else {
+        format!("\u{2026}{}", tail.into_iter().collect::<String>())
+    }
+}
+
+/// Fits the file path and the branch badge into `room` columns: the path is
+/// shortened (down to its file name) before the branch is dropped.
+fn fit_status_left(file: &str, branch: &str, room: usize, home: Option<&str>) -> (String, String) {
+    let width = UnicodeWidthStr::width;
+    if width(file) + width(branch) <= room {
+        return (file.to_string(), branch.to_string());
+    }
+    let path_room = room
+        .saturating_sub(width(branch))
+        .max(width(path_file_name(file)).min(room));
+    if path_room + width(branch) <= room {
+        return (
+            shorten_status_path(file, home, path_room),
+            branch.to_string(),
+        );
+    }
+    (shorten_status_path(file, home, room), String::new())
+}
+
+/// Fits `text` (`Class › method`) into `width` columns, dropping the outermost
+/// crumbs first so the innermost symbol stays visible. Empty when there is not
+/// room for anything useful.
+pub fn fit_breadcrumbs(text: &str, width: usize) -> String {
+    if text.is_empty() || width < 6 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    let parts: Vec<&str> = text.split(" \u{203a} ").collect();
+    for skip in 1..parts.len() {
+        let candidate = format!("\u{2026} \u{203a} {}", parts[skip..].join(" \u{203a} "));
+        if UnicodeWidthStr::width(candidate.as_str()) <= width {
+            return candidate;
+        }
+    }
+    // Even the innermost crumb alone is too wide: cut it with an ellipsis.
+    let last = parts.last().copied().unwrap_or("");
+    let mut out = String::new();
+    let mut used = 1;
+    for c in last.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    format!("{out}\u{2026}")
 }
 
 /// Renders the command line
@@ -454,10 +618,10 @@ pub fn render_command_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     let command_line = Line::from(vec![Span::styled(
         command_text,
-        Style::default().fg(Color::White).bg(Color::Black),
+        Style::default().fg(Color::White).bg(Color::Reset),
     )]);
 
-    let paragraph = Paragraph::new(command_line).style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(command_line).style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, area);
 }
 
@@ -556,13 +720,13 @@ pub fn render_message_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     let line = if !message.is_empty() {
         Line::from(vec![Span::styled(
             message.to_string(),
-            Style::default().fg(Color::White).bg(Color::Black),
+            Style::default().fg(Color::White).bg(Color::Reset),
         )])
     } else {
         diagnostic_echo_line(editor, area.width as usize).unwrap_or_default()
     };
 
-    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, area);
 }
 
@@ -600,12 +764,12 @@ fn diagnostic_echo_line(editor: &Editor, width: usize) -> Option<Line<'static>> 
             prefix,
             Style::default()
                 .fg(color)
-                .bg(Color::Black)
+                .bg(Color::Reset)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             truncate_with_ellipsis(&text, body_width),
-            Style::default().fg(Color::White).bg(Color::Black),
+            Style::default().fg(Color::White).bg(Color::Reset),
         ),
     ]))
 }
@@ -621,10 +785,10 @@ pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     let search_line = Line::from(vec![Span::styled(
         search_text,
-        Style::default().fg(Color::White).bg(Color::Black),
+        Style::default().fg(Color::White).bg(Color::Reset),
     )]);
 
-    let paragraph = Paragraph::new(search_line).style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(search_line).style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, area);
 }
 
@@ -634,10 +798,10 @@ pub fn render_rename_input(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     let line = Line::from(vec![Span::styled(
         text,
-        Style::default().fg(Color::White).bg(Color::Black),
+        Style::default().fg(Color::White).bg(Color::Reset),
     )]);
 
-    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, area);
 }
 
@@ -1153,7 +1317,6 @@ pub fn render_margin_widgets(
 fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) {
     let accent_bg = ui_color(theme, UiGroup::TabActiveBg);
     let accent_fg = ui_color(theme, UiGroup::TabActiveFg);
-    let status_bg = ui_color(theme, UiGroup::StatusLineBackground);
     let status_fg = ui_color(theme, UiGroup::StatusLineForeground);
 
     let edit_count = editor
@@ -1206,19 +1369,18 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
     let max_info_width = w.saturating_sub(mode_width + UnicodeWidthStr::width(hints.as_str()));
     let info = truncate_middle(&info, max_info_width);
 
-    let info_span = Span::styled(info, Style::default().fg(status_fg).bg(status_bg));
+    let info_span = Span::styled(info, Style::default().fg(status_fg));
     let hints_span = Span::styled(
         hints,
         Style::default()
             .fg(Color::DarkGray)
-            .bg(status_bg)
             .add_modifier(Modifier::DIM),
     );
     let used = mode_width
         + UnicodeWidthStr::width(info_span.content.as_ref())
         + UnicodeWidthStr::width(hints_span.content.as_ref());
     let gap = w.saturating_sub(used);
-    let gap_span = Span::styled(" ".repeat(gap), Style::default().bg(status_bg));
+    let gap_span = Span::styled(" ".repeat(gap), Style::default());
 
     let line = Line::from(vec![mode_span, info_span, gap_span, hints_span]);
     frame.render_widget(Paragraph::new(vec![line]), area);
@@ -1311,11 +1473,172 @@ fn truncate_middle(text: &str, max_cols: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_path_hint, hidden_ai_chat_status_for, progress_padding, truncate_middle,
-        truncate_with_ellipsis, ToastLevel, ToastRow,
+        compact_path_hint, fit_breadcrumbs, hidden_ai_chat_status_for, progress_padding,
+        truncate_middle, truncate_with_ellipsis, ToastLevel, ToastRow,
     };
     use crate::editor::{ToastRequest, ToastSource};
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn breadcrumbs_drop_the_outermost_crumbs_first_and_keep_the_method() {
+        let text = "Circle \u{203a} Builder \u{203a} build";
+        assert_eq!(fit_breadcrumbs(text, 40), text);
+        assert_eq!(
+            fit_breadcrumbs(text, 20),
+            "\u{2026} \u{203a} Builder \u{203a} build"
+        );
+        assert_eq!(fit_breadcrumbs(text, 10), "\u{2026} \u{203a} build");
+        assert_eq!(fit_breadcrumbs(text, 3), "", "no room, no crumbs");
+        assert_eq!(fit_breadcrumbs("", 40), "");
+        assert!(
+            UnicodeWidthStr::width(fit_breadcrumbs("averyveryverylongmethodname", 8).as_str()) <= 8
+        );
+    }
+
+    #[test]
+    fn chat_status_line_shows_the_selected_model_without_mutating_configuration() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut editor = crate::editor::Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.name = "claude_code".into();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts::default())
+            .unwrap();
+        assert!(editor.ai_select_chat_model("claude_code", "opus[1m]"));
+        let mut terminal = Terminal::new(TestBackend::new(160, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_status_line(
+                    frame,
+                    &editor,
+                    &crate::syntax::Theme::default(),
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("claude_code:opus[1m]"), "{text}");
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].model,
+            "default"
+        );
+
+        let mut cache = crate::ui::ansi::AnsiRenderCache::new();
+        cache.render(&mut editor, 160, 45, true).unwrap();
+        assert!(cache.would_hit(&editor, 160, 45, true));
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts {
+                profile: Some("local".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!cache.would_hit(&editor, 160, 45, true));
+        let screen = cache.render(&mut editor, 160, 45, true).unwrap();
+        assert!(screen.contains("M:local"), "{screen}");
+    }
+
+    #[test]
+    fn status_paths_shorten_home_then_directories_then_the_name() {
+        use super::{fit_status_left, shorten_status_path};
+        let path = "/home/adhv/Projects/ovim/src/ui/renderer/status_widgets.rs";
+        let home = Some("/home/adhv");
+        assert_eq!(shorten_status_path(path, home, 80), path);
+        assert_eq!(
+            shorten_status_path(path, home, 50),
+            "~/Projects/ovim/src/ui/renderer/status_widgets.rs"
+        );
+        assert_eq!(
+            shorten_status_path(path, home, 30),
+            "\u{2026}/renderer/status_widgets.rs"
+        );
+        assert_eq!(
+            shorten_status_path(path, home, 20),
+            "\u{2026}/status_widgets.rs"
+        );
+        // Not even the name fits: its end is kept.
+        assert_eq!(shorten_status_path(path, home, 10), "\u{2026}idgets.rs");
+        assert_eq!(shorten_status_path(path, home, 0), "");
+        // Home only abbreviates a whole leading component.
+        assert_eq!(
+            shorten_status_path("/home/adhvx/a.rs", home, 14),
+            "\u{2026}/adhvx/a.rs"
+        );
+        for width in 0..70 {
+            assert!(
+                UnicodeWidthStr::width(shorten_status_path(path, home, width).as_str()) <= width
+            );
+        }
+
+        // The branch stays while the path can shorten; it goes before the name.
+        let (file, branch) = fit_status_left(path, " main", 45, home);
+        assert_eq!(branch, " main");
+        assert!(file.starts_with('\u{2026}') && UnicodeWidthStr::width(file.as_str()) <= 40);
+        let (file, branch) = fit_status_left(path, " main", 18, home);
+        assert_eq!(
+            branch, "",
+            "no room for both once the path is down to its name"
+        );
+        assert!(UnicodeWidthStr::width(file.as_str()) <= 18);
+    }
+
+    /// The absolute path (and a long message) used to push the position and
+    /// the diagnostic counts off the end of a narrow status line.
+    #[test]
+    fn narrow_status_lines_keep_the_position_and_the_file_name() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut editor = crate::editor::Editor::with_content("fn main() {}\n");
+        editor.set_file_path(
+            "/home/adhv/Projects/ovim/ovim/src/ui/renderer/status_widgets.rs".to_string(),
+        );
+        editor.set_status_message("rust-analyzer finished indexing the whole workspace");
+        for width in [24u16, 32, 40, 60, 90] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    super::render_status_line(
+                        frame,
+                        &editor,
+                        &crate::syntax::Theme::default(),
+                        frame.area(),
+                    );
+                })
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.trim_end().ends_with("1:1"),
+                "{width} columns lost the position: {text:?}"
+            );
+            assert!(
+                text.contains("NORMAL") || width < 30,
+                "{width} columns lost the mode: {text:?}"
+            );
+            if width >= 40 {
+                assert!(
+                    text.contains("status_widgets.rs"),
+                    "{width} columns lost the file name: {text:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn compact_path_hint_keeps_disambiguating_tail() {

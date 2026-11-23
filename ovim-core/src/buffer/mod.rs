@@ -1,8 +1,10 @@
 mod cursor;
 mod encoding;
 mod file_io;
+mod highlight_index;
 mod highlighting;
 mod line_ending;
+mod marks;
 mod text_ops;
 
 pub use cursor::Cursor;
@@ -15,13 +17,14 @@ use crate::edit::Edit;
 use crate::edit_log::EditLog;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, InjectionCache, SyntaxHighlighter};
-use crate::unicode::{grapheme_count, CharCol, GraphemeCol};
+use crate::text_index::{LineChange, LineChangeLog, LineIndex, PendingTextEdit, TextIndexCache};
+use crate::unicode::{CharCol, GraphemeCol};
 use crate::GitStatus;
 use ropey::Rope;
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub type BufferId = u64;
 
@@ -74,6 +77,10 @@ pub struct Buffer {
     pub(super) forced_highlights: Option<LineHighlights>,
     /// Version counter for highlight cache (incremented on every edit)
     pub(super) highlight_version: u64,
+    /// Changes when a non-text highlight source (semantic/forced/background)
+    /// changes without advancing `highlight_version`.
+    pub(super) highlight_projection_generation: u64,
+    highlight_range_cache: Mutex<highlight_index::HighlightRangeCache>,
     /// Whether re-highlighting is pending
     pub(super) pending_rehighlight: bool,
     /// Fold manager for code folding
@@ -88,6 +95,13 @@ pub struct Buffer {
     pub(super) file_mtime: Option<std::time::SystemTime>,
     /// Whether the file is read-only (no write permission)
     pub(super) read_only: bool,
+    /// Vim's `modifiable`: false refuses every text edit (library sources,
+    /// server-provided virtual documents). Unlike `read_only`, which only
+    /// stops `:w`, this stops the edit itself (E21).
+    pub(super) modifiable: bool,
+    /// An edit was refused because the buffer is not modifiable; the editor
+    /// reports it (E21) once after the key that attempted it.
+    pub(super) refused_edit: bool,
     /// Cached semantic token highlights from LSP (line_idx -> Vec<(range, group)>)
     /// These take precedence over tree-sitter highlights when available
     pub(super) semantic_highlights: Option<LineHighlights>,
@@ -108,6 +122,8 @@ pub struct Buffer {
     /// is non-empty. Consumers anchor to a specific `version` and call
     /// `edit_log.edits_since(v)` to replay deltas onto stale positions.
     edit_log: EditLog,
+    text_index: Mutex<TextIndexCache>,
+    line_changes: LineChangeLog,
     /// Presentation-only label for pathless buffers (walkthrough snapshots,
     /// scratch views), shown in the tab bar and status line instead of
     /// "[No Name]". Unlike `file_path` it carries no save target or LSP
@@ -117,6 +133,9 @@ pub struct Buffer {
     /// editor defaults; file-backed buffers are pinned when they are added to
     /// an editor so later changes cannot leak across already-open files.
     indent_options: Option<crate::indentation::IndentOptions>,
+    /// Marks `a`-`z`, `<` and `>`, kept in step with the text by the edit
+    /// primitives.
+    local_marks: marks::LocalMarks,
 }
 
 impl Buffer {
@@ -136,6 +155,8 @@ impl Buffer {
             cached_highlights: None,
             forced_highlights: None,
             highlight_version: 0,
+            highlight_projection_generation: 0,
+            highlight_range_cache: Mutex::new(highlight_index::HighlightRangeCache::default()),
             pending_rehighlight: false,
             fold_manager: crate::fold::FoldManager::new(),
             git_status: GitStatus::new(),
@@ -143,14 +164,19 @@ impl Buffer {
             change_manager: ChangeManager::new(),
             file_mtime: None,
             read_only: false,
+            modifiable: true,
+            refused_edit: false,
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
             injection_cache: None,
             recording: None,
             edit_log: EditLog::new(),
+            text_index: Mutex::new(TextIndexCache::default()),
+            line_changes: LineChangeLog::default(),
             display_name: None,
             indent_options: None,
+            local_marks: marks::LocalMarks::default(),
         }
     }
 
@@ -243,6 +269,8 @@ impl Buffer {
             cached_highlights: None,
             forced_highlights: None,
             highlight_version: 0,
+            highlight_projection_generation: 0,
+            highlight_range_cache: Mutex::new(highlight_index::HighlightRangeCache::default()),
             pending_rehighlight: false,
             fold_manager: crate::fold::FoldManager::new(),
             git_status: GitStatus::new(),
@@ -250,14 +278,19 @@ impl Buffer {
             change_manager: ChangeManager::new(),
             file_mtime: None,
             read_only: false,
+            modifiable: true,
+            refused_edit: false,
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
             injection_cache: None,
             recording: None,
             edit_log: EditLog::new(),
+            text_index: Mutex::new(TextIndexCache::default()),
+            line_changes: LineChangeLog::default(),
             display_name: None,
             indent_options: None,
+            local_marks: marks::LocalMarks::default(),
         }
     }
 
@@ -298,6 +331,10 @@ impl Buffer {
 
     /// Gets a mutable rope reference
     pub fn rope_mut(&mut self) -> &mut Rope {
+        // Raw mutable access cannot report an exact splice. Invalidate before
+        // exposing the rope, including same-length substitutions.
+        self.version += 1;
+        self.invalidate_text_index();
         self.modified = true;
         // Blame data becomes stale after any edit
         self.git_blame = None;
@@ -318,9 +355,7 @@ impl Buffer {
             self.cursor.set_position(line, GraphemeCol(0));
             return;
         }
-        let line_rope = self.rope.line(line);
-        let line_str: String = line_rope.chars().take_while(|&c| c != '\n').collect();
-        let grapheme_col = crate::unicode::char_to_grapheme_col(&line_str, char_col);
+        let grapheme_col = self.line_index(line).char_to_grapheme(char_col);
         self.cursor.set_position(line, grapheme_col);
     }
 
@@ -336,15 +371,14 @@ impl Buffer {
         if line_idx >= self.rope.len_lines() {
             return CharCol::ZERO;
         }
-        let line = self.rope.line(line_idx);
-        let line_str: String = line.chars().take_while(|&c| c != '\n').collect();
-        crate::unicode::grapheme_to_char_col(&line_str, self.cursor.col())
+        self.line_index(line_idx)
+            .grapheme_to_char(self.cursor.col())
     }
 
     /// Character column immediately after the grapheme under the cursor.
     pub fn cursor_grapheme_end_char_col(&self) -> CharCol {
-        let line = self.line_text(self.cursor.line()).unwrap_or_default();
-        crate::unicode::grapheme_to_char_col(&line, GraphemeCol(self.cursor.col().0 + 1))
+        self.line_index(self.cursor.line())
+            .grapheme_to_char(GraphemeCol(self.cursor.col().0 + 1))
     }
 
     /// Gets a mutable cursor reference
@@ -397,6 +431,29 @@ impl Buffer {
     /// Sets the read-only status of the buffer
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
+    }
+
+    /// Whether text edits are accepted (Vim's `modifiable`).
+    pub fn is_modifiable(&self) -> bool {
+        self.modifiable
+    }
+
+    /// Sets Vim's `modifiable`.
+    pub fn set_modifiable(&mut self, modifiable: bool) {
+        self.modifiable = modifiable;
+    }
+
+    /// True (once) when an edit was refused since the last call.
+    pub fn take_refused_edit(&mut self) -> bool {
+        std::mem::take(&mut self.refused_edit)
+    }
+
+    /// Records a refused edit and reports whether the buffer accepts edits.
+    pub(super) fn accepts_edits(&mut self) -> bool {
+        if !self.modifiable {
+            self.refused_edit = true;
+        }
+        self.modifiable
     }
 
     /// Returns the current version of this buffer.
@@ -520,10 +577,43 @@ impl Buffer {
     /// space, and produces wrong values for emoji / ZWJ / flag content
     /// (the OV-00202 / OV-00246 bug class).
     pub fn line_grapheme_count(&self, idx: usize) -> usize {
-        self.line_text(idx)
-            .as_deref()
-            .map(grapheme_count)
-            .unwrap_or(0)
+        self.line_index(idx).grapheme_count()
+    }
+
+    /// Shared rope-backed coordinates and viewport slices. Raw rope line bounds
+    /// are accepted, including the empty row after a trailing terminator.
+    pub fn line_index(&self, line: usize) -> Arc<LineIndex> {
+        self.text_index
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .line(&self.rope, line)
+    }
+
+    /// Exact logical-row splices after `version`, or None when the bounded
+    /// history expired or the rope was replaced/accessed through rope_mut.
+    pub fn line_changes_since(&self, version: usize) -> Option<Vec<LineChange>> {
+        self.line_changes.since(version, self.version)
+    }
+
+    fn prepare_text_edit(&self, start: usize, end: usize) -> PendingTextEdit {
+        PendingTextEdit::new(&self.rope, start, end)
+    }
+
+    fn finish_text_edit(&mut self, edit: PendingTextEdit, inserted: &str) {
+        let change = self
+            .text_index
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .edited(&self.rope, edit, inserted, self.version + 1);
+        self.line_changes.push(change);
+    }
+
+    fn invalidate_text_index(&mut self) {
+        self.text_index
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.line_changes.reset(self.version);
     }
 
     /// Gets a specific line as a RopeSlice (zero-allocation)
@@ -846,6 +936,7 @@ impl Buffer {
 
         // Version: bump so LSP caches know content changed
         self.version += 1;
+        self.invalidate_text_index();
     }
 
     /// Checks if a line is hidden by a fold
@@ -886,18 +977,6 @@ impl Buffer {
     /// Clears all folds
     pub fn clear_folds(&mut self) {
         self.fold_manager.delete_all();
-    }
-
-    /// Refreshes git status for this buffer
-    /// Returns the duration in microseconds if git status was refreshed
-    pub fn refresh_git_status(&mut self) -> Option<u64> {
-        if let Some(ref path) = self.file_path {
-            let start = std::time::Instant::now();
-            self.git_status = GitStatus::from_file(path).unwrap_or_else(|_| GitStatus::new());
-            Some(start.elapsed().as_micros() as u64)
-        } else {
-            None
-        }
     }
 
     /// Gets the git status for this buffer
@@ -1551,10 +1630,8 @@ mod tests {
             crate::change::CursorPos::new(0, crate::unicode::GraphemeCol(2)),
             42,
         );
-        buf.change_manager_mut()
-            .push_undo_change_preserving_repeat(change1);
-        buf.change_manager_mut()
-            .push_undo_change_preserving_repeat(change2);
+        buf.change_manager_mut().push_change(change1);
+        buf.change_manager_mut().push_change(change2);
 
         // One undo should revert both grouped edits.
         assert!(buf.undo().0.is_done());

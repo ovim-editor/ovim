@@ -2,7 +2,7 @@ use super::backend::PickerBackend;
 use super::fuzzy_backend::FuzzyListKind;
 use super::grep_backend::GrepState;
 use super::nucleo_backend::NucleoState;
-use super::result::{PickerField, PickerResult};
+use super::result::{GitPick, PickerField, PickerResult};
 use super::Picker;
 use crate::editor::SingleLineInput;
 use std::path::PathBuf;
@@ -21,6 +21,9 @@ impl Picker {
             preferred_dir,
             pending_filter: false,
             backend: PickerBackend::Nucleo(Box::new(NucleoState::new())),
+            title: None,
+            symbol_query_pending: false,
+            role: None,
         }
     }
 
@@ -37,6 +40,9 @@ impl Picker {
             preferred_dir,
             pending_filter: false,
             backend: PickerBackend::Grep(GrepState::new()),
+            title: None,
+            symbol_query_pending: false,
+            role: None,
         }
     }
 
@@ -57,6 +63,9 @@ impl Picker {
             preferred_dir,
             pending_filter: false,
             backend: PickerBackend::FuzzyList(kind),
+            title: None,
+            symbol_query_pending: false,
+            role: None,
         }
     }
 
@@ -119,6 +128,46 @@ impl Picker {
         )
     }
 
+    /// Creates a picker whose rows each open a git view when selected.
+    pub fn new_git(base_dir: PathBuf, rows: Vec<(String, GitPick)>, title: &str) -> Self {
+        let preferred_dir = base_dir.clone();
+        let (results, picks) = Self::git_results(rows);
+        Self::new_fuzzy_list(base_dir, preferred_dir, results, FuzzyListKind::Git(picks))
+            .with_title(title)
+    }
+
+    /// Display rows for `rows`, each pointing at its pick by index.
+    pub(super) fn git_results(rows: Vec<(String, GitPick)>) -> (Vec<PickerResult>, Vec<GitPick>) {
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, (display, pick))| {
+                let result = PickerResult {
+                    display,
+                    location: String::new(),
+                    line: index,
+                    col: 0,
+                    match_positions: Vec::new(),
+                    content: None,
+                };
+                (result, pick)
+            })
+            .unzip()
+    }
+
+    /// Creates the live workspace-symbol picker; results arrive from the server.
+    pub fn new_workspace_symbols(base_dir: PathBuf) -> Self {
+        let preferred_dir = base_dir.clone();
+        let mut picker = Self::new_fuzzy_list(
+            base_dir,
+            preferred_dir,
+            Vec::new(),
+            FuzzyListKind::WorkspaceSymbols,
+        )
+        .with_title("Workspace symbols");
+        picker.symbol_query_pending = true;
+        picker
+    }
+
     /// Creates a new debug config picker
     pub fn new_debug_config(base_dir: PathBuf, items: Vec<String>) -> Self {
         let preferred_dir = base_dir.clone();
@@ -127,6 +176,17 @@ impl Picker {
             preferred_dir,
             Self::items_to_results(items),
             FuzzyListKind::DebugConfig,
+        )
+    }
+
+    /// Creates the action picker for a server `window/showMessageRequest`
+    pub fn new_message_actions(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let preferred_dir = base_dir.clone();
+        Self::new_fuzzy_list(
+            base_dir,
+            preferred_dir,
+            Self::items_to_results(items),
+            FuzzyListKind::MessageAction,
         )
     }
 

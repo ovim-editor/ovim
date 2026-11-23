@@ -18,6 +18,28 @@ pub enum ChatRole {
 
 #[derive(Debug)]
 pub enum StreamChunk {
+    /// Provider-owned tool observations. These must never enter Ovim's executor.
+    /// A request on the private, turn-bound editor MCP connection.
+    ExternalEditorRequest {
+        id: String,
+        request: serde_json::Value,
+        response: tokio::sync::oneshot::Sender<serde_json::Value>,
+    },
+    ExternalEditorCancelled(String),
+    ExternalToolStart(ToolCallInfo),
+    ExternalToolResult {
+        id: String,
+        content: String,
+        error: bool,
+    },
+    ExternalPermission {
+        name: String,
+        input: serde_json::Value,
+        reason: String,
+        response: tokio::sync::oneshot::Sender<ExternalPermissionAnswer>,
+    },
+    ExternalSession(String),
+    ExternalPermissionCancelled,
     /// Chain-of-thought tokens (Anthropic extended thinking).
     Thinking(String),
     /// Response content tokens.
@@ -49,14 +71,29 @@ pub enum StreamChunk {
         response: tokio::sync::oneshot::Sender<Result<String, String>>,
     },
     /// A queued user steer was accepted by the active provider turn.
-    SteerAccepted { id: u64, content: String },
+    SteerAccepted {
+        id: u64,
+        content: String,
+    },
     /// The provider could not steer the active turn; ovim keeps it queued for
     /// the next round instead of failing the current response.
-    SteerRejected { id: u64, error: String },
+    SteerRejected {
+        id: u64,
+        error: String,
+    },
     /// Stream finished successfully.
     Done,
     /// Stream error.
     Error(String),
+}
+
+/// A decision returned to a provider-owned permission callback. Ovim never
+/// executes the proposed tool itself.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ExternalPermissionAnswer {
+    pub allow: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]

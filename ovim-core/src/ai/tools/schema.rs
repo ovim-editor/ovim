@@ -33,7 +33,7 @@ pub fn tools_to_anthropic_schema(tools: &[&ToolDefinition]) -> Vec<serde_json::V
         .collect()
 }
 
-fn input_schema(tool: &ToolDefinition) -> serde_json::Value {
+pub(crate) fn input_schema(tool: &ToolDefinition) -> serde_json::Value {
     tool.custom_input_schema
         .as_ref()
         .map(|schema| schema.as_value().clone())
@@ -155,8 +155,33 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
                             }
                         },
                         "required": ["type", "path", "start_line", "comment"]
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "type": { "const": "diff" },
+                            "snapshot_id": { "type": "string", "minLength": 1, "description": "Frozen ID returned by read_diff." },
+                            "title": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Short heading for this change." },
+                            "comment": { "type": "string", "minLength": 1, "description": "Explain one idea demonstrated by this change." },
+                            "old": { "$ref": "#/properties/steps/$defs/diff_reference" },
+                            "new": { "$ref": "#/properties/steps/$defs/diff_reference" }
+                        },
+                        "required": ["type", "snapshot_id", "title", "comment"],
+                        "anyOf": [{ "required": ["old"] }, { "required": ["new"] }]
                     }
                 ]
+            },
+            "$defs": {
+                "diff_reference": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "block_id": { "type": "string", "minLength": 1 },
+                        "offset": { "type": "integer", "minimum": 0 },
+                        "count": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["block_id"]
+                }
             }
         }),
         ParamType::ChangeSet => change_set_schema(description),
@@ -297,6 +322,30 @@ mod tests {
     use crate::ai::scope::RequiredScope;
     use crate::ai::tools::{SideEffect, StrictJsonSchema, StringEnum, ToolParam};
     use crate::ai::types::FileScope;
+
+    #[test]
+    fn walkthrough_diff_references_validate_in_provider_schema() {
+        let schema = input_schema(&crate::ai::tools::builtins::explain_with_codebase_def());
+        let strict = StrictJsonSchema::new(schema).unwrap();
+        let step = json!({
+            "type": "diff", "snapshot_id": "diff_frozen", "title": "Guard",
+            "comment": "The guard changes.",
+            "old": {"block_id": "removed_4", "offset": 1, "count": 1},
+            "new": {"block_id": "added_5"}
+        });
+        strict
+            .validate_instance(&json!({"steps": [step.clone()]}))
+            .unwrap();
+        for invalid in [
+            json!({"type": "diff", "snapshot_id": "diff_frozen", "title": "Guard", "comment": "Change."}),
+            json!({"type": "diff", "snapshot_id": "diff_frozen", "title": "Guard", "comment": "Change.", "old": {"block_id": "x", "count": 0}}),
+            json!({"type": "diff", "snapshot_id": "diff_frozen", "title": "Guard", "comment": "Change.", "new": {"block_id": "x", "extra": true}}),
+        ] {
+            assert!(strict
+                .validate_instance(&json!({"steps": [invalid]}))
+                .is_err());
+        }
+    }
 
     fn test_tool() -> ToolDefinition {
         ToolDefinition {

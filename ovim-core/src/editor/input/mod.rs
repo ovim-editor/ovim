@@ -1,4 +1,4 @@
-use crate::editor::{Editor, InputState, MapMode};
+use crate::editor::{Editor, InputState, MapMode, Nesting};
 use crate::mode::Mode;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -45,8 +45,12 @@ mod substitute_mode;
 /// Dashboard mode handler
 mod dashboard_mode;
 
+mod debug_keys;
+mod debug_panel_mode;
 /// LSP Manager mode handler
 mod lsp_manager_mode;
+mod run_console_mode;
+mod search_replace_mode;
 
 /// Rename input mode handler
 mod rename_input_mode;
@@ -60,14 +64,21 @@ mod code_explanation_mode;
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
+/// Pointer selection (press, drag, release, multi-click, shift-click) in buffer coordinates
+pub mod mouse_select;
+
 /// Insert mode handler
 mod insert_mode;
 
 /// Visual mode handler (Visual, VisualLine, VisualBlock)
 mod visual_mode;
 
+/// Shared text object key decoding for operators and visual mode.
+mod text_objects;
+
 /// Normal mode handler (decomposed into submodules)
 mod normal;
+pub(in crate::editor) use normal::repeat_operator_motion;
 
 /// Handles input events for the editor
 pub struct InputHandler;
@@ -86,7 +97,9 @@ impl InputHandler {
     /// Processes a keyboard event without marking the editor dirty.
     /// Use this for batch processing where dirty should be marked once at the end.
     pub fn handle_key_event_no_dirty(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        Self::handle_key_event_internal(editor, key_event, true, true, 0)
+        editor.with_execution_scope(|editor| {
+            Self::handle_key_event_internal(editor, key_event, true, true, 0)
+        })
     }
 
     fn handle_key_event_internal(
@@ -96,6 +109,10 @@ impl InputHandler {
         record_macro: bool,
         remap_depth: usize,
     ) -> Result<()> {
+        if editor.handle_diff_comment_key(key_event) {
+            return Ok(());
+        }
+        editor.dismiss_blame_mouse_hover();
         // Record the event if we're recording a macro (but don't record the 'q'
         // that stops recording). A 'q' only terminates recording when it reaches
         // the terminator branch — i.e. Normal mode with no pending
@@ -104,9 +121,7 @@ impl InputHandler {
         // the macro silently drops it.
         let is_recording_terminator = key_event.code == KeyCode::Char('q')
             && editor.mode() == Mode::Normal
-            && matches!(editor.input_state(), InputState::Normal)
-            && editor.pending_operator().is_none()
-            && editor.pending_command().is_none()
+            && editor.input_state().is_normal()
             && editor.pending_register().is_none();
         let should_record_macro =
             record_macro && editor.is_recording_macro() && !is_recording_terminator;
@@ -141,6 +156,10 @@ impl InputHandler {
             editor.handle_codex_auth_key(key_event);
             return Ok(());
         }
+        if editor.has_provider_choice_dialog() {
+            editor.handle_provider_choice_key(key_event);
+            return Ok(());
+        }
 
         code_explanation_mode::restore_owning_mode(editor);
 
@@ -151,7 +170,13 @@ impl InputHandler {
             return Ok(());
         }
 
+        let fold_prev = {
+            let cursor = editor.buffer().cursor();
+            (cursor.line(), cursor.col(), editor.buffer().version())
+        };
         let completing_insert_normal = editor.editing.insert_normal_pending;
+        let repeat_checkpoint = Self::repeat_checkpoint(editor);
+        let register_before = Self::register_before_command(editor);
         let mapping_handled = if allow_remap {
             Self::try_handle_mode_mapping(editor, key_event, remap_depth)?
         } else {
@@ -189,8 +214,20 @@ impl InputHandler {
                 Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
                 Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
                 Mode::AiChat => ai_chat_mode::handle_ai_chat_mode(editor, key_event),
+                Mode::RunConsole => run_console_mode::handle_run_console_mode(editor, key_event),
+                Mode::DebugPanel => debug_panel_mode::handle_debug_panel_mode(editor, key_event),
+                Mode::SearchReplace => {
+                    search_replace_mode::handle_search_replace_mode(editor, key_event)
+                }
             }
         };
+
+        if let Some(checkpoint) = repeat_checkpoint.filter(|_| !mapping_handled) {
+            Self::forget_unrecorded_change(editor, checkpoint);
+        }
+        if let Some(register) = register_before.filter(|_| !mapping_handled) {
+            Self::drop_unused_register(editor, register);
+        }
 
         // Ctrl-O insert-normal: after one normal command, return to insert mode.
         // Only return if we're still in Normal mode (the command didn't switch to
@@ -200,13 +237,12 @@ impl InputHandler {
             && editor.mode() == Mode::Normal
         {
             // Check if the command is fully resolved (no pending operator/command)
-            if editor.pending_operator().is_none()
-                && editor.pending_command().is_none()
+            if editor.input_state().is_normal()
                 && editor.pending_register().is_none()
                 && editor.count().is_none()
-                && matches!(editor.input_state(), InputState::Normal)
             {
                 editor.editing.insert_normal_pending = false;
+                Self::restore_insert_position_at_eol(editor);
                 editor.start_change_building(editor.cursor_position());
                 editor.set_mode(Mode::Insert);
             }
@@ -226,7 +262,16 @@ impl InputHandler {
         // deliberate sub-row scroll (e.g. Ctrl-E) whose cursor sits off-screen by
         // design. Only run the post-command scroll update at this (outer) level
         // when we handled the key directly.
-        let is_viewport_pending = matches!(editor.pending_command(), Some('z') | Some('Z'));
+        // Folds: keep ranges aligned with the text, keep the cursor out of
+        // closed folds, refresh the header markers.
+        editor.sync_folds_after_key(fold_prev.0, fold_prev.1, fold_prev.2);
+        editor.follow_breakpoints_through_edits();
+        editor.report_refused_edit();
+
+        let is_viewport_pending = matches!(
+            editor.input_state(),
+            InputState::ZPrefix | InputState::QuitPrefix
+        );
         let preserve_viewport = editor.viewport.take_preserve_after_input();
         if !preserve_viewport && !is_viewport_pending && !mapping_handled {
             editor.update_scroll_offset();
@@ -247,11 +292,112 @@ impl InputHandler {
         // intact.
         match editor.mode() {
             Mode::Insert | Mode::Replace => {}
+            Mode::Visual => {
+                // Characterwise selections may end on the newline cell.
+                editor.buffer_mut().validate_cursor_line();
+                let cursor = editor.buffer().cursor();
+                let max_col = editor
+                    .buffer()
+                    .line_text(cursor.line())
+                    .map(|text| crate::unicode::grapheme_count(&text))
+                    .unwrap_or(0);
+                if cursor.col().0 > max_col {
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_col(crate::unicode::GraphemeCol(max_col));
+                }
+            }
             Mode::VisualBlock => editor.buffer_mut().validate_cursor_line(),
             _ => editor.buffer_mut().validate_cursor_position(),
         }
 
+        // Ctrl-O at the end of a line: the clamped cursor keeps the column it left from
+        // as its goal, so a following `j`/`k` can land past the end of a longer line.
+        if let Some(goal) = editor.editing.insert_normal_eol_goal.take() {
+            let cursor = editor.buffer_mut().cursor_mut();
+            if cursor.desired_col() < goal {
+                cursor.update_desired_col(crate::unicode::GraphemeCol(goal));
+            }
+        }
+
         result
+    }
+
+    /// Where dot-repeat bookkeeping stood before a Normal/Visual-mode key:
+    /// the buffer and its [`ChangeManager::repeat_checkpoint`]. `None` for keys
+    /// whose edits are not "a command" (Insert mode typing, `:` commands, leader
+    /// sequences, macro playback — the commands they run are checked themselves).
+    fn repeat_checkpoint(editor: &Editor) -> Option<(usize, (u64, u64))> {
+        let tracked_mode = matches!(
+            editor.mode(),
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+        );
+        let tracked_state = !matches!(
+            editor.input_state(),
+            InputState::Leader { .. }
+                | InputState::MacroPrefix {
+                    is_recording: false
+                }
+        );
+        (tracked_mode && tracked_state).then(|| {
+            (
+                editor.current_buffer_index(),
+                editor.buffer().change_manager().repeat_checkpoint(),
+            )
+        })
+    }
+
+    /// Back to Insert mode after Ctrl-O: the temporary Normal mode cannot rest past
+    /// the end of a line, so a cursor that was there (and stayed on that line) or that
+    /// `$`/`j` left with a goal column beyond the text, sitting on the last character,
+    /// returns to just past it (vim's `ins_at_eol`) instead of before that character.
+    fn restore_insert_position_at_eol(editor: &mut Editor) {
+        let eol_line = editor.editing.insert_normal_eol_line.take();
+        let cursor = editor.buffer().cursor();
+        let (line, col) = (cursor.line(), cursor.col().0);
+        let wants_eol = eol_line == Some(line) || cursor.desired_col() > col;
+        let len = editor.buffer().line_index(line).grapheme_count();
+        if wants_eol && col + 1 == len {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_col_preserve_desired(crate::unicode::GraphemeCol(len));
+        }
+    }
+
+    /// The register typed with `"x` that a Normal-mode command is about to run with,
+    /// if the key about to be handled is a command of its own (not the register name
+    /// itself, not a pending prefix's argument).
+    fn register_before_command(editor: &Editor) -> Option<char> {
+        (editor.mode() == Mode::Normal && editor.input_state().is_normal())
+            .then(|| editor.pending_register())
+            .flatten()
+    }
+
+    /// `"x` belongs to the command that follows it. When that command completed
+    /// without taking the register (Esc, a plain motion, a cancelled operator), it
+    /// must not linger and apply to the next, unrelated command.
+    fn drop_unused_register(editor: &mut Editor, register: char) {
+        let finished = editor.mode() == Mode::Normal
+            && editor.input_state().is_normal()
+            && editor.count().is_none()
+            && !editor.has_pending_mapping();
+        if finished && editor.pending_register() == Some(register) {
+            editor.clear_pending_register();
+        }
+    }
+
+    /// A key that edited the buffer without defining what `.` repeats must not
+    /// leave an older change behind to be replayed instead (`ddgUwj.` repeating
+    /// the `dd`).
+    fn forget_unrecorded_change(editor: &mut Editor, (buffer, checkpoint): (usize, (u64, u64))) {
+        if editor.current_buffer_index() == buffer {
+            editor
+                .buffer_mut()
+                .change_manager_mut()
+                .forget_unrecorded_change(checkpoint);
+        }
     }
 
     fn active_mapping_mode(editor: &Editor) -> Option<MapMode> {
@@ -268,10 +414,8 @@ impl InputHandler {
     fn is_mapping_context(editor: &Editor) -> bool {
         editor.pending_mapping_sequence().is_empty()
             && editor.count().is_none()
-            && editor.pending_operator().is_none()
-            && editor.pending_command().is_none()
+            && editor.input_state().is_normal()
             && editor.pending_register().is_none()
-            && matches!(editor.input_state(), InputState::Normal)
     }
 
     fn try_handle_mode_mapping(
@@ -451,13 +595,8 @@ impl InputHandler {
                 let keys_clone = keys.clone();
                 return leader::handle_leader_input(editor, key_event, &keys_clone);
             }
-            InputState::Normal => {
-                // Fall through to normal mode dispatcher
-            }
-            _ => {
-                // For unhandled states, reset and fall through
-                editor.reset_input_state();
-            }
+            // Operators and prefixes are resolved by the normal/ dispatcher.
+            _ => {}
         }
 
         // =====================================================================
@@ -481,24 +620,74 @@ impl InputHandler {
         commands::execute_command_string(editor, command)
     }
 
-    /// Execute a command string for the headless API / CLI, returning a
-    /// structured result. Unlike the standard commands module, this reaches
-    /// substitute, global, and range commands (full parity with the
-    /// interactive command line).
+    /// Execute a command line for the headless API / GUI: the same
+    /// dispatcher as the `:` prompt, returning the result instead of showing
+    /// it. See [`crate::commands::execute_command_api`].
     pub fn execute_command_api(
         editor: &mut Editor,
         command: &str,
     ) -> crate::command_result::CommandResult {
-        commands::execute_command_string_api(editor, command)
+        crate::commands::execute_command_api(editor, command)
     }
 
     /// Wrapper to call commands module's handle_command_mode
     pub fn handle_command_mode_wrapper(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        commands::handle_command_mode(editor, key_event)
+        editor.with_execution_scope(|editor| commands::handle_command_mode(editor, key_event))
     }
 
-    /// Wrapper to call commands module's parse_range
-    pub fn parse_range_wrapper(editor: &Editor, range_str: &str) -> Option<(usize, usize)> {
-        commands::parse_range(editor, range_str)
+    /// Type `keys` as if in Normal mode, for `:normal`. Each character is
+    /// one key (`\x1b` is <Esc>, `\r`/`\n` <Enter>, `\t` <Tab>). An
+    /// unfinished command or mode is ended with <Esc>, as vim does.
+    /// `remap` is false for `:normal!`.
+    pub(crate) fn type_normal_keys(editor: &mut Editor, keys: &str, remap: bool) -> Result<()> {
+        editor
+            .nested(Nesting::Normal, |editor| {
+                Self::type_normal_keys_nested(editor, keys, remap)
+            })
+            .unwrap_or_else(|| Err(anyhow::anyhow!("E192: Recursive use of :normal too deep")))
+    }
+
+    fn type_normal_keys_nested(editor: &mut Editor, keys: &str, remap: bool) -> Result<()> {
+        if editor.mode() != Mode::Normal {
+            Self::handle_key_event_internal(
+                editor,
+                KeyEvent::new(KeyCode::Esc, Modifiers::NONE),
+                false,
+                false,
+                0,
+            )?;
+        }
+        for ch in keys.chars() {
+            let code = match ch {
+                '\x1b' => KeyCode::Esc,
+                '\r' | '\n' => KeyCode::Enter,
+                '\t' => KeyCode::Tab,
+                '\x08' | '\x7f' => KeyCode::Backspace,
+                ch => KeyCode::Char(ch),
+            };
+            Self::handle_key_event_internal(
+                editor,
+                KeyEvent::new(code, Modifiers::NONE),
+                remap,
+                false,
+                0,
+            )?;
+        }
+        // Leave whatever the keys started: an operator waiting for a motion,
+        // Insert mode, a half-typed command line.
+        for _ in 0..3 {
+            if editor.mode() == Mode::Normal && editor.input_state().is_normal() {
+                break;
+            }
+            Self::handle_key_event_internal(
+                editor,
+                KeyEvent::new(KeyCode::Esc, Modifiers::NONE),
+                false,
+                false,
+                0,
+            )?;
+        }
+        editor.mark_dirty();
+        Ok(())
     }
 }

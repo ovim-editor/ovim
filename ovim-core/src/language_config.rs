@@ -196,11 +196,40 @@ pub struct LspConfig {
     #[serde(default)]
     pub root_markers: Vec<String>,
 
+    /// Markers that identify a multi-module workspace root (e.g. Gradle's
+    /// `settings.gradle`). When any ancestor directory holds one of these, the
+    /// outermost such directory is the project root, taking precedence over
+    /// the nearest `root_markers` match (which would be a sub-module).
+    #[serde(default)]
+    pub outermost_root_markers: Vec<String>,
+
     /// Installation instructions (shown on failure)
     pub install_hint: Option<String>,
 
     /// Auto-install configuration (optional)
     pub auto_install: Option<AutoInstallConfig>,
+}
+
+impl LspConfig {
+    /// Resolve the workspace root for `file_path`.
+    pub fn find_root(&self, file_path: &Path) -> PathBuf {
+        crate::project_root::find_project_root_with_outermost(
+            file_path,
+            &self.root_markers,
+            &self.outermost_root_markers,
+        )
+    }
+
+    /// Whether `file_path` has no project around it, so [`Self::find_root`]
+    /// can only fall back to the file's own directory.
+    pub fn root_is_fallback(&self, file_path: &Path) -> bool {
+        crate::project_root::marker_root_with_outermost(
+            file_path,
+            &self.root_markers,
+            &self.outermost_root_markers,
+        )
+        .is_none()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -247,6 +276,11 @@ pub enum InstallMethod {
         /// For an uncompressed binary asset, this is ignored.
         #[serde(default)]
         binary_name: Option<String>,
+        /// Leading folders to drop from every path in an archive, as with
+        /// `tar --strip-components`. cargo-dist puts each Unix archive's files
+        /// in one `<app>-<target>/` folder, so its archives need 1.
+        #[serde(default)]
+        strip_components: usize,
     },
 
     /// Install via npm
@@ -313,6 +347,9 @@ pub struct LanguageRegistry {
 
     /// Language ID → indices into `companions` vec
     companions_by_language: HashMap<String, Vec<usize>>,
+
+    /// Problems found in the user's `languages.toml`, for the user to see.
+    warnings: Vec<String>,
 }
 
 impl InstallMethod {
@@ -355,17 +392,9 @@ impl LanguageRegistry {
     ///
     /// This should be called early in main() before any language detection.
     pub fn init() -> Result<(), String> {
-        // Load embedded config (compiled into binary)
-        let embedded = include_str!("../languages.toml");
-
-        // Load user config (if exists)
-        let user_config = Self::load_user_config();
-
-        // Parse and merge configurations
-        let (languages, companions) = Self::parse_configs(embedded, user_config)?;
-
-        // Build lookup indices for fast detection
-        let registry = Self::build_indices(languages, companions);
+        // Load embedded config (compiled into binary) and the user's, if any
+        let registry =
+            Self::from_sources(include_str!("../languages.toml"), Self::load_user_config())?;
 
         // Set global singleton (fails if already initialized)
         LANGUAGE_REGISTRY
@@ -373,6 +402,37 @@ impl LanguageRegistry {
             .map_err(|_| "LanguageRegistry already initialized".to_string())?;
 
         Ok(())
+    }
+
+    /// Builds a registry from the embedded config and the user's
+    /// `languages.toml`. A mistake in the user's file costs the part of it
+    /// that is wrong, never the built-in languages.
+    fn from_sources(embedded: &str, user_config: Option<String>) -> Result<Self, String> {
+        let mut warnings = Vec::new();
+
+        // `[[lsp_settings]]` (initialization options / workspace settings for
+        // language servers) only ever come from the user's own file.
+        if let Some(user) = &user_config {
+            warnings.extend(crate::lsp::user_settings::load_toml(user));
+        }
+
+        // Parse and merge configurations
+        let (languages, companions) = match Self::parse_configs(embedded, user_config.clone()) {
+            Ok(parsed) => parsed,
+            Err(error) if user_config.is_some() => {
+                warnings.push(format!("{error}; using the built-in languages only"));
+                Self::parse_configs(embedded, None)?
+            }
+            Err(error) => return Err(error),
+        };
+        for warning in &warnings {
+            crate::log_warn!("language_config", "{}", warning);
+        }
+
+        // Build lookup indices for fast detection
+        let mut registry = Self::build_indices(languages, companions);
+        registry.warnings = warnings;
+        Ok(registry)
     }
 
     /// Get the global registry (panics if not initialized)
@@ -456,6 +516,12 @@ impl LanguageRegistry {
             .unwrap_or_default()
     }
 
+    /// What was wrong with the user's `languages.toml` (entries that were
+    /// skipped, or the whole file when it could not be read).
+    pub fn config_warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
     /// List all companion LSP configs
     pub fn all_companions(&self) -> &[CompanionLspConfig] {
         &self.companions
@@ -473,7 +539,7 @@ impl LanguageRegistry {
     /// - User config overrides embedded config (by language ID)
     /// - User can add new languages not in embedded config
     /// - Companion LSP configs are merged by ID (user overrides embedded)
-    fn parse_configs(
+    pub(crate) fn parse_configs(
         embedded: &str,
         user: Option<String>,
     ) -> Result<(Vec<LanguageConfig>, Vec<CompanionLspConfig>), String> {
@@ -578,6 +644,7 @@ impl LanguageRegistry {
             by_id,
             companions,
             companions_by_language,
+            warnings: Vec::new(),
         }
     }
 }
@@ -598,35 +665,65 @@ impl LanguageRegistry {
 /// - Option communicates "this might not exist, handle it gracefully"
 /// - Result is for programmer mistakes (invalid state)
 pub fn find_lsp_command(config: &LspConfig) -> Option<String> {
-    // Try primary command in PATH
-    if which::which(&config.command).is_ok() {
-        return Some(config.command.clone());
+    find_configured_command(
+        &config.command,
+        &config.fallback_commands,
+        config.auto_install.as_ref(),
+    )
+}
+
+/// Resolve a server using its own installation contract. In particular,
+/// GitHub archives can contain a launcher whose name differs from the
+/// command (Elixir's `language_server.sh`), so guessing locations from the
+/// command alone cannot rediscover an installation on the next launch.
+pub(crate) fn find_configured_command(
+    command: &str,
+    fallbacks: &[String],
+    auto_install: Option<&AutoInstallConfig>,
+) -> Option<String> {
+    if which::which(command).is_ok() {
+        return Some(command.to_string());
     }
-
-    // Try fallback commands
-    for fallback in &config.fallback_commands {
-        // Expand ~ to home directory
-        let expanded = shellexpand::tilde(fallback).to_string();
-
-        // Check if path exists
-        if std::path::Path::new(&expanded).exists() {
-            return Some(expanded);
+    for fallback in fallbacks {
+        let expanded = shellexpand::tilde(fallback);
+        if let Ok(path) = which::which(expanded.as_ref()) {
+            return Some(path.to_string_lossy().into_owned());
         }
-
-        // Check if in PATH
-        if which::which(&expanded).is_ok() {
-            return Some(expanded);
-        }
     }
-
-    // Try well-known install locations that may not be in PATH.
-    // This makes ovim work out of the box even when the user's shell
-    // config doesn't include these directories in PATH.
-    if let Some(path) = find_in_well_known_locations(&config.command) {
-        return Some(path);
+    if let Some(path) = installed_github_binary(command, auto_install) {
+        return Some(path.to_string_lossy().into_owned());
     }
+    find_in_well_known_locations(command)
+}
 
-    None
+/// The executable that a GitHub install of `command` put on disk, if it is
+/// there.
+pub(crate) fn installed_github_binary(
+    command: &str,
+    auto_install: Option<&AutoInstallConfig>,
+) -> Option<PathBuf> {
+    let AutoInstallConfig {
+        method:
+            InstallMethod::Github {
+                install_path,
+                binary_name,
+                ..
+            },
+        ..
+    } = auto_install?
+    else {
+        return None;
+    };
+    let install_path = PathBuf::from(shellexpand::tilde(install_path).as_ref());
+    // Uncompressed downloads use install_path itself; archives and
+    // gzip binaries put binary_name inside that directory.
+    let binary_path = binary_name
+        .as_ref()
+        .map(|name| install_path.join(name))
+        .unwrap_or_else(|| install_path.join(command));
+    [install_path, binary_path]
+        .into_iter()
+        .find_map(|candidate| which::which(candidate).ok())
 }
 
 /// Check well-known package manager install directories for a binary.
@@ -658,8 +755,8 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
             if let Ok(entries) = std::fs::read_dir(root.join(manager)) {
                 for entry in entries.flatten() {
                     let candidate = entry.path().join(bin_subpath).join(binary);
-                    if candidate.exists() {
-                        return Some(candidate.to_string_lossy().to_string());
+                    if let Ok(path) = which::which(candidate) {
+                        return Some(path.to_string_lossy().into_owned());
                     }
                 }
             }
@@ -700,8 +797,8 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
     ];
 
     for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
+        if let Ok(path) = which::which(candidate) {
+            return Some(path.to_string_lossy().into_owned());
         }
     }
 
@@ -711,8 +808,8 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
         if let Ok(entries) = std::fs::read_dir(&gem_base) {
             for entry in entries.flatten() {
                 let candidate = entry.path().join("bin").join(binary);
-                if candidate.exists() {
-                    return Some(candidate.to_string_lossy().to_string());
+                if let Ok(path) = which::which(candidate) {
+                    return Some(path.to_string_lossy().into_owned());
                 }
             }
         }
@@ -758,59 +855,14 @@ pub fn managed_lsp_package_dir(manager: &str, package: &str) -> Option<std::path
 
 /// Find the DAP server command, trying primary then fallbacks.
 ///
-/// Same strategy as `find_lsp_command`.
-pub fn find_dap_command(config: &DapConfig) -> Option<String> {
-    if which::which(&config.command).is_ok() {
-        return Some(config.command.clone());
-    }
-
-    for fallback in &config.fallback_commands {
-        let expanded = shellexpand::tilde(fallback).to_string();
-        if std::path::Path::new(&expanded).exists() {
-            return Some(expanded);
-        }
-        if which::which(&expanded).is_ok() {
-            return Some(expanded);
-        }
-    }
-
-    if let Some(path) = find_in_well_known_locations(&config.command) {
-        return Some(path);
-    }
-
-    None
-}
-
-/// Find project root by walking up and checking markers
-///
-/// Walks up the directory tree from the file, checking for marker files
-/// like Cargo.toml, package.json, etc. Returns the first directory that
-/// contains any of the specified markers.
-///
-/// Educational Note: Why walk up instead of down?
-/// - Project roots are above files in the directory tree
-/// - Walking down would be exponentially slower (must check all subdirs)
-/// - Walking up is O(depth) where depth is typically <10
-pub fn find_project_root(file_path: &Path, markers: &[String]) -> PathBuf {
-    let mut current = file_path.parent();
-
-    while let Some(dir) = current {
-        // Check each marker in order
-        for marker in markers {
-            if dir.join(marker).exists() {
-                return dir.to_path_buf();
-            }
-        }
-
-        // Move up one directory
-        current = dir.parent();
-    }
-
-    // Fallback to file's directory
-    file_path
-        .parent()
-        .unwrap_or_else(|| Path::new("/"))
-        .to_path_buf()
+/// Same strategy as `find_lsp_command`. When the debug adapter runs from the
+/// language server's own binary (`hyperion-lsp dap`), the server's install
+/// also finds the adapter.
+pub fn find_dap_command(config: &DapConfig, lsp: Option<&LspConfig>) -> Option<String> {
+    let server_install = lsp
+        .filter(|lsp| lsp.command == config.command)
+        .and_then(|lsp| lsp.auto_install.as_ref());
+    find_configured_command(&config.command, &config.fallback_commands, server_install)
 }
 
 // ============================================================================
@@ -820,6 +872,99 @@ pub fn find_project_root(file_path: &Path, markers: &[String]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_resolution_rejects_a_directory_as_a_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(find_configured_command(
+            "ovim-nonexistent-server-for-resolution-test",
+            &[directory.path().to_string_lossy().into_owned()],
+            None,
+        )
+        .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_github_launcher_is_rediscovered_and_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let launcher = directory.path().join("bin/language_server.sh");
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::fs::write(&launcher, "#!/bin/sh\nprintf 'ready'\n").unwrap();
+        let config: AutoInstallConfig = serde_json::from_value(serde_json::json!({
+            "method": {
+                "type": "github",
+                "repo": "example/server",
+                "asset_pattern": "server-*.zip",
+                "install_path": directory.path(),
+                "binary_name": "bin/language_server.sh"
+            }
+        }))
+        .unwrap();
+        let command = "ovim-nonexistent-server-for-resolution-test";
+        assert!(
+            find_configured_command(command, &[], Some(&config)).is_none(),
+            "a nonexecutable file must not suppress the install prompt"
+        );
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let resolved = find_configured_command(command, &[], Some(&config)).unwrap();
+        assert_eq!(Path::new(&resolved), launcher);
+        let output = std::process::Command::new(&resolved).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ready");
+
+        // Raw downloads use install_path itself even when binary_name is set.
+        let mut raw = config.clone();
+        let InstallMethod::Github { install_path, .. } = &mut raw.method else {
+            unreachable!()
+        };
+        *install_path = launcher.to_string_lossy().into_owned();
+        assert_eq!(
+            find_configured_command(command, &[], Some(&raw)),
+            Some(resolved)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debug_adapter_in_the_language_server_binary_is_found_through_its_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let command = "ovim-fixture-server-with-debug-adapter";
+        let binary = directory.path().join(command);
+        std::fs::write(&binary, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let lsp: LspConfig = serde_json::from_value(serde_json::json!({
+            "command": command,
+            "auto_install": { "method": {
+                "type": "github",
+                "repo": "example/server",
+                "asset_pattern": "server-*.tar.xz",
+                "install_path": directory.path(),
+                "binary_name": command,
+                "strip_components": 1
+            }}
+        }))
+        .unwrap();
+        let dap: DapConfig = serde_json::from_value(serde_json::json!({
+            "command": command,
+            "args": ["dap"]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            find_dap_command(&dap, Some(&lsp)).map(PathBuf::from),
+            Some(binary)
+        );
+
+        // A separate adapter binary is not the server's to install.
+        let other: DapConfig = serde_json::from_value(serde_json::json!({
+            "command": "ovim-fixture-separate-debug-adapter"
+        }))
+        .unwrap();
+        assert_eq!(find_dap_command(&other, Some(&lsp)), None);
+    }
 
     #[test]
     fn test_parse_sample_config() {
@@ -932,34 +1077,87 @@ mod tests {
         assert!(registry.detect("unknown.xyz").is_none());
     }
 
+    /// hyperion-lsp installs from its GitHub releases, and JVM projects need
+    /// the multi-module root rule.
     #[test]
-    fn test_find_project_root() {
-        use std::fs;
-        use tempfile::tempdir;
+    fn hyperion_languages_install_from_github_and_find_gradle_roots() {
+        let (languages, _) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let mut seen = 0;
+        for language in languages.iter().filter(|l| {
+            l.lsp
+                .as_ref()
+                .is_some_and(|lsp| lsp.command == "hyperion-lsp")
+        }) {
+            let lsp = language.lsp.as_ref().unwrap();
+            let hint = lsp.install_hint.as_deref().unwrap_or_default();
+            assert!(
+                hint.contains("https://github.com/hyperion-lsp/hyperion-lsp/releases"),
+                "{}: {hint}",
+                language.id
+            );
+            assert!(
+                matches!(
+                    lsp.auto_install.as_ref().map(|config| &config.method),
+                    Some(InstallMethod::Github { repo, .. }) if repo == "hyperion-lsp/hyperion-lsp"
+                ),
+                "{}",
+                language.id
+            );
+            assert!(
+                lsp.outermost_root_markers
+                    .iter()
+                    .any(|m| m.starts_with("settings.gradle")),
+                "{} needs the multi-module Gradle root rule",
+                language.id
+            );
+            assert!(
+                lsp.outermost_root_markers.iter().any(|m| m == "pom.xml"),
+                "{} needs the Maven reactor root rule",
+                language.id
+            );
+            seen += 1;
+        }
+        assert!(seen >= 4, "java, kotlin, groovy and scala use hyperion-lsp");
+    }
 
-        // Create temp directory structure:
-        // temp/
-        //   Cargo.toml
-        //   src/
-        //     lib.rs
-        //     subdir/
-        //       mod.rs
+    /// One bad `[[lsp_settings]]` entry used to fail the whole registry
+    /// setup, leaving no language known at all.
+    #[test]
+    fn a_bad_lsp_settings_entry_keeps_the_built_in_languages() {
+        let user = r#"
+            [[lsp_settings]]
+            settings = {}
 
-        let temp = tempdir().unwrap();
-        let root = temp.path();
+            [[lsp_settings]]
+            language = "registry-test-language"
+            settings = { fine = true }
+        "#;
+        let registry =
+            LanguageRegistry::from_sources(include_str!("../languages.toml"), Some(user.into()))
+                .expect("a settings mistake must not fail the registry");
 
-        fs::write(root.join("Cargo.toml"), "").unwrap();
-        fs::create_dir(root.join("src")).unwrap();
-        fs::write(root.join("src/lib.rs"), "").unwrap();
-        fs::create_dir(root.join("src/subdir")).unwrap();
-        let file = root.join("src/subdir/mod.rs");
-        fs::write(&file, "").unwrap();
+        assert!(registry.detect("main.rs").is_some());
+        assert_eq!(registry.config_warnings().len(), 1);
+        assert!(registry.config_warnings()[0].contains("entry 1"));
+        // The good entry still applies.
+        assert!(crate::lsp::user_settings::for_language("registry-test-language").is_some());
+    }
 
-        // Find Cargo.toml from nested file
-        let markers = vec!["Cargo.toml".to_string()];
-        let found_root = find_project_root(&file, &markers);
+    /// A user file that is not even valid TOML does not wipe the built-ins either.
+    #[test]
+    fn an_unreadable_user_file_leaves_the_built_in_languages() {
+        let registry = LanguageRegistry::from_sources(
+            include_str!("../languages.toml"),
+            Some("[[language\nid = ".into()),
+        )
+        .expect("a broken user file must not fail the registry");
 
-        assert_eq!(found_root, root);
+        assert!(registry.detect("main.rs").is_some());
+        assert!(registry
+            .config_warnings()
+            .iter()
+            .any(|warning| warning.contains("built-in languages only")));
     }
 
     #[test]
@@ -1045,6 +1243,30 @@ mod tests {
     }
 
     #[test]
+    fn embedded_npm_installs_pin_typescript_below_7() {
+        // TypeScript 7.x (the native port) ships no tsserver.js or
+        // tsserverlibrary.js, which every node-based server here loads. An
+        // unpinned `typescript` resolves to 7.x and the server can't start,
+        // and a "repair" reinstall just reproduces the same sandbox.
+        let (languages, companions) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let methods = languages
+            .iter()
+            .filter_map(|l| l.lsp.as_ref()?.auto_install.as_ref())
+            .chain(companions.iter().filter_map(|c| c.auto_install.as_ref()))
+            .map(|config| &config.method);
+        for method in methods {
+            for package in method.npm_packages() {
+                assert_ne!(
+                    package, "typescript",
+                    "unpinned typescript in npm auto-install {:?}",
+                    method
+                );
+            }
+        }
+    }
+
+    #[test]
     fn embedded_config_includes_astro_lsp_and_tailwind_companion() {
         let (languages, companions) =
             LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
@@ -1094,6 +1316,7 @@ mod tests {
                 asset_pattern,
                 install_path,
                 binary_name: Some(binary_name),
+                strip_components: 0,
             } if repo == "rust-lang/rust-analyzer"
                 && asset_pattern == "rust-analyzer-{arch}-*{os}*.{ext}"
                 && install_path == "~/.local/share/ovim/lsp/rust-analyzer/bin"

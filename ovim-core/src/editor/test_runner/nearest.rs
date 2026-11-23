@@ -59,6 +59,7 @@ pub fn discover_tests(lang: Language, source: &str) -> Vec<DiscoveredTest> {
         }
         Language::Python => collect_python(root, source, &mut Vec::new(), &mut tests),
         Language::Go => collect_go(root, source, &mut Vec::new(), false, &mut tests),
+        Language::Java | Language::Kotlin => collect_jvm(root, source, &mut Vec::new(), &mut tests),
         _ => {}
     }
     tests
@@ -552,4 +553,114 @@ fn go_table_entry_name(keyed: Node, source: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+// ---------------------------------------------------------------------------
+// Java / Kotlin (JUnit 4/5, TestNG, kotlin.test)
+// ---------------------------------------------------------------------------
+
+/// Classifies an annotation's text (`@Test`, `@org.junit.Test`,
+/// `@ParameterizedTest(name = "...")`).
+fn jvm_annotation_flavor(text: &str) -> Option<TestFlavor> {
+    let name = text.trim().strip_prefix('@')?;
+    // Kotlin use-site targets: `@get:Test`.
+    let name = name.rsplit(':').next().unwrap_or(name);
+    let end = name
+        .find(|c: char| c == '(' || c.is_whitespace())
+        .unwrap_or(name.len());
+    let last = name[..end].rsplit('.').next().unwrap_or("");
+    match last {
+        "Test" => Some(TestFlavor::Exact),
+        // Generated invocations get suffixes/indices in their display names.
+        "ParameterizedTest" | "RepeatedTest" | "TestFactory" | "TestTemplate" => {
+            Some(TestFlavor::Parameterized)
+        }
+        _ => None,
+    }
+}
+
+fn jvm_test_flavor(method: Node, source: &str) -> Option<TestFlavor> {
+    let mut cursor = method.walk();
+    let modifiers = method
+        .children(&mut cursor)
+        .find(|c| c.kind() == "modifiers")?;
+    let mut flavor = None;
+    let mut inner = modifiers.walk();
+    for annotation in modifiers.children(&mut inner) {
+        // Java: marker_annotation / annotation. Kotlin: annotation (whose
+        // text may hold several `@A @B` entries).
+        if !annotation.kind().ends_with("annotation") {
+            continue;
+        }
+        let text = node_text(annotation, source);
+        for part in text.split('@').filter(|p| !p.trim().is_empty()) {
+            match jvm_annotation_flavor(&format!("@{part}")) {
+                Some(TestFlavor::Parameterized) => return Some(TestFlavor::Parameterized),
+                Some(f) => flavor = Some(f),
+                None => {}
+            }
+        }
+    }
+    flavor
+}
+
+fn jvm_first_child_text<'a>(node: Node, source: &'a str, kinds: &[&str]) -> Option<&'a str> {
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .find(|c| kinds.contains(&c.kind()));
+    found.map(|n| node_text(n, source))
+}
+
+fn collect_jvm(node: Node, source: &str, classes: &mut Vec<String>, out: &mut Vec<DiscoveredTest>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" | "object_declaration" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                    .or_else(|| jvm_first_child_text(child, source, &["type_identifier"]));
+                match name {
+                    Some(name) => {
+                        classes.push(name.trim_matches('`').to_string());
+                        collect_jvm(child, source, classes, out);
+                        classes.pop();
+                    }
+                    None => collect_jvm(child, source, classes, out),
+                }
+            }
+            "method_declaration" | "function_declaration" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                    .or_else(|| jvm_first_child_text(child, source, &["simple_identifier"]));
+                if let (Some(name), Some(flavor), false) =
+                    (name, jvm_test_flavor(child, source), classes.is_empty())
+                {
+                    out.push(DiscoveredTest {
+                        name: name.trim_matches('`').to_string(),
+                        namespaces: classes.clone(),
+                        line: child.start_position().row,
+                        end_line: child.end_position().row,
+                        flavor,
+                    });
+                }
+                // Local classes inside methods are not test containers.
+            }
+            _ => collect_jvm(child, source, classes, out),
+        }
+    }
+}
+
+/// `package com.example;` / `package com.example` of a Java or Kotlin file.
+pub fn jvm_package(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("package ") {
+            let name = rest.trim().trim_end_matches(';').trim();
+            return (!name.is_empty()).then(|| name.trim_matches('`').to_string());
+        }
+    }
+    None
 }

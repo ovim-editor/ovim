@@ -23,6 +23,7 @@ export default function SurfaceCommandLine(props: SurfaceCommandLineProps) {
     createEffect(() => {
         void props.requestSerial;
         if (!props.active) return;
+        setRunning(false);
         setValue("");
         setMessage("");
         queueMicrotask(() => input?.focus({ preventScroll: true }));
@@ -39,14 +40,24 @@ export default function SurfaceCommandLine(props: SurfaceCommandLineProps) {
 
     const submit = async () => {
         if (running()) return;
+        const serial = props.requestSerial;
+        const current = () => props.active && props.requestSerial === serial;
         setRunning(true);
         setMessage("");
         try {
             const result = await props.onExecute(value());
+            if (!current()) return;
             if (result.ok) props.onDismiss();
             else setMessage(result.message || "Command failed");
+        } catch (reason) {
+            if (current()) setMessage(String(reason));
         } finally {
-            setRunning(false);
+            if (current()) {
+                setRunning(false);
+                queueMicrotask(() => {
+                    if (current()) input?.focus({ preventScroll: true });
+                });
+            }
         }
     };
 
@@ -79,7 +90,8 @@ export default function SurfaceCommandLine(props: SurfaceCommandLineProps) {
                         ref={input}
                         data-gui-native-control
                         value={value()}
-                        disabled={running()}
+                        readOnly={running()}
+                        aria-busy={running()}
                         autocomplete="off"
                         autocapitalize="off"
                         spellcheck={false}

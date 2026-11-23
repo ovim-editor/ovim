@@ -15,12 +15,45 @@ use lsp_types::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
+
+/// How many messages may sit in the outgoing queue before `notify` refuses
+/// new notifications. The queue is drained by a single writer task that
+/// blocks on the server's stdin, so it only fills when the server has
+/// stopped reading (mid-index, wedged). Callers run on the editor loop and
+/// must never wait for that writer; over this limit they get
+/// `OutgoingQueueFull` immediately and retry later.
+const OUTGOING_QUEUE_LIMIT: usize = 100;
+
+/// Minimum gap between queue-full warnings for one server instance.
+const QUEUE_FULL_WARN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// `notify` refused a notification because the server is not draining its
+/// stdin. Transient: the same notification can be sent once the queue
+/// drains. Callers use `LanguageServer::is_queue_full_error` to tell this
+/// apart from a closed channel, which is terminal for the server instance.
+#[derive(Debug)]
+pub struct OutgoingQueueFull {
+    pub method: String,
+    pub depth: usize,
+}
+
+impl std::fmt::Display for OutgoingQueueFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LSP server outgoing queue full ({} messages queued, server not reading stdin?) (notification: {})",
+            self.depth, self.method
+        )
+    }
+}
+
+impl std::error::Error for OutgoingQueueFull {}
 
 /// Maximum LSP message size in bytes (50MB)
 /// Must match MAX_MESSAGE_SIZE in mod.rs
@@ -58,6 +91,14 @@ bitflags::bitflags! {
         const EXECUTE_COMMAND    = 1 << 21;
         const INLAY_HINT         = 1 << 22;
         const SEMANTIC_TOKENS    = 1 << 23;
+        const CODE_LENS          = 1 << 24;
+        // Text synchronization the server opted out of. They are negative so a
+        // server that announced nothing (or has not initialized yet) is sent
+        // everything, as before.
+        const NO_OPEN_CLOSE      = 1 << 25;
+        const NO_CHANGE_SYNC     = 1 << 26;
+        const NO_SAVE            = 1 << 27;
+        const SAVE_WITH_TEXT     = 1 << 28;
     }
 }
 
@@ -65,6 +106,12 @@ pub(crate) fn workspace_settings_for_root(
     language: &str,
     root: &std::path::Path,
 ) -> Option<serde_json::Value> {
+    super::user_settings::workspace_settings(language, builtin_workspace_settings(language, root))
+}
+
+fn builtin_workspace_settings(language: &str, root: &std::path::Path) -> Option<serde_json::Value> {
+    #[cfg(not(feature = "lua"))]
+    let _ = root;
     match language {
         // The `vim` and `ovim` host tables (and the embedded Lua 5.4
         // runtime they live in) exist only inside ovim's own config and
@@ -72,6 +119,7 @@ pub(crate) fn workspace_settings_for_root(
         // there. Other Lua projects keep lua_ls defaults, and the
         // declaration stays narrow so LuaLS still catches misspelled
         // globals.
+        #[cfg(feature = "lua")]
         "lua" if crate::lua::is_ovim_config_root(root) => Some(json!({
             "Lua": {
                 "runtime": { "version": "Lua 5.4" },
@@ -100,6 +148,22 @@ struct PendingRequest {
     sent_at: Instant,
     method: String,
 }
+
+/// A JSON-RPC error response from the language server. `Display` is the
+/// server's message alone, so it reads naturally in the status line.
+#[derive(Debug, Clone)]
+pub struct LspServerError {
+    pub code: i32,
+    pub message: String,
+}
+
+impl std::fmt::Display for LspServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LspServerError {}
 
 /// Server state for explicit state machine
 #[derive(Debug, Clone)]
@@ -155,10 +219,253 @@ pub struct LanguageServerHealth {
     pub is_alive: bool,
 }
 
+/// Whether a server capability is on. A provider may be a bare boolean, and
+/// `false` means unsupported even though the field is present.
+fn provider_enabled<T: serde::Serialize>(provider: &Option<T>) -> bool {
+    provider.as_ref().is_some_and(|provider| {
+        serde_json::to_value(provider)
+            .map_or(true, |value| !value.is_null() && value != json!(false))
+    })
+}
+
+/// The cached capability flags for what the server announced.
+fn capability_flags(caps: &ServerCapabilities) -> LspCapFlags {
+    use LspCapFlags as F;
+
+    let mut flags = F::empty();
+
+    if provider_enabled(&caps.definition_provider) {
+        flags |= F::GOTO_DEFINITION;
+    }
+    if provider_enabled(&caps.declaration_provider) {
+        flags |= F::GOTO_DECLARATION;
+    }
+    if provider_enabled(&caps.implementation_provider) {
+        flags |= F::GOTO_IMPLEMENTATION;
+    }
+    if provider_enabled(&caps.type_definition_provider) {
+        flags |= F::GOTO_TYPE_DEFINITION;
+    }
+    if provider_enabled(&caps.hover_provider) {
+        flags |= F::HOVER;
+    }
+    if provider_enabled(&caps.completion_provider) {
+        flags |= F::COMPLETION;
+    }
+    if provider_enabled(&caps.document_formatting_provider) {
+        flags |= F::FORMATTING;
+    }
+    if provider_enabled(&caps.document_range_formatting_provider) {
+        flags |= F::RANGE_FORMATTING;
+    }
+    if provider_enabled(&caps.code_action_provider) {
+        flags |= F::CODE_ACTIONS;
+    }
+    if provider_enabled(&caps.references_provider) {
+        flags |= F::REFERENCES;
+    }
+    if provider_enabled(&caps.rename_provider) {
+        flags |= F::RENAME;
+    }
+    if provider_enabled(&caps.signature_help_provider) {
+        flags |= F::SIGNATURE_HELP;
+    }
+    if provider_enabled(&caps.document_symbol_provider) {
+        flags |= F::DOCUMENT_SYMBOL;
+    }
+    if provider_enabled(&caps.selection_range_provider) {
+        flags |= F::SELECTION_RANGE;
+    }
+    if provider_enabled(&caps.workspace_symbol_provider) {
+        flags |= F::WORKSPACE_SYMBOL;
+    }
+    if provider_enabled(&caps.document_highlight_provider) {
+        flags |= F::DOCUMENT_HIGHLIGHT;
+    }
+    if provider_enabled(&caps.folding_range_provider) {
+        flags |= F::FOLDING_RANGE;
+    }
+    if provider_enabled(&caps.call_hierarchy_provider) {
+        flags |= F::CALL_HIERARCHY;
+    }
+    if provider_enabled(&caps.execute_command_provider) {
+        flags |= F::EXECUTE_COMMAND;
+    }
+    if provider_enabled(&caps.inlay_hint_provider) {
+        flags |= F::INLAY_HINT;
+    }
+    if provider_enabled(&caps.semantic_tokens_provider) {
+        flags |= F::SEMANTIC_TOKENS;
+    }
+    if provider_enabled(&caps.code_lens_provider) {
+        flags |= F::CODE_LENS;
+    }
+
+    // Prepare rename: needs deeper inspection
+    if let Some(lsp_types::OneOf::Right(options)) = &caps.rename_provider {
+        if options.prepare_provider.unwrap_or(false) {
+            flags |= F::PREPARE_RENAME;
+        }
+    }
+
+    // Incremental sync: needs enum matching
+    let incremental = match &caps.text_document_sync {
+        Some(lsp_types::TextDocumentSyncCapability::Kind(kind)) => {
+            *kind == lsp_types::TextDocumentSyncKind::INCREMENTAL
+        }
+        Some(lsp_types::TextDocumentSyncCapability::Options(opts)) => {
+            opts.change == Some(lsp_types::TextDocumentSyncKind::INCREMENTAL)
+        }
+        None => false,
+    };
+    if incremental {
+        flags |= F::INCREMENTAL_SYNC;
+    }
+
+    // Text synchronization: only what the server asked for is sent. A bare
+    // sync kind implies open/close notifications and, for lack of anything
+    // more specific, saves without text.
+    use lsp_types::{
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
+    };
+    match &caps.text_document_sync {
+        Some(TextDocumentSyncCapability::Kind(kind)) => {
+            if *kind == TextDocumentSyncKind::NONE {
+                flags |= F::NO_CHANGE_SYNC;
+            }
+        }
+        Some(TextDocumentSyncCapability::Options(options)) => {
+            if options.open_close != Some(true) {
+                flags |= F::NO_OPEN_CLOSE;
+            }
+            if options
+                .change
+                .is_none_or(|kind| kind == TextDocumentSyncKind::NONE)
+            {
+                flags |= F::NO_CHANGE_SYNC;
+            }
+            match &options.save {
+                None | Some(TextDocumentSyncSaveOptions::Supported(false)) => flags |= F::NO_SAVE,
+                Some(TextDocumentSyncSaveOptions::Supported(true)) => {}
+                Some(TextDocumentSyncSaveOptions::SaveOptions(save)) => {
+                    if save.include_text == Some(true) {
+                        flags |= F::SAVE_WITH_TEXT;
+                    }
+                }
+            }
+        }
+        None => {}
+    }
+
+    // Type hierarchy: read from the raw initialize response (see
+    // `do_initialize`) or enabled by dynamic registration.
+
+    flags
+}
+
+/// Logs a server's stderr line by line until the pipe closes. It must never
+/// stop early: dropping the read end makes the server's next stderr write
+/// fail, which kills most servers. Stderr is not guaranteed to be UTF-8, so
+/// lines are decoded lossily, and one line is capped so a server printing
+/// binary without newlines cannot grow the buffer without bound.
+async fn drain_stderr<R: AsyncRead + Unpin>(stderr: R) {
+    const MAX_LINE_BYTES: u64 = 64 * 1024;
+    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
+    let mut reader = BufReader::new(stderr);
+    let mut line = Vec::new();
+    let mut errors = 0;
+    loop {
+        line.clear();
+        match (&mut reader)
+            .take(MAX_LINE_BYTES)
+            .read_until(b'\n', &mut line)
+            .await
+        {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                errors = 0;
+                crate::lsp_debug!("stderr", "{}", String::from_utf8_lossy(&line).trim_end());
+            }
+            Err(error) => {
+                errors += 1;
+                if errors >= MAX_CONSECUTIVE_ERRORS {
+                    crate::lsp_debug!("stderr", "LSP stderr unreadable: {}", error);
+                    break;
+                }
+            }
+        }
+    }
+    crate::lsp_debug!("stderr", "LSP stderr task exiting");
+}
+
+/// Cancels a request whose caller stops waiting for the answer: dropping the
+/// request future (an aborted task) or timing out sends `$/cancelRequest` and
+/// forgets the pending entry, so the server does not keep computing a result
+/// nobody will read.
+struct CancelOnDrop {
+    server: LanguageServer,
+    id: RequestId,
+    armed: bool,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let inner = &self.server.inner;
+        match inner.pending_requests.try_lock() {
+            Ok(mut pending) => {
+                pending.remove(&self.id);
+            }
+            Err(_) => {
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    let inner = inner.clone();
+                    let id = self.id.clone();
+                    runtime.spawn(async move {
+                        inner.pending_requests.lock().await.remove(&id);
+                    });
+                }
+            }
+        }
+        let cancel =
+            JsonRpcMessage::notification("$/cancelRequest".to_string(), json!({ "id": self.id }));
+        let _ = self.server.enqueue(cancel);
+    }
+}
+
 /// A language server process
 #[derive(Clone)]
 pub struct LanguageServer {
     inner: Arc<LanguageServerInner>,
+}
+
+/// Owns a process until initialization succeeds and the manager can publish it.
+/// Initialization may be cancelled when its frontend closes.
+struct StartupGuard(Option<LanguageServer>);
+
+impl Drop for StartupGuard {
+    fn drop(&mut self) {
+        let Some(server) = self.0.take() else { return };
+        // Start termination synchronously even if the runtime is shutting down.
+        if let Ok(mut process) = server.inner.process.try_lock() {
+            if let Some(child) = process.as_mut() {
+                let _ = child.start_kill();
+            }
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = server.inner.supervisor.shutdown_all().await;
+                if let Some(mut child) = server.inner.process.lock().await.take() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                server.inner.pending_requests.lock().await.clear();
+                server.transition_to(ServerState::Terminated).await;
+            });
+        }
+    }
 }
 
 struct LanguageServerInner {
@@ -183,8 +490,22 @@ struct LanguageServerInner {
     /// Next request ID
     next_request_id: AtomicU64,
 
-    /// Channel to send outgoing messages
-    outgoing_tx: mpsc::Sender<JsonRpcMessage>,
+    /// Channel to send outgoing messages. Unbounded so that no caller on
+    /// the editor loop ever parks behind the writer task; `outgoing_depth`
+    /// plus `OUTGOING_QUEUE_LIMIT` bound it by policy instead.
+    outgoing_tx: mpsc::UnboundedSender<JsonRpcMessage>,
+
+    /// Messages queued for the writer task that it has not finished
+    /// writing yet (including the one it is currently blocked on).
+    outgoing_depth: AtomicUsize,
+
+    /// Millisecond timestamp (relative to `spawned_at`) of the last
+    /// queue-full warning, so a wedged server logs once per interval
+    /// instead of once per keystroke.
+    queue_full_warned_at_ms: AtomicU64,
+
+    /// Process-local epoch for `queue_full_warned_at_ms`.
+    spawned_at: Instant,
 
     /// Channel to receive incoming messages
     incoming_rx: Mutex<Option<mpsc::Receiver<JsonRpcMessage>>>,
@@ -197,7 +518,55 @@ struct LanguageServerInner {
     cap_flags: AtomicU32,
 }
 
+/// Human-readable description of how a child process ended.
+fn describe_exit_status(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            let name = nix::sys::signal::Signal::try_from(signal)
+                .map(|s| format!(" ({})", s.as_str()))
+                .unwrap_or_default();
+            return format!("killed by signal {signal}{name}");
+        }
+    }
+    match status.code() {
+        Some(code) => format!("exited with code {code}"),
+        None => "exited".to_string(),
+    }
+}
+
 impl LanguageServerInner {
+    /// Reaps the child process (killing it first if its output pipe closed
+    /// while it is somehow still running) and moves a live server to
+    /// `Failed` with the exit reason. No-op during a deliberate shutdown.
+    async fn mark_process_exited(&self) {
+        let child = self.process.lock().await.take();
+        let description = match child {
+            Some(mut child) => {
+                let waited = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                match waited {
+                    Ok(Ok(status)) => describe_exit_status(status),
+                    Ok(Err(error)) => format!("wait failed: {error}"),
+                    Err(_) => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        "closed its output and was killed".to_string()
+                    }
+                }
+            }
+            None => "exited".to_string(),
+        };
+        let mut state = self.state.lock().await;
+        if matches!(*state, ServerState::ShuttingDown | ServerState::Terminated) {
+            return;
+        }
+        *state = ServerState::Failed {
+            error: format!("LSP server process {description}"),
+            at: Instant::now(),
+        };
+    }
+
     /// Returns a log prefix with language and command context
     fn log_prefix(&self) -> String {
         format!("[LSP:{}:{}]", self.language, self.command)
@@ -224,6 +593,18 @@ impl LanguageServerInner {
 }
 
 impl LanguageServer {
+    /// Transfer ownership to the manager only after a successful handshake.
+    pub(super) async fn spawn_initialized(
+        language: &str,
+        command: &str,
+        args: Vec<String>,
+        root_uri: Uri,
+    ) -> Result<Self> {
+        let mut startup = StartupGuard(Some(Self::spawn(language, command, args).await?));
+        startup.0.as_mut().unwrap().initialize(root_uri).await?;
+        Ok(startup.0.take().unwrap())
+    }
+
     pub(crate) fn language(&self) -> &str {
         &self.inner.language
     }
@@ -244,6 +625,7 @@ impl LanguageServer {
         );
         let mut child = Command::new(command)
             .args(&args)
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // Capture stderr for debugging
@@ -264,7 +646,7 @@ impl LanguageServer {
             .take()
             .ok_or_else(|| anyhow!("Failed to open stderr"))?;
 
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<JsonRpcMessage>(100);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
         let (incoming_tx, incoming_rx) = mpsc::channel::<JsonRpcMessage>(100);
 
         // Wrap stdin in Arc so writer task can clone it
@@ -285,6 +667,9 @@ impl LanguageServer {
             pending_requests: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             outgoing_tx,
+            outgoing_depth: AtomicUsize::new(0),
+            queue_full_warned_at_ms: AtomicU64::new(0),
+            spawned_at: Instant::now(),
             incoming_rx: Mutex::new(Some(incoming_rx)),
             supervisor,
             cap_flags: AtomicU32::new(0),
@@ -303,10 +688,15 @@ impl LanguageServer {
         let stdin_clone = stdin.clone();
         let writer_state = inner.state.clone();
         let writer_lang = inner.language.clone();
+        let writer_inner = inner.clone();
         tokio::spawn(async move {
             while let Some(msg) = outgoing_rx.recv().await {
                 let mut stdin_guard = stdin_clone.lock().await;
-                if let Err(e) = write_message(&mut *stdin_guard, &msg).await {
+                let written = write_message(&mut *stdin_guard, &msg).await;
+                // Counted while queued and while blocked in the write above,
+                // so a server that stops reading shows up as depth growth.
+                writer_inner.outgoing_depth.fetch_sub(1, Ordering::AcqRel);
+                if let Err(e) = written {
                     crate::lsp_error!(
                         "Writer",
                         "[{}] Error writing to language server: {}",
@@ -459,11 +849,6 @@ impl LanguageServer {
                                 &inner_clone.log_prefix(),
                                 "Reader EOF: LSP server closed output (process likely exited)"
                             );
-                            let mut state = state_clone.lock().await;
-                            *state = ServerState::Failed {
-                                error: "LSP server process exited".to_string(),
-                                at: Instant::now(),
-                            };
                             got_eof = true;
                             break;
                         }
@@ -579,12 +964,12 @@ impl LanguageServer {
                                         } else {
                                             // Real LSP error - propagate to caller
                                             // Errors will be shown in status line by the editor
-                                            let error_msg =
-                                                format!("{} (code {})", error.message, error.code);
-                                            // Removed eprintln - leaks into TUI display
-                                            let _ = req
-                                                .sender
-                                                .send(Err(anyhow!("LSP error: {}", error_msg)));
+                                            let _ = req.sender.send(Err(anyhow::Error::new(
+                                                LspServerError {
+                                                    code: error.code,
+                                                    message: error.message.clone(),
+                                                },
+                                            )));
                                         }
                                     } else if let Some(result) = msg.result {
                                         let _ = req.sender.send(Ok(result));
@@ -635,24 +1020,15 @@ impl LanguageServer {
                     }
                 }
             }
-            // Reader task exiting silently
+            // The stdout pipe is gone (or the stream is unusable): the server
+            // is dead for our purposes. Reap the child so it never lingers as a
+            // zombie and record why, unless a deliberate shutdown is underway.
+            inner_clone.mark_process_exited().await;
         });
 
         // Spawn task to capture stderr and log it for debugging
         // Note: Not supervised because stderr is unique to the process
-        tokio::spawn(async move {
-            let mut stderr_reader = BufReader::new(stderr);
-            let mut line = String::new();
-            while let Ok(n) = stderr_reader.read_line(&mut line).await {
-                if n == 0 {
-                    break; // EOF
-                }
-                // Log stderr output from LSP server
-                crate::lsp_debug!("stderr", "{}", line.trim_end());
-                line.clear();
-            }
-            crate::lsp_debug!("stderr", "LSP stderr task exiting");
-        });
+        tokio::spawn(drain_stderr(stderr));
 
         // BUG FIX: Verify the process is actually running before returning
         // Give it a small delay to fail fast if the command doesn't exist or crashes immediately
@@ -679,7 +1055,12 @@ impl LanguageServer {
             }
         } else {
             drop(process_guard);
-            return Err(anyhow!("Language server process handle is missing"));
+            // The reader task already saw the pipe close and reaped the child.
+            return Err(anyhow!(
+                "Language server process failed to start or exited immediately: {} {:?}",
+                command,
+                args
+            ));
         }
 
         Ok(server)
@@ -759,7 +1140,7 @@ impl LanguageServer {
 
             // Text document capabilities - advertise support for common LSP features
             text_document: Some(lsp_types::TextDocumentClientCapabilities {
-                completion: Some(Default::default()),
+                completion: Some(completion_client_capabilities()),
                 hover: Some(hover_client_capabilities()),
                 signature_help: Some(Default::default()),
                 declaration: Some(Default::default()),
@@ -802,6 +1183,15 @@ impl LanguageServer {
                     honors_change_annotations: Some(true),
                 }),
                 rename: Some(Default::default()),
+                // Servers such as Hyperion only offer these through dynamic
+                // registration (`client/registerCapability`), and only when
+                // the client says it can handle that.
+                call_hierarchy: Some(lsp_types::CallHierarchyClientCapabilities {
+                    dynamic_registration: Some(true),
+                }),
+                type_hierarchy: Some(lsp_types::TypeHierarchyClientCapabilities {
+                    dynamic_registration: Some(true),
+                }),
                 formatting: Some(Default::default()),
                 range_formatting: Some(Default::default()),
                 publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
@@ -822,6 +1212,9 @@ impl LanguageServer {
                     dynamic_registration: Some(true),
                     resolve_support: None,
                 }),
+                code_lens: Some(lsp_types::CodeLensClientCapabilities {
+                    dynamic_registration: Some(false),
+                }),
                 ..Default::default()
             }),
 
@@ -829,6 +1222,38 @@ impl LanguageServer {
             workspace: Some(lsp_types::WorkspaceClientCapabilities {
                 apply_edit: Some(true),
                 configuration: Some(true),
+                // `apply_workspace_edit` handles versioned documentChanges and
+                // Create/Rename/Delete resource operations (including buffers
+                // open on the affected files).
+                workspace_edit: Some(lsp_types::WorkspaceEditClientCapabilities {
+                    document_changes: Some(true),
+                    resource_operations: Some(vec![
+                        lsp_types::ResourceOperationKind::Create,
+                        lsp_types::ResourceOperationKind::Rename,
+                        lsp_types::ResourceOperationKind::Delete,
+                    ]),
+                    normalizes_line_endings: Some(true),
+                    ..Default::default()
+                }),
+                // The editor watches the workspace for changes made outside
+                // it and forwards them to servers that register watchers.
+                file_operations: Some(lsp_types::WorkspaceFileOperationsClientCapabilities {
+                    dynamic_registration: Some(false),
+                    will_rename: Some(true),
+                    did_rename: Some(true),
+                    ..Default::default()
+                }),
+                did_change_watched_files: Some(
+                    lsp_types::DidChangeWatchedFilesClientCapabilities {
+                        dynamic_registration: Some(true),
+                        relative_pattern_support: Some(true),
+                    },
+                ),
+                // The editor re-requests code lenses when the server says
+                // they changed (`workspace/codeLens/refresh`).
+                code_lens: Some(lsp_types::CodeLensWorkspaceClientCapabilities {
+                    refresh_support: Some(true),
+                }),
                 ..Default::default()
             }),
 
@@ -963,6 +1388,13 @@ impl LanguageServer {
             }
         };
 
+        // The user's own `initialization_options` (languages.toml / init.lua)
+        // are merged over the built-in ones.
+        let initialization_options = super::user_settings::initialization_options(
+            &self.inner.language,
+            initialization_options,
+        );
+
         #[allow(deprecated)] // root_uri/root_path deprecated but needed for LSP backwards compat
         let params = InitializeParams {
             process_id: Some(std::process::id()),
@@ -999,6 +1431,13 @@ impl LanguageServer {
             .await
             .context("Failed to send initialize request")?;
 
+        // lsp-types has no typeHierarchyProvider field on ServerCapabilities,
+        // so static support has to be read from the raw response.
+        let static_type_hierarchy = result
+            .get("capabilities")
+            .and_then(|caps| caps.get("typeHierarchyProvider"))
+            .is_some_and(|provider| !provider.is_null() && *provider != json!(false));
+
         let init_result: InitializeResult =
             serde_json::from_value(result).context("Failed to parse initialize response")?;
 
@@ -1009,6 +1448,9 @@ impl LanguageServer {
 
         // Cache capability flags for lock-free access
         self.cache_capabilities(&init_result.capabilities);
+        if static_type_hierarchy {
+            self.inner.set_cap(LspCapFlags::TYPE_HIERARCHY, true);
+        }
 
         // Send initialized notification
         self.notify("initialized", serde_json::to_value(InitializedParams {})?)
@@ -1136,7 +1578,7 @@ impl LanguageServer {
         }
 
         // THEN send — if send fails, clean up the registration.
-        if self.inner.outgoing_tx.send(msg).await.is_err() {
+        if self.enqueue(msg).is_err() {
             let mut pending = self.inner.pending_requests.lock().await;
             pending.remove(&request_id);
             return Err(anyhow!(
@@ -1144,6 +1586,15 @@ impl LanguageServer {
                 method,
             ));
         }
+
+        // From here on, giving up on the answer (the caller's task was
+        // aborted because a newer request superseded it, or it timed out)
+        // tells the server to stop working on it.
+        let mut cancel_on_drop = CancelOnDrop {
+            server: self.clone(),
+            id: request_id.clone(),
+            armed: true,
+        };
 
         // Wait for response with timeout
         // Use longer timeout for initialize request (jdtls can be very slow)
@@ -1159,6 +1610,7 @@ impl LanguageServer {
 
         match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(result)) => {
+                cancel_on_drop.armed = false;
                 let elapsed = start_time.elapsed();
                 let result_preview = match &result {
                     Ok(value) if value.is_null() => "null".to_string(),
@@ -1184,9 +1636,17 @@ impl LanguageServer {
                     request_id,
                     result_preview
                 );
-                result.context(format!("LSP request '{}' failed", method))
+                // Surface the server's own explanation (e.g. "Cannot rename:
+                // contains an unresolved refactoring candidate 'Circle'").
+                // Every caller shows `err.to_string()`, so the message must
+                // be the error itself, not hidden behind a generic context.
+                result.map_err(|e| match e.downcast::<LspServerError>() {
+                    Ok(server_error) => anyhow::Error::new(server_error),
+                    Err(other) => anyhow!("LSP request '{}' failed: {:#}", method, other),
+                })
             }
             Ok(Err(_)) => {
+                cancel_on_drop.armed = false;
                 let _elapsed = start_time.elapsed();
                 crate::metrics::LSP_ERRORS_TOTAL.inc();
                 // eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);
@@ -1226,13 +1686,60 @@ impl LanguageServer {
             ));
         }
 
-        self.inner.outgoing_tx.send(msg).await.map_err(|_| {
+        // Never wait for the writer task here. Notifications are sent inline
+        // from the editor loop (didChange flush before completion, didSave
+        // on tick), and the writer blocks on the server's stdin: any await
+        // on it turns a slow or wedged server into a frozen TUI. Over the
+        // limit the caller gets `OutgoingQueueFull` and retries later.
+        let depth = self.inner.outgoing_depth.load(Ordering::Acquire);
+        if depth >= OUTGOING_QUEUE_LIMIT {
+            return Err(anyhow::Error::new(OutgoingQueueFull {
+                method: method.to_string(),
+                depth,
+            }));
+        }
+        self.enqueue(msg).map_err(|_| {
             anyhow!(
-                "LSP server not responding — channel closed (notification: {})",
+                "LSP server not responding: channel closed (notification: {})",
                 method
             )
-        })?;
-        Ok(())
+        })
+    }
+
+    /// Hands a message to the writer task without waiting. Fails only when
+    /// the writer has exited (closed channel).
+    fn enqueue(&self, msg: JsonRpcMessage) -> std::result::Result<(), ()> {
+        self.inner.outgoing_depth.fetch_add(1, Ordering::AcqRel);
+        self.inner.outgoing_tx.send(msg).map_err(|_| {
+            self.inner.outgoing_depth.fetch_sub(1, Ordering::AcqRel);
+        })
+    }
+
+    /// Messages waiting for, or currently blocked in, the writer task.
+    pub fn outgoing_queue_depth(&self) -> usize {
+        self.inner.outgoing_depth.load(Ordering::Acquire)
+    }
+
+    /// True when `err` came from `notify` refusing a message because the
+    /// outgoing queue is over `OUTGOING_QUEUE_LIMIT`. Such failures are
+    /// transient: retry once the server drains its stdin.
+    pub fn is_queue_full_error(err: &anyhow::Error) -> bool {
+        err.downcast_ref::<OutgoingQueueFull>().is_some()
+    }
+
+    /// Returns true at most once per `QUEUE_FULL_WARN_INTERVAL` per server.
+    /// Callers that hit a full queue on every keystroke use this to keep
+    /// `lsp.log` readable while the server stays wedged.
+    pub fn should_warn_queue_full(&self) -> bool {
+        let now_ms = self.inner.spawned_at.elapsed().as_millis() as u64;
+        let last = self.inner.queue_full_warned_at_ms.load(Ordering::Relaxed);
+        if last != 0 && now_ms.saturating_sub(last) < QUEUE_FULL_WARN_INTERVAL.as_millis() as u64 {
+            return false;
+        }
+        self.inner
+            .queue_full_warned_at_ms
+            .compare_exchange(last, now_ms.max(1), Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
 
     /// Sends a response to a request from the server
@@ -1250,10 +1757,7 @@ impl LanguageServer {
             ));
         }
 
-        self.inner
-            .outgoing_tx
-            .send(response)
-            .await
+        self.enqueue(response)
             .map_err(|_| anyhow!("Failed to send response"))?;
         Ok(())
     }
@@ -1276,6 +1780,22 @@ impl LanguageServer {
     /// 4. SIGTERM (if Unix, 3s wait)
     /// 5. SIGKILL (last resort)
     pub async fn shutdown(&mut self) -> Result<()> {
+        let result = self.shutdown_process().await;
+        // Always stop the supervised background tasks and record the final
+        // state, whichever exit path the process teardown took — a crashed or
+        // gracefully exited server used to leave its cleanup task running.
+        if let Err(e) = self.inner.supervisor.shutdown_all().await {
+            crate::lsp_error!(
+                &self.log_prefix(),
+                "Shutdown: Error shutting down tasks: {}",
+                e
+            );
+        }
+        self.transition_to(ServerState::Terminated).await;
+        result
+    }
+
+    async fn shutdown_process(&mut self) -> Result<()> {
         let prefix = self.log_prefix();
 
         // Transition to ShuttingDown state
@@ -1362,15 +1882,34 @@ impl LanguageServer {
             }
         }
 
-        // Shutdown all supervised tasks
-        if let Err(e) = self.inner.supervisor.shutdown_all().await {
-            crate::lsp_error!(&prefix, "Shutdown: Error shutting down tasks: {}", e);
-        }
-
-        // Final transition to Terminated
-        self.transition_to(ServerState::Terminated).await;
-
         Ok(())
+    }
+
+    /// Non-blocking `(state description, process alive)` for UI that runs on
+    /// the synchronous command path. Falls back to "Busy" when a lock is held.
+    pub fn status_snapshot(&self) -> (String, bool) {
+        let state = match self.inner.state.try_lock() {
+            Ok(state) => match &*state {
+                ServerState::Spawning => "Spawning".to_string(),
+                ServerState::Initializing { .. } => "Initializing".to_string(),
+                ServerState::Ready { .. } => "Ready".to_string(),
+                ServerState::Failed { error, .. } => format!("Failed: {error}"),
+                ServerState::ShuttingDown => "ShuttingDown".to_string(),
+                ServerState::Terminated => "Terminated".to_string(),
+            },
+            Err(_) => "Busy".to_string(),
+        };
+        let alive = self
+            .inner
+            .process
+            .try_lock()
+            .map(|mut process| {
+                process
+                    .as_mut()
+                    .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+            })
+            .unwrap_or(true);
+        (state, alive)
     }
 
     /// Gets health information for this language server
@@ -1428,101 +1967,9 @@ impl LanguageServer {
     /// Caches capability flags from ServerCapabilities for lock-free access.
     /// Called once during initialization.
     fn cache_capabilities(&self, caps: &ServerCapabilities) {
-        use LspCapFlags as F;
-
-        let mut flags = F::empty();
-
-        // Simple is_some() checks
-        if caps.definition_provider.is_some() {
-            flags |= F::GOTO_DEFINITION;
-        }
-        if caps.declaration_provider.is_some() {
-            flags |= F::GOTO_DECLARATION;
-        }
-        if caps.implementation_provider.is_some() {
-            flags |= F::GOTO_IMPLEMENTATION;
-        }
-        if caps.type_definition_provider.is_some() {
-            flags |= F::GOTO_TYPE_DEFINITION;
-        }
-        if caps.hover_provider.is_some() {
-            flags |= F::HOVER;
-        }
-        if caps.completion_provider.is_some() {
-            flags |= F::COMPLETION;
-        }
-        if caps.document_formatting_provider.is_some() {
-            flags |= F::FORMATTING;
-        }
-        if caps.document_range_formatting_provider.is_some() {
-            flags |= F::RANGE_FORMATTING;
-        }
-        if caps.code_action_provider.is_some() {
-            flags |= F::CODE_ACTIONS;
-        }
-        if caps.references_provider.is_some() {
-            flags |= F::REFERENCES;
-        }
-        if caps.rename_provider.is_some() {
-            flags |= F::RENAME;
-        }
-        if caps.signature_help_provider.is_some() {
-            flags |= F::SIGNATURE_HELP;
-        }
-        if caps.document_symbol_provider.is_some() {
-            flags |= F::DOCUMENT_SYMBOL;
-        }
-        if caps.selection_range_provider.is_some() {
-            flags |= F::SELECTION_RANGE;
-        }
-        if caps.workspace_symbol_provider.is_some() {
-            flags |= F::WORKSPACE_SYMBOL;
-        }
-        if caps.document_highlight_provider.is_some() {
-            flags |= F::DOCUMENT_HIGHLIGHT;
-        }
-        if caps.folding_range_provider.is_some() {
-            flags |= F::FOLDING_RANGE;
-        }
-        if caps.call_hierarchy_provider.is_some() {
-            flags |= F::CALL_HIERARCHY;
-        }
-        if caps.execute_command_provider.is_some() {
-            flags |= F::EXECUTE_COMMAND;
-        }
-        if caps.inlay_hint_provider.is_some() {
-            flags |= F::INLAY_HINT;
-        }
-        if caps.semantic_tokens_provider.is_some() {
-            flags |= F::SEMANTIC_TOKENS;
-        }
-
-        // Prepare rename: needs deeper inspection
-        if let Some(lsp_types::OneOf::Right(options)) = &caps.rename_provider {
-            if options.prepare_provider.unwrap_or(false) {
-                flags |= F::PREPARE_RENAME;
-            }
-        }
-
-        // Incremental sync: needs enum matching
-        let incremental = match &caps.text_document_sync {
-            Some(lsp_types::TextDocumentSyncCapability::Kind(kind)) => {
-                *kind == lsp_types::TextDocumentSyncKind::INCREMENTAL
-            }
-            Some(lsp_types::TextDocumentSyncCapability::Options(opts)) => {
-                opts.change == Some(lsp_types::TextDocumentSyncKind::INCREMENTAL)
-            }
-            None => false,
-        };
-        if incremental {
-            flags |= F::INCREMENTAL_SYNC;
-        }
-
-        // TODO(OV-00132): type_hierarchy_provider requires lsp-types 0.96+
-        // Hardcoded off until we upgrade from 0.95.
-        // flags |= F::TYPE_HIERARCHY;
-
-        self.inner.cap_flags.store(flags.bits(), Ordering::Relaxed);
+        self.inner
+            .cap_flags
+            .store(capability_flags(caps).bits(), Ordering::Relaxed);
     }
 
     /// Sets a cached capability flag based on an LSP method name from dynamic registration.
@@ -1548,6 +1995,7 @@ impl LanguageServer {
             "textDocument/documentHighlight" => F::DOCUMENT_HIGHLIGHT,
             "textDocument/foldingRange" => F::FOLDING_RANGE,
             "textDocument/prepareCallHierarchy" => F::CALL_HIERARCHY,
+            "textDocument/prepareTypeHierarchy" | "textDocument/typeHierarchy" => F::TYPE_HIERARCHY,
             "workspace/executeCommand" => F::EXECUTE_COMMAND,
             "textDocument/inlayHint" => F::INLAY_HINT,
             "textDocument/semanticTokens"
@@ -1613,6 +2061,25 @@ impl LanguageServer {
             .collect()
     }
 
+    /// Whether the server advertised `completionProvider.resolveProvider`.
+    pub async fn supports_completion_resolve(&self) -> bool {
+        self.capabilities()
+            .await
+            .and_then(|caps| caps.completion_provider)
+            .and_then(|provider| provider.resolve_provider)
+            .unwrap_or(false)
+    }
+
+    /// `completionProvider.allCommitCharacters` (LSP 3.17): commit characters
+    /// for every item that does not carry its own.
+    pub async fn completion_all_commit_characters(&self) -> Vec<String> {
+        self.capabilities()
+            .await
+            .and_then(|caps| caps.completion_provider)
+            .and_then(|provider| provider.all_commit_characters)
+            .unwrap_or_default()
+    }
+
     /// Checks if the server supports formatting (lock-free)
     pub async fn supports_formatting(&self) -> bool {
         self.inner.has_cap(LspCapFlags::FORMATTING)
@@ -1673,6 +2140,22 @@ impl LanguageServer {
         self.inner.has_cap(LspCapFlags::INCREMENTAL_SYNC)
     }
 
+    /// Whether the server wants `didOpen` / `didClose` (lock-free).
+    pub fn wants_open_close(&self) -> bool {
+        !self.inner.has_cap(LspCapFlags::NO_OPEN_CLOSE)
+    }
+
+    /// Whether the server wants `didChange` (lock-free).
+    pub fn wants_changes(&self) -> bool {
+        !self.inner.has_cap(LspCapFlags::NO_CHANGE_SYNC)
+    }
+
+    /// Whether the server wants `didSave`, and whether with the text.
+    pub fn wants_save(&self) -> Option<bool> {
+        (!self.inner.has_cap(LspCapFlags::NO_SAVE))
+            .then(|| self.inner.has_cap(LspCapFlags::SAVE_WITH_TEXT))
+    }
+
     /// Test-only: force the incremental-sync capability so sync tests can
     /// exercise the diff path against a fake server that never negotiates
     /// capabilities.
@@ -1699,6 +2182,11 @@ impl LanguageServer {
     /// Checks if the server supports execute command (lock-free)
     pub async fn supports_execute_command(&self) -> bool {
         self.inner.has_cap(LspCapFlags::EXECUTE_COMMAND)
+    }
+
+    /// Checks if the server supports code lenses (lock-free)
+    pub async fn supports_code_lens(&self) -> bool {
+        self.inner.has_cap(LspCapFlags::CODE_LENS)
     }
 
     /// Checks if the server supports inlay hints (lock-free)
@@ -1868,6 +2356,9 @@ impl LanguageServer {
             if let Err(e) = self.notify("$/cancelRequest", params).await {
                 // If we fail to send cancellation, log but continue
                 // The server might still respond, but we'll ignore it by removing from pending
+                if Self::is_queue_full_error(&e) && !self.should_warn_queue_full() {
+                    continue;
+                }
                 crate::lsp_warn!(
                     &self.log_prefix(),
                     "Failed to send $/cancelRequest for ID {:?}: {}",
@@ -1977,6 +2468,73 @@ fn hover_client_capabilities() -> lsp_types::HoverClientCapabilities {
     }
 }
 
+/// What this client can do with completion items. The menu renders
+/// `labelDetails`, deprecation tags and lazily-resolved documentation, expands
+/// snippets, understands insert/replace ranges, `commitCharacters` and list
+/// level `itemDefaults`.
+pub(crate) fn completion_client_capabilities() -> lsp_types::CompletionClientCapabilities {
+    use lsp_types::{
+        CompletionClientCapabilities, CompletionItemCapability,
+        CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability,
+        CompletionItemTag, CompletionListCapability, InsertTextMode, InsertTextModeSupport,
+        MarkupKind, TagSupport,
+    };
+    CompletionClientCapabilities {
+        dynamic_registration: Some(false),
+        completion_item: Some(CompletionItemCapability {
+            snippet_support: Some(true),
+            commit_characters_support: Some(true),
+            documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+            deprecated_support: Some(true),
+            preselect_support: Some(true),
+            tag_support: Some(TagSupport {
+                value_set: vec![CompletionItemTag::DEPRECATED],
+            }),
+            insert_replace_support: Some(true),
+            // Only presentation fields are resolved lazily. Anything that
+            // changes what accepting an item inserts (additionalTextEdits,
+            // textEdit) must arrive with the list: accepting is synchronous.
+            resolve_support: Some(CompletionItemCapabilityResolveSupport {
+                properties: vec![
+                    "documentation".to_string(),
+                    "detail".to_string(),
+                    "labelDetails".to_string(),
+                ],
+            }),
+            insert_text_mode_support: Some(InsertTextModeSupport {
+                value_set: vec![InsertTextMode::AS_IS, InsertTextMode::ADJUST_INDENTATION],
+            }),
+            label_details_support: Some(true),
+        }),
+        completion_item_kind: Some(CompletionItemKindCapability {
+            value_set: Some(
+                (1..=25)
+                    .map(|n| {
+                        serde_json::from_value::<CompletionItemKind>(serde_json::json!(n))
+                            .expect("valid completion item kind")
+                    })
+                    .collect(),
+            ),
+        }),
+        context_support: Some(true),
+        insert_text_mode: Some(InsertTextMode::ADJUST_INDENTATION),
+        completion_list: Some(CompletionListCapability {
+            item_defaults: Some(
+                [
+                    "commitCharacters",
+                    "editRange",
+                    "insertTextFormat",
+                    "insertTextMode",
+                    "data",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1997,5 +2555,108 @@ mod tests {
         let formats = caps.content_format.expect("content_format set");
         assert_eq!(formats.first(), Some(&lsp_types::MarkupKind::Markdown));
         assert!(formats.contains(&lsp_types::MarkupKind::PlainText));
+    }
+
+    fn flags_of(capabilities: serde_json::Value) -> LspCapFlags {
+        let caps: ServerCapabilities = serde_json::from_value(capabilities).unwrap();
+        capability_flags(&caps)
+    }
+
+    /// A provider announced as `false` is not supported, even though the
+    /// field is present; every shape of "on" still counts.
+    #[test]
+    fn providers_announced_as_false_are_not_supported() {
+        let flags = flags_of(json!({
+            "hoverProvider": false,
+            "definitionProvider": false,
+            "referencesProvider": false,
+            "renameProvider": false,
+            "documentSymbolProvider": false,
+            "codeActionProvider": false,
+            "foldingRangeProvider": false,
+            "callHierarchyProvider": false,
+            "implementationProvider": false,
+            "inlayHintProvider": false,
+        }));
+        assert_eq!(flags, LspCapFlags::empty(), "{flags:?}");
+
+        let flags = flags_of(json!({
+            "hoverProvider": true,
+            "definitionProvider": {"workDoneProgress": true},
+            "renameProvider": {"prepareProvider": true},
+            "completionProvider": {"triggerCharacters": ["."]},
+            "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+            "foldingRangeProvider": true,
+            "referencesProvider": false,
+        }));
+        for expected in [
+            LspCapFlags::HOVER,
+            LspCapFlags::GOTO_DEFINITION,
+            LspCapFlags::RENAME,
+            LspCapFlags::PREPARE_RENAME,
+            LspCapFlags::COMPLETION,
+            LspCapFlags::CODE_ACTIONS,
+            LspCapFlags::FOLDING_RANGE,
+        ] {
+            assert!(flags.contains(expected), "{expected:?} in {flags:?}");
+        }
+        assert!(!flags.contains(LspCapFlags::REFERENCES));
+    }
+
+    #[test]
+    fn text_sync_options_decide_which_notifications_a_server_gets() {
+        let announced = |sync: serde_json::Value| flags_of(json!({ "textDocumentSync": sync }));
+        let optouts = LspCapFlags::NO_OPEN_CLOSE
+            | LspCapFlags::NO_CHANGE_SYNC
+            | LspCapFlags::NO_SAVE
+            | LspCapFlags::SAVE_WITH_TEXT;
+
+        // Nothing announced: everything is sent (a server that has not
+        // initialized yet, or one that says nothing).
+        assert!(flags_of(json!({})).intersection(optouts).is_empty());
+        // A bare kind: open/close and saves (without text) stay on.
+        assert!(announced(json!(1)).intersection(optouts).is_empty());
+        assert!(announced(json!(0)).contains(LspCapFlags::NO_CHANGE_SYNC));
+
+        let silent = announced(json!({}));
+        assert!(silent.contains(
+            LspCapFlags::NO_OPEN_CLOSE | LspCapFlags::NO_CHANGE_SYNC | LspCapFlags::NO_SAVE
+        ));
+        let wanting =
+            announced(json!({"openClose": true, "change": 2, "save": {"includeText": true}}));
+        assert_eq!(wanting.intersection(optouts), LspCapFlags::SAVE_WITH_TEXT);
+        let plain_save = announced(json!({"openClose": true, "change": 1, "save": true}));
+        assert!(plain_save.intersection(optouts).is_empty());
+    }
+
+    /// A server that prints bytes that are not UTF-8 must keep a reader on
+    /// its stderr: a closed pipe makes its next stderr write fail.
+    #[tokio::test]
+    async fn stderr_is_drained_past_bytes_that_are_not_utf8() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut server_stderr, reader) = tokio::io::duplex(64);
+        let drain = tokio::spawn(super::drain_stderr(reader));
+
+        server_stderr
+            .write_all(b"ok\n\xff\xfe bad\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        server_stderr
+            .write_all(b"still being read\n")
+            .await
+            .expect("the reader must outlive non-UTF-8 output");
+
+        // A line longer than the cap does not stall the reader either.
+        server_stderr
+            .write_all(&vec![b'x'; 200 * 1024])
+            .await
+            .expect("the reader keeps consuming a line without newline");
+        drop(server_stderr);
+        tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .expect("the reader ends at EOF")
+            .unwrap();
     }
 }

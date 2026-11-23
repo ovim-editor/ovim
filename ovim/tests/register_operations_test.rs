@@ -434,53 +434,56 @@ fn test_selection_register() {
 
 #[test]
 fn test_visual_yank_to_register() {
-    let mut test = EditorTest::new("hello world test");
-
-    test.press('v')
-        .keys("e") // Select "hello"
-        .keys("\"ay") // Yank "hello" to register 'a'
-        .keys("$") // End of line (cursor on 't')
-        .keys("\"ap"); // Paste after 't'
-
-    // TODO: Visual mode yank to named register not working as expected
-    // The yank operation in visual mode with register may not be implemented correctly
-    // Actual: buffer unchanged, paste has no effect
-    assert_eq!(test.buffer_content(), "hello world test\n");
-    test.assert_cursor(0, 15);
+    editor_flow_test! {
+        content "hello world test";
+        step "ve\"ay" => |test| {
+            assert_eq!(test.get_register_content('a').as_deref(), Some("hello"));
+        }
+        step "$\"ap" => |test| {
+            assert_eq!(test.buffer_content(), "hello world testhello\n");
+            test.assert_cursor(0, 20);
+        }
+    }
 }
 
 #[test]
 fn test_visual_delete_to_register() {
-    let mut test = EditorTest::new("hello world");
-
-    test.press('v')
-        .keys("e") // Select "hello"
-        .keys("\"ad") // Delete "hello" to register 'a'
-        .keys("$") // End of line (cursor on 'd')
-        .keys("\"ap"); // Paste "hello" after 'd'
-
-    // TODO: Visual mode delete to named register not working as expected
-    // The delete operation in visual mode with register may not be implemented correctly
-    // Actual: " world" (delete works) but paste has no effect
-    assert_eq!(test.buffer_content(), " world\n");
-    test.assert_cursor(0, 5);
+    editor_flow_test! {
+        content "hello world";
+        step "ve\"ad" => |test| {
+            assert_eq!(test.buffer_content(), " world\n");
+            assert_eq!(test.get_register_content('a').as_deref(), Some("hello"));
+        }
+        step "$\"ap" => |test| {
+            assert_eq!(test.buffer_content(), " worldhello\n");
+            test.assert_cursor(0, 10);
+        }
+    }
 }
 
 #[test]
 fn test_visual_line_to_register() {
-    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+    editor_flow_test! {
+        content "line 1\nline 2\nline 3";
+        step "Vj\"ay" => |test| {
+            assert_eq!(test.get_register_content('a').as_deref(), Some("line 1\nline 2\n"));
+        }
+        step "G\"ap" => |test| {
+            assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\nline 2\n");
+            test.assert_cursor(3, 0);
+        }
+    }
+}
 
-    test.press('V') // Visual line mode
-        .press('j') // Select 2 lines (line 1 and line 2)
-        .keys("\"ay") // Yank to 'a' (linewise)
-        .keys("G") // Go to last line
-        .keys("\"ap"); // Paste (linewise, creates new lines below)
-
-    // TODO: Visual line mode yank to named register not working as expected
-    // Actual: buffer unchanged, paste has no effect
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
-    // G moves cursor to last line (line 2, 0-indexed)
-    test.assert_cursor(2, 0);
+#[test]
+fn cancelling_visual_selection_clears_its_register_prefix() {
+    editor_flow_test! {
+        content "hello world";
+        step "ve\"a<Esc>0dw" => |test| {
+            assert_eq!(test.buffer_content(), "world\n");
+            assert_eq!(test.get_register_content('a'), None);
+        }
+    }
 }
 
 // ============================================================================
@@ -688,8 +691,9 @@ fn test_register_chain_operations() {
         .keys("\"ap"); // Paste from a
 
     // Complex chain - verify actual behavior
-    assert_eq!(test.buffer_content(), "one tonetwotonetwowowo three four\n");
-    test.assert_cursor(0, 19);
+    // nvim: each `yiw` leaves the cursor at the start of the word it yanked
+    assert_eq!(test.buffer_content(), "one ttonetwowoonetwowo three four\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]

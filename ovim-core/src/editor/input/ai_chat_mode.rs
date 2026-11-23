@@ -323,7 +323,10 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     remove_attachment = true;
                 }
             }
-            if remove_attachment && !editor.remove_ai_chat_code_attachment() {
+            if remove_attachment
+                && !editor.remove_diff_comments_attachment()
+                && !editor.remove_ai_chat_code_attachment()
+            {
                 editor.remove_last_ai_chat_image();
             }
             editor.reset_ai_chat_slash_completion();
@@ -560,6 +563,10 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 if role == ChatRole::Tool {
                     if let Some(tool_call_id) = tool_call_id.as_deref() {
+                        if editor.ai_chat_tool_replay_label(tool_call_id).is_some() {
+                            editor.replay_ai_chat_tool(tool_call_id);
+                            return Ok(());
+                        }
                         if !editor.open_ai_shell_process_inspector(tool_call_id) {
                             editor.toggle_ai_chat_tool_event(tool_call_id);
                         }
@@ -651,26 +658,48 @@ fn handle_model_selector(editor: &mut Editor, key_event: KeyEvent) -> Result<()>
 
     match key_event.code {
         KeyCode::Tab | KeyCode::BackTab => {
-            let section = if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model
-            {
-                ChatModelPickerSection::Effort
+            let sections = [
+                ChatModelPickerSection::Model,
+                ChatModelPickerSection::Effort,
+                ChatModelPickerSection::Permission,
+            ];
+            let count = if editor.ai_chat_permission_modes().is_empty() {
+                2
             } else {
-                ChatModelPickerSection::Model
+                3
             };
+            let current = sections[..count]
+                .iter()
+                .position(|section| *section == editor.ai_chat_model_picker_section())
+                .unwrap_or(0);
+            let next = if key_event.code == KeyCode::BackTab {
+                (current + count - 1) % count
+            } else {
+                (current + 1) % count
+            };
+            let section = sections[next];
             editor.open_ai_chat_model_picker(section);
         }
         KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
-            if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model {
-                editor.ai_cycle_profile(false);
-            } else {
-                editor.cycle_ai_chat_reasoning_effort(false);
+            match editor.ai_chat_model_picker_section() {
+                ChatModelPickerSection::Model => editor.ai_cycle_chat_model(false),
+                ChatModelPickerSection::Effort => {
+                    editor.cycle_ai_chat_reasoning_effort(false);
+                }
+                ChatModelPickerSection::Permission => {
+                    editor.cycle_ai_chat_permission_mode(false);
+                }
             }
         }
         KeyCode::Down | KeyCode::Right | KeyCode::Char('j') | KeyCode::Char('l') => {
-            if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model {
-                editor.ai_cycle_profile(true);
-            } else {
-                editor.cycle_ai_chat_reasoning_effort(true);
+            match editor.ai_chat_model_picker_section() {
+                ChatModelPickerSection::Model => editor.ai_cycle_chat_model(true),
+                ChatModelPickerSection::Effort => {
+                    editor.cycle_ai_chat_reasoning_effort(true);
+                }
+                ChatModelPickerSection::Permission => {
+                    editor.cycle_ai_chat_permission_mode(true);
+                }
             }
         }
         KeyCode::Enter => {
@@ -991,6 +1020,58 @@ mod tests {
     }
 
     #[test]
+    fn permission_picker_opens_from_command_and_cycles_sections_in_both_directions() {
+        use crate::editor::ChatModelPickerSection;
+        let mut editor = crate::editor::ai_external_agent::tests::editor();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/permissions".into();
+        chat.input_cursor = chat.input.len();
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE)).unwrap();
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::ModelSelector);
+        assert_eq!(
+            editor.ai_chat_model_picker_section(),
+            ChatModelPickerSection::Permission
+        );
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::BackTab, Modifiers::SHIFT),
+        )
+        .unwrap();
+        assert_eq!(
+            editor.ai_chat_model_picker_section(),
+            ChatModelPickerSection::Effort
+        );
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Tab, Modifiers::NONE)).unwrap();
+        assert_eq!(
+            editor.ai_chat_model_picker_section(),
+            ChatModelPickerSection::Permission
+        );
+        // The default is the first mode. Stepping up from it must not wrap to
+        // the last mode (bypass), which would apply immediately.
+        for key in [
+            KeyCode::Up,
+            KeyCode::Left,
+            KeyCode::Char('k'),
+            KeyCode::Char('h'),
+        ] {
+            handle_ai_chat_mode(&mut editor, KeyEvent::new(key, Modifiers::NONE)).unwrap();
+            assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        }
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Down, Modifiers::NONE)).unwrap();
+        assert_eq!(editor.ai_chat_permission_mode(), Some("default"));
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE)).unwrap();
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
+        assert!(editor.ai_select_chat_profile("local"));
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/".into();
+        chat.input_cursor = 1;
+        assert!(!editor
+            .ai_chat_slash_completions()
+            .iter()
+            .any(|item| item.command == "/permissions"));
+    }
+
+    #[test]
     fn review_mode_ignores_unmapped_keys() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
@@ -1299,8 +1380,8 @@ mod tests {
             let mut editor = Editor::default();
             open_test_chat(&mut editor);
             if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.pending_tool_approval =
-                    Some(crate::editor::ai_chat_state::PendingToolApproval {
+                assert!(chat
+                    .park(crate::editor::ai_chat_state::PendingToolApproval {
                         tool_call: ToolCallInfo {
                             id: "call1".to_string(),
                             name: "read_file".to_string(),
@@ -1315,7 +1396,8 @@ mod tests {
                         approval_root: PathBuf::from("/tmp"),
                         dynamic_response: None,
                         dynamic_turn: None,
-                    });
+                    })
+                    .is_ok());
             }
 
             handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
@@ -1323,8 +1405,8 @@ mod tests {
             assert!(!editor.ai_chat_has_pending_tool_approval());
 
             if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.pending_tool_approval =
-                    Some(crate::editor::ai_chat_state::PendingToolApproval {
+                assert!(chat
+                    .park(crate::editor::ai_chat_state::PendingToolApproval {
                         tool_call: ToolCallInfo {
                             id: "call2".to_string(),
                             name: "read_file".to_string(),
@@ -1339,7 +1421,8 @@ mod tests {
                         approval_root: PathBuf::from("/tmp"),
                         dynamic_response: None,
                         dynamic_turn: None,
-                    });
+                    })
+                    .is_ok());
             }
             handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
                 .expect("esc");

@@ -13,13 +13,14 @@ pub use state::{
     format_context_window, parse_key_string, AgentArtifactHandle, AgentArtifactsResponse,
     AgentControlPlaneSnapshot, AgentControlResponse, AgentControlTarget, AgentEventsResponse,
     AgentSnapshot, AiChatMessageSnapshot, AiChatSnapshot, ApiRequest, ApiResponse, ApiState,
-    BufferInfo, CodeExplanationSnapshot, CodexAuthSnapshot, ContextWindowInfo, CursorPosition,
-    DecorationInfo, DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot,
-    ErrorResponse, HealthInfo, ImageAttachmentSnapshot, LineEntry, LinesResponse,
-    LspServerInfoItem, LspStatusInfo, MetricsInfo, ModeInfo, OutlineInfo, OutlineSymbol,
-    PickerInfo, PickerResultInfo, QueuedChatSnapshot, RenderInfo, SendKeysResult, SuccessResponse,
-    SymbolSearchInfo, SymbolSearchResult, ToolCallSnapshot, TraceInfo, TraceNode, ViewSnapshot,
-    VisualSelection, AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
+    BufferInfo, CodeExplanationSnapshot, CodexAuthSnapshot, CompletionInfo, CompletionItemInfo,
+    ContextWindowInfo, CursorPosition, DecorationInfo, DiagnosticCounts, DiagnosticItem,
+    DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo, ImageAttachmentSnapshot, LineEntry,
+    LinesResponse, LspServerInfoItem, LspStatusInfo, MetricsInfo, ModeInfo, OutlineInfo,
+    OutlineSymbol, PickerInfo, PickerResultInfo, QueuedChatSnapshot, RenderInfo, SearchReplaceInfo,
+    SearchReplaceRowInfo, SendKeysResult, SuccessResponse, SymbolSearchInfo, SymbolSearchResult,
+    ToolCallSnapshot, TraceInfo, TraceNode, ViewSnapshot, VisualSelection,
+    AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
 };
 
 use crate::gui::server::GuiChannel;

@@ -204,7 +204,8 @@ fn test_n_capital_prev_search() {
     test.keys("n");
     test.keys("N");
 
-    test.assert_cursor(0, 0);
+    // nvim --clean: /foo -> 8, n -> 16, N -> 8.
+    test.assert_cursor(0, 8);
 }
 
 /// Test ; (repeat f/F/t/T)

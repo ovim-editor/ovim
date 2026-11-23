@@ -1,5 +1,7 @@
 use crate::display::control_char_caret;
+use crate::editor::Editor;
 use crate::ui::renderer::markdown_conceal::LineTransform;
+use ovim_core::unicode::GraphemeCol;
 use std::ops::Range;
 
 /// Result of expanding tabs and control characters for rendering.
@@ -169,6 +171,7 @@ pub fn remap_char_col(original_col: usize, char_mapping: &[usize]) -> usize {
 /// Iterates graphemes directly and sums their display widths, handling tabs.
 /// This is correct for multi-codepoint graphemes (ZWJ emoji, combining marks)
 /// where `char_col_to_display_col` would over-count by summing per-char widths.
+#[cfg(test)]
 pub fn grapheme_col_to_display_col(text: &str, grapheme_col: usize, tab_width: usize) -> usize {
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -185,6 +188,108 @@ pub fn grapheme_col_to_display_col(text: &str, grapheme_col: usize, tab_width: u
         }
     }
     display_col
+}
+
+/// Returns a cursor-like source position in screen-relative text coordinates.
+///
+/// The normal wrapped path resolves the cursor through the current
+/// [`IndexedLineLayout`](ovim_core::line_layout::IndexedLineLayout), using the
+/// buffer's `LineIndex` to translate its grapheme column. This keeps cursor,
+/// hover, and completion placement proportional to the indexed lookup rather
+/// than materializing and scanning a long source line on every render.
+///
+/// A map made by a legacy constructor can lack a line layout. Only then do we
+/// retain the older text-based calculation as a compatibility fallback.
+pub fn cursor_screen_position(
+    editor: &Editor,
+    line: usize,
+    grapheme_col: GraphemeCol,
+    viewport_start: usize,
+    text_width: usize,
+) -> (usize, usize) {
+    let buffer = editor.buffer();
+    let line_index = buffer.line_index(line);
+    let raw_char_col = line_index.grapheme_to_char(grapheme_col).0;
+
+    if editor.options.wrap && text_width > 0 {
+        if let Some(map) = editor.wrap_map() {
+            if let Some(layout) = map.line_layout(line) {
+                // Layouts for concealed Markdown lines use view character
+                // coordinates. Cursor lines are deliberately raw, while hover
+                // can target a concealed line, so map raw char -> raw byte ->
+                // concealed view char before querying the cached layout.
+                let layout_char_col = map
+                    .line_transform(line)
+                    .and_then(|transform| {
+                        transform
+                            .src_to_view
+                            .get(line_index.char_to_byte(raw_char_col))
+                            .copied()
+                    })
+                    .unwrap_or(raw_char_col);
+                let position = layout.position_for_char(layout_char_col);
+                let absolute_row = map.logical_to_visual(line) + position.row;
+                let viewport_row =
+                    map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
+                return (absolute_row.saturating_sub(viewport_row), position.column);
+            }
+        }
+
+        return legacy_wrapped_cursor_screen_position(
+            editor,
+            line,
+            grapheme_col,
+            viewport_start,
+            text_width,
+        );
+    }
+
+    let tab_width = editor.indent_options().tab_width;
+    let display_col = line_index.char_to_display(raw_char_col, tab_width)
+        + editor
+            .projected_decorations()
+            .inline_width_before(line, raw_char_col, buffer.rope());
+    // Lines hidden by closed folds take no screen rows.
+    let folds = buffer.fold_manager();
+    let screen_line = folds
+        .visible_index(line)
+        .saturating_sub(folds.visible_index(viewport_start));
+    (
+        screen_line,
+        display_col.saturating_sub(editor.horizontal_offset()),
+    )
+}
+
+fn legacy_wrapped_cursor_screen_position(
+    editor: &Editor,
+    line: usize,
+    grapheme_col: GraphemeCol,
+    viewport_start: usize,
+    text_width: usize,
+) -> (usize, usize) {
+    let buffer = editor.buffer();
+    let rope = buffer.rope();
+    let line_text = ovim_core::display::line_content(rope, line);
+    let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, grapheme_col).0;
+    let projected = editor.projected_decorations();
+    let display_col = ovim_core::display::char_col_to_display_col(
+        &line_text,
+        char_col,
+        editor.indent_options().tab_width,
+    ) + projected.inline_width_before(line, char_col, rope);
+    let inline_widths = projected.inline_decorations_for_line(line, rope);
+
+    if let Some(map) = editor.wrap_map() {
+        let (absolute_row, visual_col) =
+            map.cursor_to_visual_with_decorations(line, display_col, &line_text, &inline_widths);
+        let viewport_row = map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
+        (absolute_row.saturating_sub(viewport_row), visual_col)
+    } else {
+        (
+            line.saturating_sub(viewport_start) + display_col / text_width,
+            display_col % text_width,
+        )
+    }
 }
 
 /// Truncates text to fit within a display width, accounting for wide characters
@@ -208,6 +313,36 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_cursor_position_handles_a_far_long_line() {
+        let mut editor = Editor::with_content(&"x".repeat(1_000_000));
+        editor.options.wrap = true;
+        editor.ensure_wrap_map(80);
+
+        assert_eq!(
+            cursor_screen_position(&editor, 0, GraphemeCol(1_000_000), 0, 80),
+            (12_500, 0)
+        );
+    }
+
+    #[test]
+    fn indexed_cursor_position_maps_hover_through_markdown_concealment() {
+        let mut editor =
+            Editor::with_content("editing\nprefix [label](https://example.test) suffix\n");
+        editor.set_file_path("/tmp/position.md".to_string());
+        editor.options.wrap = true;
+        editor.ensure_wrap_map(12);
+
+        let raw_index = editor.buffer().line_index(1);
+        let raw_col = raw_index.grapheme_count();
+        // Concealed text is "prefix label suffix" (19 cells), following
+        // the one-row "editing" line: its end is absolute row 2, column 7.
+        assert_eq!(
+            cursor_screen_position(&editor, 1, GraphemeCol(raw_col), 0, 12),
+            (2, 7)
+        );
+    }
 
     #[test]
     fn test_expand_tabs_basic() {

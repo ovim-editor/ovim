@@ -158,14 +158,23 @@ fn exec_unknown_command_still_errors() {
 
 #[test]
 fn exec_invalid_substitute_maps_vim_error_to_api_error() {
-    // Vim reports substitute syntax errors on the status line as "E146: ...".
-    // The API should surface that as an error, not a success, and leave the
-    // buffer unchanged.
+    // Vim errors ("E33: No previous substitute regular expression") are API
+    // errors and leave the buffer unchanged.
     let mut test = EditorTest::new("hello world");
-    let result = exec(&mut test, "s/hello"); // missing replacement/closing delimiter
+    let result = exec(&mut test, "s");
 
-    assert_error(&result, "s/hello");
+    assert_error(&result, "s");
     assert_eq!(test.buffer_content(), "hello world\n");
+}
+
+#[test]
+fn exec_substitute_without_replacement_deletes_the_match() {
+    // vim (nvim --clean): `:s/hello` substitutes with nothing.
+    let mut test = EditorTest::new("hello world");
+    let result = exec(&mut test, "s/hello");
+
+    assert_success(&result, "s/hello");
+    assert_eq!(test.buffer_content(), " world\n");
 }
 
 // ---- The invariant that keeps the two paths from drifting again ----

@@ -36,6 +36,12 @@ pub enum Mode {
     RenameInput,
     /// AiChat mode - multi-turn AI chat panel
     AiChat,
+    /// RunConsole mode - focused, scrollable run/debug output
+    RunConsole,
+    /// DebugPanel mode - focused debug panel (stack, variables, watches, breakpoints)
+    DebugPanel,
+    /// SearchReplace mode - project-wide replace review panel
+    SearchReplace,
 }
 
 impl Mode {
@@ -59,6 +65,9 @@ impl Mode {
             Mode::LspManager => "LSP MANAGER",
             Mode::RenameInput => "RENAME",
             Mode::AiChat => "AI CHAT",
+            Mode::RunConsole => "CONSOLE",
+            Mode::DebugPanel => "DEBUG",
+            Mode::SearchReplace => "REPLACE IN FILES",
         }
     }
 
@@ -70,5 +79,10 @@ impl Mode {
     /// Returns whether this mode is a visual mode
     pub fn is_visual(&self) -> bool {
         matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
+    }
+
+    /// Returns whether keys type into the buffer (Insert and Replace mode).
+    pub fn types_text(&self) -> bool {
+        matches!(self, Mode::Insert | Mode::Replace)
     }
 }

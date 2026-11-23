@@ -17,28 +17,43 @@
 
 #[macro_use]
 pub mod logger;
+mod file_operations;
+mod messages;
 mod notifications;
 pub mod position;
 mod protocol;
+mod recovery;
 mod requests;
 mod server;
 mod supervisor;
 mod trigger_chars;
 mod types;
+pub mod user_settings;
 mod utils;
+mod watchers;
 
 pub use logger::{get_log_path, init_lsp_logging};
 pub use position::{char_col_to_utf16, utf16_to_char_col};
 
+pub use messages::{MessageRequest, MessageSeverity, ServerMessage};
 pub use protocol::{JsonRpcMessage, RequestId};
-pub use server::{LanguageServer, LanguageServerHealth};
+pub use recovery::{ServerStatusReport, MAX_AUTO_RESTARTS};
+pub use requests::{
+    apply_completion_item_defaults, completion_outcome, CompletionOutcome, CompletionTrigger,
+};
+pub use server::{LanguageServer, LanguageServerHealth, LspServerError};
 pub use supervisor::{RestartPolicy, TaskSupervisor};
 pub use trigger_chars::fallback_completion_trigger_characters;
-pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
+pub(crate) use types::diagnostic_range_is_valid;
+pub use types::{
+    diagnostic_char_range, diagnostic_covers_line, uri_from_file_path, uri_to_file_path,
+    LspPosition, LspRange,
+};
 pub use utils::compute_simple_diff;
+pub use watchers::{WatchedChange, WatchedFileEvent};
 
 use anyhow::Result;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use lsp_types::{Diagnostic, Uri};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +66,8 @@ use tokio::task::JoinHandle;
 #[derive(Clone, Debug, Default)]
 struct StoredDiagnostics {
     version: Option<i32>,
+    // Local document version when an unversioned publication was accepted.
+    observed_version: i32,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -71,10 +88,42 @@ const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 /// compute diagnostics for the latest content.
 const UNVERSIONED_DIAGNOSTICS_SETTLE_MS: u64 = 150;
 
+/// A server-initiated `workspace/applyEdit` waiting for the editor. The
+/// server's request is answered only once the editor has decided the outcome.
+pub struct PendingWorkspaceEdit {
+    edit: lsp_types::WorkspaceEdit,
+    reply: tokio::sync::oneshot::Sender<lsp_types::ApplyWorkspaceEditResponse>,
+}
+
+impl PendingWorkspaceEdit {
+    /// Applies the edit with `apply` and sends its outcome back to the server.
+    pub fn resolve(
+        self,
+        apply: impl FnOnce(lsp_types::WorkspaceEdit) -> lsp_types::ApplyWorkspaceEditResponse,
+    ) {
+        let response = apply(self.edit);
+        let _ = self.reply.send(response);
+    }
+}
+
 /// Debounce duration for textDocument/didChange notifications (milliseconds)
 /// Coalesces rapid changes to reduce LSP traffic by ~1000x
 /// Reduced to 150ms for faster diagnostics feedback (was 300ms)
 const CHANGE_DEBOUNCE_MS: u64 = 150;
+
+/// Diagnostics of one document as the editor should show them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayDiagnostics {
+    pub doc_version: i32,
+    pub last_sent: i32,
+    pub diagnostics: Vec<Diagnostic>,
+    /// Published for the document's current version. When false they are the
+    /// servers' latest publications for an older one.
+    pub current: bool,
+}
+
+/// (server_id, method, subject): which notifications supersede one another.
+type OverflowKey = (String, String, String);
 
 /// Notification message from a language server
 #[derive(Clone)]
@@ -205,13 +254,17 @@ pub struct LspManager {
     /// slow server.
     flush_gates: DashMap<Uri, Arc<Mutex<()>>>,
 
-    /// The exact document text each server last received (via didOpen or a
-    /// successful didChange), keyed by (server_id, uri). This is the ONLY
+    /// The documents each server has been sent `didOpen` for, keyed by
+    /// (server_id, uri); the entry is the exact text that server last
+    /// received (via didOpen or a successful didChange). This is the ONLY
     /// trustworthy baseline for incremental diffs: editor-side snapshots
     /// can lag or be poisoned by flush races, and diffing against anything
     /// other than what the server actually holds corrupts the server's
-    /// copy of the document (OV-00326).
-    server_texts: DashMap<(String, Uri), Arc<str>>,
+    /// copy of the document (OV-00326). `None` is an open document whose
+    /// text is unknown, so the next update must be a full one. A server
+    /// without an entry has never opened the document and must get a
+    /// `didOpen`, not a `didChange`.
+    server_documents: DashMap<(String, Uri), Option<Arc<str>>>,
 
     /// Channel for debounce flush requests (URI to flush)
     flush_tx: mpsc::Sender<Uri>,
@@ -220,6 +273,9 @@ pub struct LspManager {
     /// Flag indicating diagnostics have changed and cache needs update
     diagnostics_changed: AtomicBool,
 
+    /// Set when a server sent `workspace/codeLens/refresh`.
+    code_lens_refresh: AtomicBool,
+
     /// Current progress messages keyed by server and LSP progress token.
     /// A server may run multiple operations concurrently, so server identity
     /// alone is not sufficient to track their independent lifetimes.
@@ -227,15 +283,19 @@ pub struct LspManager {
 
     /// Channel for workspace edits that need to be applied by the Editor
     /// These come from server-initiated workspace/applyEdit requests
-    workspace_edit_tx: mpsc::Sender<lsp_types::WorkspaceEdit>,
-    workspace_edit_rx: Mutex<mpsc::Receiver<lsp_types::WorkspaceEdit>>,
+    workspace_edit_tx: mpsc::Sender<PendingWorkspaceEdit>,
+    workspace_edit_rx: Mutex<mpsc::Receiver<PendingWorkspaceEdit>>,
+
+    /// Notifications that found `notification_tx` full and are worth keeping:
+    /// the latest per (server, method, subject) instead of every one.
+    overflow_notifications: Arc<std::sync::Mutex<HashMap<OverflowKey, (u64, LspNotification)>>>,
 
     /// BUG FIX: Counter for dropped notifications when channel is full
     /// Prevents blocking when notification receiver is slow
     dropped_notifications: Arc<AtomicU64>,
 
-    /// Tracks servers currently being started (prevents concurrent duplicate starts)
-    starting_servers: DashSet<String>,
+    /// Serializes startup and registry publication; cancellation releases the gate.
+    startup_gates: DashMap<String, Arc<Mutex<()>>>,
 
     /// Handles to notification listener tasks (for cleanup on server stop)
     listener_handles: DashMap<String, tokio::task::JoinHandle<()>>,
@@ -247,6 +307,29 @@ pub struct LspManager {
 
     /// Maps server_id → root_path for root-based dedup
     server_roots: DashMap<String, std::path::PathBuf>,
+
+    /// Servers whose root is only the directory of the file that started
+    /// them, because no project marker was found. Such a root says nothing
+    /// about where the project is, so it is never watched for file changes.
+    fallback_root_servers: dashmap::DashSet<String>,
+
+    /// How each live server was launched, for crash recovery.
+    server_specs: DashMap<String, recovery::ServerSpec>,
+
+    /// Dynamically registered `workspace/didChangeWatchedFiles` watchers.
+    file_watch_registrations: DashMap<String, Vec<watchers::WatcherRegistration>>,
+
+    /// Restart bookkeeping per server id (see `recovery`).
+    restart_states: DashMap<String, recovery::RestartState>,
+
+    /// `window/showMessage` / `showMessageRequest` waiting for the editor.
+    server_messages: std::sync::Mutex<Vec<messages::ServerMessage>>,
+
+    /// Crash/restart announcements waiting for the editor's status line.
+    lifecycle_events: std::sync::Mutex<Vec<String>>,
+
+    /// First crash-restart delay in milliseconds.
+    restart_base_backoff_ms: AtomicU64,
 }
 
 /// Builds a composite server ID for companion LSP servers.
@@ -284,19 +367,34 @@ impl LspManager {
             notification_rx: Mutex::new(notification_rx),
             change_debouncers: DashMap::new(),
             flush_gates: DashMap::new(),
-            server_texts: DashMap::new(),
+            server_documents: DashMap::new(),
             flush_tx,
             flush_rx: Mutex::new(Some(flush_rx)),
             diagnostics_changed: AtomicBool::new(false),
+            code_lens_refresh: AtomicBool::new(false),
             current_progress: Mutex::new(HashMap::new()),
             workspace_edit_tx,
             workspace_edit_rx: Mutex::new(workspace_edit_rx),
+            overflow_notifications: Arc::default(),
             dropped_notifications: Arc::new(AtomicU64::new(0)),
-            starting_servers: DashSet::new(),
+            startup_gates: DashMap::new(),
             listener_handles: DashMap::new(),
             language_server_index: DashMap::new(),
             server_roots: DashMap::new(),
+            fallback_root_servers: dashmap::DashSet::new(),
+            server_specs: DashMap::new(),
+            restart_states: DashMap::new(),
+            file_watch_registrations: DashMap::new(),
+            server_messages: std::sync::Mutex::new(Vec::new()),
+            lifecycle_events: std::sync::Mutex::new(Vec::new()),
+            restart_base_backoff_ms: AtomicU64::new(500),
         }
+    }
+
+    /// True once after a server asked for code lenses to be re-requested
+    /// (`workspace/codeLens/refresh`).
+    pub fn take_code_lens_refresh(&self) -> bool {
+        self.code_lens_refresh.swap(false, Ordering::SeqCst)
     }
 
     /// Checks if diagnostics have changed and resets the flag
@@ -341,6 +439,16 @@ impl LspManager {
             root_path.display()
         );
 
+        // Serialize registry decisions for this language. A concurrent caller
+        // must wait for readiness, not receive the id of a pending startup.
+        // Dropping a cancelled startup releases the permit automatically.
+        let gate = self
+            .startup_gates
+            .entry(language.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _startup_permit = gate.lock().await;
+
         // Check existing servers for this language — if any shares the same root, reuse it
         let existing_ids = self.servers_for_language(language);
         for sid in &existing_ids {
@@ -370,63 +478,51 @@ impl LspManager {
             return Ok(server_id);
         }
 
-        // Prevent concurrent duplicate starts
-        if !self.starting_servers.insert(server_id.clone()) {
-            lsp_debug!(
-                "LspManager",
-                "Server start already in progress for {}",
-                server_id
-            );
-            return Ok(server_id);
+        let root_uri =
+            uri_from_file_path(root_path).ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
+        let spawn_args = args.clone();
+        let server = LanguageServer::spawn_initialized(language, command, args, root_uri).await?;
+
+        // Insert into servers map
+        if let Some(mut existing) = self.servers.insert(server_id.clone(), server) {
+            // The fresh process has no documents open — drop baselines
+            // recorded for the replaced instance (OV-00326).
+            self.server_documents
+                .retain(|(sid, _), _| sid != &server_id);
+            if let Err(e) = existing.shutdown().await {
+                lsp_warn!(
+                    "LspManager",
+                    "Failed to shut down redundant server for {}: {}",
+                    server_id,
+                    e
+                );
+            }
         }
 
-        let result = async {
-            lsp_debug!("LspManager", "Spawning server: {} {:?}", command, args);
-            let mut server = LanguageServer::spawn(language, command, args).await?;
-            lsp_debug!("LspManager", "Server spawned successfully");
+        // Track root path for this server
+        self.server_roots
+            .insert(server_id.clone(), root_path.to_path_buf());
+        self.record_server_spec(
+            &server_id,
+            recovery::ServerSpec {
+                language: language.to_string(),
+                command: command.to_string(),
+                args: spawn_args,
+                root: root_path.to_path_buf(),
+                companion: false,
+            },
+        );
 
-            let root_uri = uri_from_file_path(root_path)
-                .ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
-            lsp_debug!("LspManager", "Root URI: {}", root_uri.as_str());
-
-            lsp_debug!("LspManager", "Calling initialize...");
-            server.initialize(root_uri).await?;
-            lsp_debug!("LspManager", "Initialize completed successfully");
-
-            // Insert into servers map
-            if let Some(mut existing) = self.servers.insert(server_id.clone(), server) {
-                // The fresh process has no documents open — drop baselines
-                // recorded for the replaced instance (OV-00326).
-                self.server_texts.retain(|(sid, _), _| sid != &server_id);
-                if let Err(e) = existing.shutdown().await {
-                    lsp_warn!(
-                        "LspManager",
-                        "Failed to shut down redundant server for {}: {}",
-                        server_id,
-                        e
-                    );
-                }
-            }
-
-            // Track root path for this server
-            self.server_roots
-                .insert(server_id.clone(), root_path.to_path_buf());
-
-            // Update reverse index (deduplicate for restart safety)
-            let mut ids = self
-                .language_server_index
-                .entry(language.to_string())
-                .or_default();
-            if !ids.contains(&server_id) {
-                ids.push(server_id.clone());
-            }
-
-            Ok(server_id.clone())
+        // Update reverse index (deduplicate for restart safety)
+        let mut ids = self
+            .language_server_index
+            .entry(language.to_string())
+            .or_default();
+        if !ids.contains(&server_id) {
+            ids.push(server_id.clone());
         }
-        .await;
 
-        self.starting_servers.remove(&server_id);
-        result
+        Ok(server_id)
     }
 
     /// Starts a companion language server with an explicit server_id
@@ -443,6 +539,13 @@ impl LspManager {
             "start_companion_server called for server_id={}",
             server_id
         );
+        let gate = self
+            .startup_gates
+            .entry(server_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _startup_permit = gate.lock().await;
+
         // Check if already running
         if self.servers.contains_key(server_id) {
             lsp_debug!(
@@ -453,66 +556,50 @@ impl LspManager {
             return Ok(());
         }
 
-        // Prevent concurrent duplicate starts
-        if !self.starting_servers.insert(server_id.to_string()) {
-            lsp_debug!(
-                "LspManager",
-                "Companion server start already in progress for {}",
-                server_id
-            );
-            return Ok(());
+        let language = server_id.split(':').next().unwrap_or(server_id);
+        let root_uri =
+            uri_from_file_path(root_path).ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
+        let spawn_args = args.clone();
+        let server = LanguageServer::spawn_initialized(language, command, args, root_uri).await?;
+
+        if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
+            // Fresh process, no documents open — drop stale baselines
+            // recorded for the replaced instance (OV-00326).
+            self.server_documents.retain(|(sid, _), _| sid != server_id);
+            if let Err(e) = existing.shutdown().await {
+                lsp_warn!(
+                    "LspManager",
+                    "Failed to shut down redundant companion server for {}: {}",
+                    server_id,
+                    e
+                );
+            }
         }
 
-        let result = async {
-            lsp_debug!(
-                "LspManager",
-                "Spawning companion server: {} {:?}",
-                command,
-                args
-            );
-            // Extract language part for the server's language field
-            let language = server_id.split(':').next().unwrap_or(server_id);
-            let mut server = LanguageServer::spawn(language, command, args).await?;
+        // Track root path for this companion server
+        self.server_roots
+            .insert(server_id.to_string(), root_path.to_path_buf());
+        self.record_server_spec(
+            server_id,
+            recovery::ServerSpec {
+                language: language.to_string(),
+                command: command.to_string(),
+                args: spawn_args,
+                root: root_path.to_path_buf(),
+                companion: true,
+            },
+        );
 
-            let root_uri = uri_from_file_path(root_path)
-                .ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
-
-            server.initialize(root_uri).await?;
-            lsp_debug!("LspManager", "Companion server {} initialized", server_id);
-
-            if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
-                // Fresh process, no documents open — drop stale baselines
-                // recorded for the replaced instance (OV-00326).
-                self.server_texts.retain(|(sid, _), _| sid != server_id);
-                if let Err(e) = existing.shutdown().await {
-                    lsp_warn!(
-                        "LspManager",
-                        "Failed to shut down redundant companion server for {}: {}",
-                        server_id,
-                        e
-                    );
-                }
-            }
-
-            // Track root path for this companion server
-            self.server_roots
-                .insert(server_id.to_string(), root_path.to_path_buf());
-
-            // Update reverse index (deduplicate for restart safety)
-            let mut ids = self
-                .language_server_index
-                .entry(language.to_string())
-                .or_default();
-            if !ids.contains(&server_id.to_string()) {
-                ids.push(server_id.to_string());
-            }
-
-            Ok(())
+        // Update reverse index (deduplicate for restart safety)
+        let mut ids = self
+            .language_server_index
+            .entry(language.to_string())
+            .or_default();
+        if !ids.contains(&server_id.to_string()) {
+            ids.push(server_id.to_string());
         }
-        .await;
 
-        self.starting_servers.remove(server_id);
-        result
+        Ok(())
     }
 
     /// Returns all server_ids that serve the given language_id.
@@ -575,11 +662,103 @@ impl LspManager {
         Vec::new()
     }
 
+    /// Forgets the document versions the stored diagnostics of `uri` were
+    /// published for. They belong to a document session that is over: the
+    /// next session counts versions from 1 again, and a publication for its
+    /// version 1 would otherwise be discarded as older than the stored one.
+    /// The diagnostics themselves stay (the Problems view lists closed files).
+    pub(super) async fn forget_diagnostic_versions(&self, uri: &Uri) {
+        let mut diagnostics = self.diagnostics.lock().await;
+        for stored in diagnostics
+            .get_mut(uri)
+            .into_iter()
+            .flat_map(|s| s.values_mut())
+        {
+            stored.version = None;
+            stored.observed_version = 0;
+        }
+    }
+
+    /// Whether some server of the document's group has not been sent
+    /// `didOpen` for it: a companion that started after the primary opened
+    /// the document, or a server that restarted.
+    pub fn document_needs_open(&self, language_id: &str, uri: &Uri) -> bool {
+        self.servers_for_document_uri(language_id, uri)
+            .into_iter()
+            .any(|server_id| {
+                !self
+                    .server_documents
+                    .contains_key(&(server_id, uri.clone()))
+            })
+    }
+
     /// Convenience wrapper for URI-based document routing.
     pub fn servers_for_document_uri(&self, language_id: &str, uri: &Uri) -> Vec<String> {
         uri_to_file_path(uri)
             .map(|path| self.servers_for_document(language_id, &path))
             .unwrap_or_default()
+    }
+
+    /// A handle to the server registered as `server_id`. The handle is a
+    /// clone, so no `DashMap` guard is held while a request is awaited.
+    fn server_handle(&self, server_id: &str) -> Option<LanguageServer> {
+        self.servers
+            .get(server_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// The primary server (never a companion) that owns `uri`: the one
+    /// started for the deepest project root containing the document. A
+    /// document outside every root goes to the language's server only when
+    /// there is exactly one; with several roots it has no owner, and guessing
+    /// would put the request on a server that never opened the document.
+    pub(crate) fn server_for_document(
+        &self,
+        uri: &Uri,
+        language_id: &str,
+    ) -> Result<LanguageServer> {
+        let server_id = self.server_id_for_document(uri, language_id)?;
+        self.server_handle(&server_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))
+    }
+
+    /// The id of the server [`Self::server_for_document`] picks.
+    pub(crate) fn server_id_for_document(&self, uri: &Uri, language_id: &str) -> Result<String> {
+        let is_primary = |server_id: &String| !server_id.contains(':');
+        let owner = self
+            .servers_for_document_uri(language_id, uri)
+            .into_iter()
+            .find(is_primary);
+        let server_id = match owner {
+            Some(server_id) => Some(server_id),
+            None => {
+                let primaries: Vec<String> = self
+                    .servers_for_language(language_id)
+                    .into_iter()
+                    .filter(is_primary)
+                    .collect();
+                match primaries.as_slice() {
+                    [] => Some(language_id.to_string()),
+                    [only] => Some(only.clone()),
+                    _ => None,
+                }
+            }
+        };
+        server_id
+            .filter(|server_id| self.servers.contains_key(server_id.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))
+    }
+
+    /// Whether any of `server_ids` can answer `completionItem/resolve`.
+    pub async fn any_supports_completion_resolve(&self, server_ids: &[String]) -> bool {
+        for sid in server_ids {
+            if let Some(server) = self.servers.get(sid.as_str()).map(|e| e.value().clone()) {
+                if server.supports_completion_resolve().await {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub async fn completion_trigger_characters_for_servers(
@@ -605,18 +784,24 @@ impl LspManager {
             handle.abort();
         }
 
-        if let Some((_, mut server)) = self.servers.remove(language) {
-            server.shutdown().await?;
-        }
+        // A deliberate stop must not be "recovered" by the supervisor.
+        self.server_specs.remove(language);
+        self.restart_states.remove(language);
 
-        // The server process is gone: its recorded document baselines are
-        // meaningless. A replacement server gets fresh didOpen full text and
-        // re-records them (OV-00326).
-        self.server_texts
-            .retain(|(server_id, _), _| server_id != language);
+        let shutdown_result = match self.servers.remove(language) {
+            Some((_, mut server)) => server.shutdown().await,
+            None => Ok(()),
+        };
+
+        // The server process is gone: forget its document baselines,
+        // diagnostics and version claims so a replacement server gets fresh
+        // didOpen notifications (OV-00326). Documents still held by another
+        // server (companions) keep their claim.
+        self.forget_server_documents(language).await;
 
         // Clean up root tracking
         self.server_roots.remove(language);
+        self.fallback_root_servers.remove(language);
 
         // Update reverse index: remove this server_id from its language entry
         // For root-scoped servers like "typescript@abcd1234", extract base language
@@ -629,46 +814,21 @@ impl LspManager {
             }
         }
 
-        // Clean up diagnostics from this server
-        {
-            let mut diags = self.diagnostics.lock().await;
-            for server_map in diags.values_mut() {
-                server_map.remove(language);
-            }
-        }
-        // Invalidate entire merge cache since we removed a server's diagnostics
-        {
-            let mut cache = self.merged_diagnostics_cache.lock().await;
-            cache.clear();
-        }
-        // Signal diagnostics changed so UI refreshes
-        self.diagnostics_changed.store(true, Ordering::SeqCst);
-
-        // Clear document version tracking so the restarted server gets fresh
-        // didOpen notifications. Without this, did_open() sees stale entries
-        // in document_versions and skips sending didOpen to the new server.
-        {
-            let mut versions = self.document_versions.lock().await;
-            versions.clear();
-        }
-        {
-            let mut sent = self.last_sent_versions.lock().await;
-            sent.clear();
-        }
-        {
-            let mut edits = self.last_local_edit.lock().await;
-            edits.clear();
-        }
-
-        Ok(())
+        shutdown_result
     }
 
     /// Merges diagnostics from all servers for a URI, deduplicating by range+message
     fn merge_diagnostics(server_map: &HashMap<String, StoredDiagnostics>) -> Vec<Diagnostic> {
+        Self::merge_diagnostic_sets(server_map.values())
+    }
+
+    fn merge_diagnostic_sets<'a>(
+        sets: impl Iterator<Item = &'a StoredDiagnostics>,
+    ) -> Vec<Diagnostic> {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
         let mut merged = Vec::new();
-        for stored in server_map.values() {
+        for stored in sets {
             for diag in &stored.diagnostics {
                 // Deduplicate by (range, message) — different servers may report the same issue
                 let key = (
@@ -721,12 +881,58 @@ impl LspManager {
         merged
     }
 
+    /// Snapshot diagnostics whose positions belong to the current document.
+    /// Previously accepted publications may remain cached after didChange;
+    /// they must never be anchored against the newer buffer's text.
+    pub async fn current_diagnostic_snapshot(&self, uri: &Uri) -> (i32, i32, Vec<Diagnostic>) {
+        let snapshot = self.display_diagnostic_snapshot(uri).await;
+        let diagnostics = if snapshot.current {
+            snapshot.diagnostics
+        } else {
+            Vec::new()
+        };
+        (snapshot.doc_version, snapshot.last_sent, diagnostics)
+    }
+
+    /// The diagnostics to show for `uri`. After an edit no server has
+    /// republished yet (a server that publishes on save does so only then),
+    /// the newest publications are all there is: they are returned as they
+    /// are, flagged `current: false`, so the editor can keep what it already
+    /// shows (projected through the edits) instead of blanking the file.
+    pub async fn display_diagnostic_snapshot(&self, uri: &Uri) -> DisplayDiagnostics {
+        let versions = self.document_versions.lock().await;
+        let current = versions.get(uri).copied().unwrap_or(0);
+        let sent = self.last_sent_versions.lock().await;
+        let last_sent = sent.get(uri).copied().unwrap_or(0);
+        let diagnostics = self.diagnostics.lock().await;
+        let stored = diagnostics.get(uri);
+        let is_current = |stored: &&StoredDiagnostics| {
+            stored.version.unwrap_or(stored.observed_version) == current
+        };
+        let has_current = stored
+            .is_none_or(|sets| sets.is_empty() || sets.values().any(|stored| is_current(&stored)));
+        let merged = match stored {
+            None => Vec::new(),
+            Some(_) if last_sent < current => Vec::new(),
+            Some(sets) if has_current => {
+                Self::merge_diagnostic_sets(sets.values().filter(is_current))
+            }
+            Some(sets) => Self::merge_diagnostic_sets(sets.values()),
+        };
+        DisplayDiagnostics {
+            doc_version: current,
+            last_sent,
+            diagnostics: merged,
+            current: has_current && last_sent >= current,
+        }
+    }
+
     /// Gets diagnostics for a specific line in a file (merged from all servers, cached)
     pub async fn get_diagnostics_for_line(&self, uri: &Uri, line: u32) -> Vec<Diagnostic> {
         self.get_diagnostics(uri)
             .await
             .into_iter()
-            .filter(|d| d.range.start.line <= line && d.range.end.line >= line)
+            .filter(|d| diagnostic_covers_line(d, line as usize))
             .collect()
     }
 
@@ -793,6 +999,12 @@ impl LspManager {
         );
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
 
+        // Keep malformed ranges out of caches, counts and code-action context.
+        let diagnostics: Vec<_> = diagnostics
+            .into_iter()
+            .filter(|d| diagnostic_range_is_valid(&d.range))
+            .collect();
+
         // Reject stale diagnostics — two cases:
         //
         // (a) Server sent a version: drop if version < document_versions[uri].
@@ -803,7 +1015,7 @@ impl LspManager {
         //     (last_sent_versions[uri] < document_versions[uri]).  The server
         //     can only have seen up to last_sent, so its diagnostics cannot
         //     reflect pending content.  (OV-00162)
-        {
+        let observed_version = {
             let versions = self.document_versions.lock().await;
             if let Some(&current_version) = versions.get(&uri) {
                 if let Some(diag_version) = version {
@@ -905,7 +1117,8 @@ impl LspManager {
                     }
                 }
             }
-        }
+            versions.get(&uri).copied().unwrap_or(0)
+        };
 
         self.deferred_diagnostics
             .lock()
@@ -935,6 +1148,7 @@ impl LspManager {
             server_id.to_string(),
             StoredDiagnostics {
                 version,
+                observed_version,
                 diagnostics,
             },
         );
@@ -1041,6 +1255,12 @@ impl LspManager {
             .map(|entry| entry.value().clone())
     }
 
+    /// Records that `server_id` runs in a root that is only a fallback (no
+    /// project marker was found around the file that started it).
+    pub fn mark_fallback_root(&self, server_id: &str) {
+        self.fallback_root_servers.insert(server_id.to_string());
+    }
+
     /// Gets the root path for a server (for debugging/introspection)
     pub fn server_root(&self, server_id: &str) -> Option<std::path::PathBuf> {
         self.server_roots.get(server_id).map(|r| r.clone())
@@ -1106,6 +1326,129 @@ mod tests {
         assert_eq!(v2, 2);
 
         assert_eq!(manager.get_document_version(&uri).await, 2);
+    }
+
+    #[tokio::test]
+    async fn current_diagnostics_do_not_reanchor_old_publications_after_edits() {
+        for publication_version in [Some(1), None] {
+            let manager = LspManager::new();
+            let uri: Uri = "file:///Example.java".parse().unwrap();
+            manager
+                .document_versions
+                .lock()
+                .await
+                .insert(uri.clone(), 1);
+            manager
+                .last_sent_versions
+                .lock()
+                .await
+                .insert(uri.clone(), 1);
+            let warning = Diagnostic {
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(2, 0),
+                    lsp_types::Position::new(2, 5),
+                ),
+                message: "Possible null value".into(),
+                ..Diagnostic::default()
+            };
+            manager
+                .set_diagnostics(
+                    uri.clone(),
+                    "java",
+                    vec![warning.clone()],
+                    publication_version,
+                )
+                .await;
+            assert_eq!(
+                manager.current_diagnostic_snapshot(&uri).await.2,
+                vec![warning.clone()]
+            );
+            // Populate the legacy merged cache too. It must not confer freshness.
+            assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+            manager.increment_document_version(&uri).await;
+            assert_eq!(
+                manager.current_diagnostic_snapshot(&uri).await,
+                (2, 1, vec![])
+            );
+            manager
+                .last_sent_versions
+                .lock()
+                .await
+                .insert(uri.clone(), 2);
+            assert_eq!(
+                manager.current_diagnostic_snapshot(&uri).await,
+                (2, 2, vec![])
+            );
+            let mut moved = warning;
+            moved.range.start.line += 3;
+            moved.range.end.line += 3;
+            manager
+                .set_diagnostics(
+                    uri.clone(),
+                    "java",
+                    vec![moved.clone()],
+                    publication_version.map(|_| 2),
+                )
+                .await;
+            assert_eq!(
+                manager.current_diagnostic_snapshot(&uri).await.2,
+                vec![moved]
+            );
+            manager
+                .set_diagnostics(uri.clone(), "java", vec![], publication_version.map(|_| 2))
+                .await;
+            assert!(manager.current_diagnostic_snapshot(&uri).await.2.is_empty());
+        }
+    }
+
+    /// A server that publishes on save has nothing newer to say after an edit:
+    /// its last publication is still what the editor should show, flagged as
+    /// belonging to an older version.
+    #[tokio::test]
+    async fn display_snapshot_keeps_the_last_publication_after_an_edit() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///Example.java".parse().unwrap();
+        manager
+            .document_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 1);
+        manager
+            .last_sent_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 1);
+        let warning = Diagnostic {
+            message: "published on save".into(),
+            ..Diagnostic::default()
+        };
+        manager
+            .set_diagnostics(uri.clone(), "java", vec![warning.clone()], Some(1))
+            .await;
+        let snapshot = manager.display_diagnostic_snapshot(&uri).await;
+        assert!(snapshot.current);
+        assert_eq!(snapshot.diagnostics, vec![warning.clone()]);
+
+        manager.increment_document_version(&uri).await;
+        manager
+            .last_sent_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 2);
+        let snapshot = manager.display_diagnostic_snapshot(&uri).await;
+        assert!(!snapshot.current);
+        assert_eq!(snapshot.diagnostics, vec![warning.clone()]);
+        // ... while the strict view still refuses to hand it out as current.
+        assert!(manager.current_diagnostic_snapshot(&uri).await.2.is_empty());
+
+        // A server that did republish for the new version wins, and the
+        // stale server's set is not mixed in.
+        manager
+            .set_diagnostics(uri.clone(), "other", vec![], Some(2))
+            .await;
+        let snapshot = manager.display_diagnostic_snapshot(&uri).await;
+        assert!(snapshot.current);
+        assert!(snapshot.diagnostics.is_empty());
     }
 
     #[tokio::test]

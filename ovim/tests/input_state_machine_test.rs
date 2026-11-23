@@ -953,3 +953,19 @@ mod edge_cases {
         assert_eq!(test.cursor(), (0, 6), "f should find unicode characters");
     }
 }
+
+// A mode change (here from outside the key path, as the API or a command
+// does) ends a half-typed command: the key after `f` must not be taken as
+// the find target once the mode changed in between.
+#[test]
+fn a_mode_change_ends_a_pending_character_argument() {
+    for pending in ["f", "<Space>", "d", "g", "\"", "di"] {
+        let mut test = EditorTest::new("abc");
+        test.keys(pending);
+        test.editor.set_mode(Mode::Insert);
+        test.editor.set_mode(Mode::Normal);
+        assert!(test.editor.input_state().is_normal(), "{pending}");
+        test.keys("x");
+        assert_eq!(test.buffer_content(), "bc\n", "{pending} then x");
+    }
+}

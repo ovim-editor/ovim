@@ -1,19 +1,33 @@
+use crate::line_layout::IndexedLineLayout;
+use std::sync::Arc;
+
+/// Cached geometry and optional source-to-concealed-view metadata for one line.
+#[derive(Debug, Clone)]
+pub struct IndexedWrapLine {
+    pub layout: Arc<IndexedLineLayout>,
+    pub transform: Option<Arc<crate::markdown_conceal::LineTransform>>,
+    pub links: Arc<[crate::markdown_conceal::ConcealedLink]>,
+}
+
 /// Maps logical lines to visual (wrapped) lines for soft wrap rendering.
 ///
 /// Each logical line may span multiple visual rows when its content
 /// exceeds the available width. This structure precomputes the mapping
 /// so rendering and scrolling can work in visual-line space.
 ///
-/// Uses [`crate::wrap::visual_line_count`] as the single source of truth
-/// for wrap computation, ensuring agreement with the renderer's
-/// `split_line_into_rows`.
+/// Production maps retain shared [`IndexedLineLayout`] geometry for the
+/// renderers. Legacy constructors use [`crate::wrap::visual_line_count`],
+/// which remains an independent oracle for source-text wrapping tests.
 #[derive(Debug, Clone)]
 pub struct WrapMap {
     /// Number of visual lines each logical line occupies (minimum 1)
-    visual_counts: Vec<u16>,
-    /// Cumulative visual line offset for each logical line (prefix sum)
-    /// visual_offsets[i] = total visual lines before line i
-    visual_offsets: Vec<usize>,
+    visual_counts: Vec<usize>,
+    /// Prefix sums with logarithmic point updates after local edits.
+    row_index: RowIndex,
+    /// Geometry is shared with renderers; transient styling never invalidates it.
+    layouts: Vec<Option<IndexedWrapLine>>,
+    last_recomputed_lines: usize,
+    source_buffer_id: Option<crate::buffer::BufferId>,
     /// Total visual lines across all logical lines
     total_visual_lines: usize,
     /// The wrap width used to compute this map
@@ -30,6 +44,11 @@ pub struct WrapMap {
     /// invalidate the map. `None` when conceal is inactive, so plain buffers
     /// never rebuild on vertical cursor movement.
     conceal_cursor_line: Option<usize>,
+    /// Inclusive line ranges hidden by closed folds: they occupy zero visual
+    /// rows, so scrolling, cursor math and rendering skip them.
+    hidden: Vec<(usize, usize)>,
+    /// Set when a structural edit may have shifted `hidden` under the counts.
+    hidden_stale: bool,
 }
 
 impl WrapMap {
@@ -74,28 +93,30 @@ impl WrapMap {
     {
         let width = wrap_width.max(1);
         let mut visual_counts = Vec::with_capacity(line_count);
-        let mut visual_offsets = Vec::with_capacity(line_count);
         let mut total = 0;
 
         for i in 0..line_count {
-            visual_offsets.push(total);
             let text = line_text(i);
             let decs = inline_widths(i);
             let count =
-                crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs)
-                    as u16;
+                crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs);
             visual_counts.push(count);
-            total += count as usize;
+            total += count;
         }
 
         Self {
+            row_index: RowIndex::new(&visual_counts),
+            layouts: vec![None; visual_counts.len()],
+            last_recomputed_lines: visual_counts.len(),
+            source_buffer_id: None,
             visual_counts,
-            visual_offsets,
             total_visual_lines: total,
             wrap_width: width,
             tab_width,
             buffer_version,
             conceal_cursor_line: None,
+            hidden: Vec::new(),
+            hidden_stale: false,
         }
     }
 
@@ -121,18 +142,41 @@ impl WrapMap {
         self.buffer_version = version;
     }
 
+    fn is_hidden(&self, line: usize) -> bool {
+        let index = self.hidden.partition_point(|&(_, end)| end < line);
+        self.hidden
+            .get(index)
+            .is_some_and(|&(start, end)| start <= line && line <= end)
+    }
+
+    /// Installs the fold-hidden line ranges (inclusive, ascending, merged).
+    /// Hidden lines get zero visual rows. Cheap when nothing changed.
+    pub fn set_hidden_ranges(&mut self, ranges: &[(usize, usize)]) {
+        if !self.hidden_stale && self.hidden == ranges {
+            return;
+        }
+        self.hidden = ranges.to_vec();
+        self.hidden_stale = false;
+        for line in 0..self.visual_counts.len() {
+            let natural = self.layouts[line]
+                .as_ref()
+                .map(|entry| entry.layout.row_count().max(1))
+                .unwrap_or(1);
+            self.visual_counts[line] = if self.is_hidden(line) { 0 } else { natural };
+        }
+        self.row_index = RowIndex::new(&self.visual_counts);
+        self.total_visual_lines = self.visual_counts.iter().sum();
+    }
+
     /// Returns the number of visual lines for a given logical line.
-    pub fn visual_lines_for(&self, line: usize) -> u16 {
+    pub fn visual_lines_for(&self, line: usize) -> usize {
         self.visual_counts.get(line).copied().unwrap_or(1)
     }
 
     /// Returns the first visual row index for a given logical line.
     /// For out-of-bounds lines, returns total_visual_lines (one past last row).
     pub fn logical_to_visual(&self, line: usize) -> usize {
-        self.visual_offsets
-            .get(line)
-            .copied()
-            .unwrap_or(self.total_visual_lines)
+        self.row_index.prefix(line.min(self.visual_counts.len()))
     }
 
     /// Absolute visual row drawn at the very top of a viewport whose top
@@ -150,14 +194,17 @@ impl WrapMap {
 
     /// Converts a visual row index to (logical_line, sub_line) within that line.
     pub fn visual_to_logical(&self, visual_row: usize) -> (usize, usize) {
-        // Binary search for the logical line containing this visual row
-        let line = match self.visual_offsets.binary_search(&visual_row) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        };
-        let sub_line =
-            visual_row.saturating_sub(self.visual_offsets.get(line).copied().unwrap_or(0));
-        (line, sub_line)
+        if self.visual_counts.is_empty() {
+            return (0, visual_row);
+        }
+        let line = self
+            .row_index
+            .line_at(visual_row)
+            .min(self.visual_counts.len() - 1);
+        (
+            line,
+            visual_row.saturating_sub(self.logical_to_visual(line)),
+        )
     }
 
     /// Total number of visual lines across all logical lines.
@@ -175,13 +222,161 @@ impl WrapMap {
         self.visual_counts.len()
     }
 
-    // NOTE: there used to be an `invalidate_line` here for incremental
-    // single-line recomputation. It was removed (OV-00263 / OV-00191) — it had
-    // no production callers (the renderer always full-rebuilds via
-    // `ensure_wrap_map` → `rebuild_with_decorations`), it ignored inline
-    // decoration widths, and its `isize` offset arithmetic could theoretically
-    // underflow. Incremental invalidation (OV-00015) should be (re)built
-    // decoration-aware from scratch when it's actually wired up.
+    pub fn tab_width(&self) -> usize {
+        self.tab_width
+    }
+    pub fn source_buffer_id(&self) -> Option<crate::buffer::BufferId> {
+        self.source_buffer_id
+    }
+    pub fn set_source_buffer_id(&mut self, id: crate::buffer::BufferId) {
+        self.source_buffer_id = Some(id);
+    }
+
+    /// Lines whose measured layout includes inline virtual text.
+    pub fn lines_with_inline_text(&self) -> impl Iterator<Item = usize> + '_ {
+        self.layouts
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.layout.has_inline())
+            })
+            .map(|(line, _)| line)
+    }
+
+    pub fn line_layout(&self, line: usize) -> Option<&Arc<IndexedLineLayout>> {
+        self.layouts
+            .get(line)
+            .and_then(Option::as_ref)
+            .map(|entry| &entry.layout)
+    }
+
+    pub fn line_transform(&self, line: usize) -> Option<&crate::markdown_conceal::LineTransform> {
+        self.layouts
+            .get(line)
+            .and_then(Option::as_ref)
+            .and_then(|entry| entry.transform.as_deref())
+    }
+
+    pub fn line_concealed_links(&self, line: usize) -> &[crate::markdown_conceal::ConcealedLink] {
+        self.layouts
+            .get(line)
+            .and_then(Option::as_ref)
+            .map(|entry| entry.links.as_ref())
+            .unwrap_or(&[])
+    }
+
+    /// Number of logical lines measured by the most recent refresh.
+    pub fn last_recomputed_lines(&self) -> usize {
+        self.last_recomputed_lines
+    }
+
+    pub fn from_layouts(
+        layouts: Vec<IndexedWrapLine>,
+        width: usize,
+        tab_width: usize,
+        version: usize,
+    ) -> Self {
+        let counts: Vec<usize> = layouts
+            .iter()
+            .map(|entry| entry.layout.row_count().max(1))
+            .collect();
+        Self {
+            row_index: RowIndex::new(&counts),
+            total_visual_lines: counts.iter().sum(),
+            last_recomputed_lines: counts.len(),
+            source_buffer_id: None,
+            visual_counts: counts,
+            layouts: layouts.into_iter().map(Some).collect(),
+            wrap_width: width.max(1),
+            tab_width: tab_width.max(1),
+            buffer_version: version,
+            conceal_cursor_line: None,
+            hidden: Vec::new(),
+            hidden_stale: false,
+        }
+    }
+
+    /// Apply source-line splices in order, then measure only affected final lines.
+    /// A same-line edit performs logarithmic prefix-sum updates. Structural edits
+    /// rebuild the small count tree, but do not re-read unaffected source text.
+    pub fn refresh_indexed<F>(
+        &mut self,
+        changes: &[crate::text_index::LineChange],
+        final_line_count: usize,
+        version: usize,
+        extra_dirty: &[usize],
+        mut make_layout: F,
+    ) -> bool
+    where
+        F: FnMut(usize) -> IndexedWrapLine,
+    {
+        let mut dirty = std::collections::BTreeSet::new();
+        let mut structural = false;
+        for change in changes {
+            let start = change.start_line;
+            let end = start.saturating_add(change.old_line_count);
+            if end > self.visual_counts.len() {
+                return false;
+            }
+            if change.old_line_count == change.new_line_count {
+                dirty.extend(start..end);
+            } else {
+                structural = true;
+                dirty = dirty
+                    .into_iter()
+                    .filter_map(|line| {
+                        if line < start {
+                            Some(line)
+                        } else if line >= end {
+                            Some(line - change.old_line_count + change.new_line_count)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.visual_counts
+                    .splice(start..end, std::iter::repeat_n(1, change.new_line_count));
+                self.layouts
+                    .splice(start..end, std::iter::repeat_n(None, change.new_line_count));
+                dirty.extend(start..start + change.new_line_count);
+            }
+        }
+        if self.visual_counts.len() != final_line_count {
+            return false;
+        }
+        dirty.extend(
+            extra_dirty
+                .iter()
+                .copied()
+                .filter(|&line| line < final_line_count),
+        );
+        self.last_recomputed_lines = dirty.len();
+        if structural && !self.hidden.is_empty() {
+            self.hidden_stale = true;
+        }
+        for line in dirty {
+            let layout = make_layout(line);
+            let count = if self.is_hidden(line) {
+                0
+            } else {
+                layout.layout.row_count().max(1)
+            };
+            if !structural {
+                self.row_index
+                    .replace(line, self.visual_counts[line], count);
+            }
+            self.visual_counts[line] = count;
+            self.layouts[line] = Some(layout);
+        }
+        if structural {
+            self.row_index = RowIndex::new(&self.visual_counts);
+        }
+        self.total_visual_lines = self.row_index.prefix(final_line_count);
+        self.buffer_version = version;
+        true
+    }
 
     /// Rebuild the entire map (e.g., after resize or wrap toggle).
     ///
@@ -219,28 +414,14 @@ impl WrapMap {
         F: Fn(usize) -> String,
         D: Fn(usize) -> Vec<(usize, usize)>,
     {
-        let width = wrap_width.max(1);
-        self.wrap_width = width;
-        self.tab_width = tab_width;
-        self.buffer_version = buffer_version;
-        self.conceal_cursor_line = None;
-        self.visual_counts.clear();
-        self.visual_counts.reserve(line_count);
-        self.visual_offsets.clear();
-        self.visual_offsets.reserve(line_count);
-        let mut total = 0;
-
-        for i in 0..line_count {
-            self.visual_offsets.push(total);
-            let text = line_text(i);
-            let decs = inline_widths(i);
-            let count =
-                crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs)
-                    as u16;
-            self.visual_counts.push(count);
-            total += count as usize;
-        }
-        self.total_visual_lines = total;
+        *self = Self::new_with_decorations(
+            line_count,
+            wrap_width,
+            tab_width,
+            buffer_version,
+            line_text,
+            inline_widths,
+        );
     }
 
     /// Maps a cursor position (line, display_col) to a visual position (visual_row, visual_col).
@@ -346,16 +527,71 @@ impl WrapMap {
 
     /// Counts total visual lines from `start_line` to `end_line` (exclusive).
     pub fn visual_lines_in_range(&self, start_line: usize, end_line: usize) -> usize {
-        let start = self.visual_offsets.get(start_line).copied().unwrap_or(0);
-        let end = if end_line >= self.visual_counts.len() {
-            self.total_visual_lines
-        } else {
-            self.visual_offsets
-                .get(end_line)
-                .copied()
-                .unwrap_or(self.total_visual_lines)
+        self.logical_to_visual(end_line)
+            .saturating_sub(self.logical_to_visual(start_line))
+    }
+}
+
+/// Fenwick tree over nonzero visual-row counts.
+#[derive(Debug, Clone)]
+struct RowIndex {
+    tree: Vec<usize>,
+}
+
+impl RowIndex {
+    fn new(counts: &[usize]) -> Self {
+        let mut index = Self {
+            tree: vec![0; counts.len() + 1],
         };
-        end.saturating_sub(start)
+        for (line, &count) in counts.iter().enumerate() {
+            index.replace(line, 0, count);
+        }
+        index
+    }
+    fn prefix(&self, mut end: usize) -> usize {
+        let mut sum = 0;
+        while end > 0 {
+            sum += self.tree[end];
+            end &= end - 1;
+        }
+        sum
+    }
+    fn replace(&mut self, line: usize, old: usize, new: usize) {
+        let mut i = line + 1;
+        while i < self.tree.len() {
+            if new >= old {
+                self.tree[i] += new - old;
+            } else {
+                self.tree[i] -= old - new;
+            }
+            // Advance to the next Fenwick node: add the lowest set bit.
+            // `usize::isolate_lowest_one` says this directly but is too new
+            // for every stable toolchain ovim builds on, so spell it out.
+            // Clippy on newer toolchains recognises the pattern and asks for
+            // the method, hence the allow; `unknown_lints` covers the older
+            // toolchains where that lint does not exist yet.
+            #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+            {
+                i += i & i.wrapping_neg();
+            }
+        }
+    }
+    fn line_at(&self, row: usize) -> usize {
+        let mut index = 0usize;
+        let mut sum = 0usize;
+        let mut bit = 1usize;
+        while bit < self.tree.len() {
+            bit <<= 1;
+        }
+        while bit > 0 {
+            let next = index + bit;
+            if next < self.tree.len() && sum + self.tree[next] <= row {
+                sum += self.tree[next];
+                index = next;
+            }
+            bit >>= 1;
+        }
+        index
     }
 }
 
@@ -393,6 +629,20 @@ mod tests {
         let map = WrapMap::new(1, 80, 4, 0, make_text(&[text.as_str()]));
         assert_eq!(map.visual_lines_for(0), 2);
         assert_eq!(map.total_visual_lines(), 2);
+    }
+
+    #[test]
+    fn test_line_can_span_more_than_u16_visual_rows() {
+        let text = "a".repeat(u16::MAX as usize + 1);
+        let map = WrapMap::new(1, 1, 4, 0, make_text(&[text.as_str()]));
+        let expected_rows = u16::MAX as usize + 1;
+
+        assert_eq!(map.visual_lines_for(0), expected_rows);
+        assert_eq!(map.total_visual_lines(), expected_rows);
+        assert_eq!(
+            map.visual_to_logical(expected_rows - 1),
+            (0, expected_rows - 1)
+        );
     }
 
     #[test]

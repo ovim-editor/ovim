@@ -1,0 +1,9 @@
+# Pin the local toolchain to the version CI builds with
+# (.github/workflows/{ci,release}.yml use dtolnay/rust-toolchain@1.98.0).
+#
+# Arch's `rust` package is 1.95, which is how d35f94be/909673f9/293ce973 ended
+# up fighting over one Fenwick line: it built here and failed clippy there.
+# This file only takes effect under rustup; plain distro cargo ignores it.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

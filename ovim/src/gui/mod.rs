@@ -5,11 +5,6 @@
 //! intentionally not an HTML text editor pretending to be Vim: keyboard,
 //! paste, picker, tab, and file-tree actions all flow back through Ovim's real
 //! input/state machinery.
-//!
-//! This module holds the editor loop and the projection from editor state to
-//! [`GuiSnapshot`]. The conversation with that editor -- `GuiBridge` and the
-//! transport it runs over -- lives in [`bridge`], and the wire types both ends
-//! share live in [`protocol`].
 
 #[cfg(feature = "gui")]
 pub mod app;
@@ -17,7 +12,12 @@ pub mod bridge;
 #[cfg(feature = "gui")]
 pub mod browser;
 pub mod clipboard;
+mod diff;
 mod echo;
+#[cfg(all(feature = "gui", target_os = "macos"))]
+mod mac_arrow_keys;
+#[cfg(all(feature = "gui", target_os = "macos"))]
+mod mac_text_input;
 #[cfg(feature = "gui")]
 mod menu;
 pub mod protocol;
@@ -26,25 +26,20 @@ pub mod remote;
 pub mod server;
 pub mod ssh;
 #[cfg(feature = "gui")]
+mod terminal;
+#[cfg(feature = "gui")]
 pub mod window;
 
-// The protocol types and the bridge used to live in this module. They are
-// re-exported so the Tauri command layer and the API keep importing them from
-// `gui`, and so that `gui::protocol` stays the single place a transport has to
-// look.
+// The command/reply protocol and the bridge live in their own modules; they
+// are re-exported so the Tauri command layer and the API keep importing them
+// from `gui`, and `gui::protocol` stays the single place a transport looks.
 pub use bridge::{
     GuiBridge, GuiReplyReceiver, GuiReplySender, GuiRequest, GuiTransport, GuiTransportFuture,
     LocalTransport,
 };
+pub use diff::GuiDiffCommentInput;
 pub use protocol::{
-    GuiAgentOption, GuiAiChat, GuiAiProfileOption, GuiChatMessage, GuiChatSetup,
-    GuiChatSetupAction, GuiClipboard, GuiClipboardText, GuiCodeAttachment, GuiCodeExplanation,
-    GuiCodeExplanationDiscussion, GuiCodeExplanationPage, GuiCommand, GuiCompletion,
-    GuiCompletionItem, GuiCursor, GuiDebugFrame, GuiDebugPanel, GuiDiagnostics, GuiFileTree,
-    GuiFileTreeItem, GuiGitChanges, GuiHover, GuiKeyInput, GuiLayoutNode, GuiLine, GuiLspEntry,
-    GuiLspManager, GuiPane, GuiPicker, GuiPickerItem, GuiProblem, GuiProblemList, GuiPrompt,
-    GuiQueuedChatInput, GuiReply, GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure,
-    GuiTestPanel, GuiTheme, GuiVectorSource, SNAPSHOT_EVENT,
+    GuiClipboard, GuiClipboardText, GuiCommand, GuiReply, GuiReplyKind, SNAPSHOT_EVENT,
 };
 pub use reconnect::{ConnectionLoss, GuiConnection};
 pub use remote::{RemoteEndpoint, RemoteTransport};
@@ -54,8 +49,7 @@ use crate::cli::FileArg;
 use crate::color::Color;
 use crate::editor::{Editor, EditorServices, InputHandler, PendingWindowOpen};
 use crate::frontend::{
-    handle_viewport_resize, process_editor_tick, process_external_file_change,
-    process_picker_results, refresh_after_input, FrontendChannels,
+    compute_text_width, handle_viewport_resize, refresh_after_input, TerminalRequest, TickState,
 };
 use crate::git::LineStatus;
 use crate::mode::Mode;
@@ -63,21 +57,172 @@ use crate::syntax::{HighlightGroup, UiGroup};
 use crate::unicode::GraphemeCol;
 use anyhow::{Context, Result};
 use clipboard::clipboard_text;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc as std_mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use unicode_segmentation::UnicodeSegmentation;
 
 const TICK_RATE: Duration = Duration::from_millis(50);
-const EXTERNAL_FILE_RATE: Duration = Duration::from_millis(500);
 const SNAPSHOT_OVERSCAN: usize = 4;
 const HORIZONTAL_OVERSCAN: usize = 96;
-const MAX_FILE_TREE_ITEMS: usize = 300;
 const MAX_PICKER_ITEMS: usize = 24;
 const MAX_COMPLETION_ITEMS: usize = 12;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GuiLayoutCacheKey {
+    line_identity: usize,
+    width: usize,
+    tab_width: usize,
+    inline: std::sync::Arc<[(usize, std::sync::Arc<str>)]>,
+}
+
+#[derive(Default)]
+pub(crate) struct GuiProjectionCache {
+    layouts: std::collections::HashMap<
+        GuiLayoutCacheKey,
+        std::sync::Arc<ovim_core::line_layout::IndexedLineLayout>,
+    >,
+    used: std::collections::HashSet<GuiLayoutCacheKey>,
+    diff_reviews: std::collections::HashMap<(u64, usize), diff::GuiDiffDocument>,
+    used_diff_reviews: std::collections::HashSet<(u64, usize)>,
+}
+
+impl GuiProjectionCache {
+    fn begin_snapshot(&mut self) {
+        self.used.clear();
+        self.used_diff_reviews.clear();
+    }
+
+    fn finish_snapshot(&mut self) {
+        self.layouts.retain(|key, _| self.used.contains(key));
+        self.diff_reviews
+            .retain(|key, _| self.used_diff_reviews.contains(key));
+    }
+
+    fn diff_review(
+        &mut self,
+        editor: &Editor,
+        buffer: &crate::buffer::Buffer,
+    ) -> Option<diff::GuiDiffDocument> {
+        let key = (buffer.id(), buffer.version());
+        self.used_diff_reviews.insert(key);
+        if let Some(review) = self.diff_reviews.get(&key) {
+            return Some(review.clone());
+        }
+        let review =
+            diff::GuiDiffDocument(std::sync::Arc::new(diff::project_diff(editor, buffer)?));
+        self.diff_reviews.insert(key, review.clone());
+        Some(review)
+    }
+
+    fn layout(
+        &mut self,
+        line: std::sync::Arc<ovim_core::text_index::LineIndex>,
+        width: usize,
+        tab_width: usize,
+        inline: std::sync::Arc<[(usize, std::sync::Arc<str>)]>,
+    ) -> std::sync::Arc<ovim_core::line_layout::IndexedLineLayout> {
+        let key = GuiLayoutCacheKey {
+            line_identity: std::sync::Arc::as_ptr(&line) as usize,
+            width,
+            tab_width,
+            inline: inline.clone(),
+        };
+        self.used.insert(key.clone());
+        if let Some(layout) = self.layouts.get(&key) {
+            return layout.clone();
+        }
+        let layout =
+            std::sync::Arc::new(ovim_core::line_layout::IndexedLineLayout::with_inline_text(
+                line, width, tab_width, inline,
+            ));
+        self.layouts.insert(key, layout.clone());
+        layout
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiKeyInput {
+    pub key: String,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub control: bool,
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub meta: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiAgentOption {
+    pub id: String,
+    pub task_name: String,
+    pub lifecycle: String,
+    pub model: String,
+    pub depth: usize,
+}
+
+pub type GuiAiProfileOption = ovim_core::ai::AiChatModelOption;
+
+/// A provider permission mode as the chat controls show it.
+///
+/// Owned strings rather than core's `&'static str` table entries, so a
+/// frontend on another host can read a frame back. Field names match core's
+/// type, which is what the wire format was before this projection existed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuiPermissionModeOption {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub requires_confirmation: bool,
+}
+
+impl From<ovim_core::ai::AiPermissionModeOption> for GuiPermissionModeOption {
+    fn from(option: ovim_core::ai::AiPermissionModeOption) -> Self {
+        Self {
+            id: option.id.to_string(),
+            label: option.label.to_string(),
+            description: option.description.to_string(),
+            requires_confirmation: option.requires_confirmation,
+        }
+    }
+}
+
 fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
+    if let Some(dialog) = editor.provider_choice_dialog() {
+        let mut actions: Vec<GuiChatSetupAction> = dialog
+            .options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| GuiChatSetupAction {
+                label: option.label.clone(),
+                // Digits pick directly in core, so the button and the key agree.
+                key: (index + 1).to_string(),
+                detail: Some(option.detail.clone()),
+            })
+            .collect();
+        actions.push(GuiChatSetupAction {
+            label: "Not now".to_string(),
+            key: "Escape".to_string(),
+            detail: None,
+        });
+        return Some(GuiChatSetup {
+            kind: "providerChoice".to_string(),
+            title: "How should AI chat run?".to_string(),
+            detail: "Pick how Ovim runs inference. You can change it later from the model picker."
+                .to_string(),
+            masked_input: None,
+            input_cursor: None,
+            error: None,
+            actions,
+        });
+    }
     if let Some(summary) = editor.codex_auth_dialog_summary() {
         use ovim_core::editor::CodexAuthDialogPhase;
         let (title, detail, actions) = match summary.phase {
@@ -146,6 +291,7 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
                 .map(|(label, key)| GuiChatSetupAction {
                     label: label.to_string(),
                     key: key.to_string(),
+                    ..Default::default()
                 })
                 .collect(),
         });
@@ -170,13 +316,37 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
             GuiChatSetupAction {
                 label: "Save key".to_string(),
                 key: "Enter".to_string(),
+                ..Default::default()
             },
             GuiChatSetupAction {
                 label: "Not now".to_string(),
                 key: "Escape".to_string(),
+                ..Default::default()
             },
         ],
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatSetup {
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub masked_input: Option<String>,
+    pub input_cursor: Option<usize>,
+    pub error: Option<String>,
+    pub actions: Vec<GuiChatSetupAction>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatSetupAction {
+    pub label: String,
+    pub key: String,
+    /// Secondary line explaining the choice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {
@@ -212,20 +382,862 @@ fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Resu
     Ok(())
 }
 
-async fn run_editor(
-    file: Option<FileArg>,
-    resume: bool,
-    services: EditorServices,
-    mut requests: mpsc::UnboundedReceiver<GuiRequest>,
-    updates: watch::Sender<Option<GuiSnapshot>>,
-    ready: std_mpsc::SyncSender<Result<(), String>>,
-) {
-    let mut editor = Editor::new().with_services(services);
-    if let Err(error) = editor.enable_lua() {
-        editor.set_status_message(format!("Lua configuration: {error}"));
-    }
-    editor.language_catalog().install_as_process_catalog();
+/// Upper bound on one `gui_scroll` request, so a runaway wheel delta cannot stall the editor.
+const MAX_GUI_SCROLL_LINES: i32 = 10_000;
 
+/// Gets out of the modes a click dismisses, the way Esc would. Insert mode is
+/// kept (the click only moves the cursor there); other modes without a text
+/// cursor fall back to a plain switch to Normal.
+/// A pointer gesture's phase on the editor text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuiMouseKind {
+    Down,
+    Drag,
+    Up,
+}
+
+/// The grapheme column of `line` under display column `display_column`
+/// (tabs and wide characters expanded); `line` clamps to the buffer.
+fn pointer_grapheme_column(editor: &Editor, line: usize, display_column: usize) -> usize {
+    let line = line.min(editor.buffer().line_count().saturating_sub(1));
+    let text = editor
+        .buffer()
+        .line_text(line)
+        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
+        .unwrap_or_default();
+    let char_column = crate::display::display_col_to_char_col(
+        &text,
+        display_column,
+        editor.indent_options().tab_width,
+    );
+    crate::unicode::char_to_grapheme_col(&text, crate::unicode::CharCol(char_column)).0
+}
+
+fn leave_modal_mode_for_click(editor: &mut Editor) {
+    use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
+
+    // Esc from a visual search prompt returns to Visual, so it may take two.
+    for _ in 0..3 {
+        if !matches!(
+            editor.mode(),
+            Mode::Visual
+                | Mode::VisualLine
+                | Mode::VisualBlock
+                | Mode::Command
+                | Mode::Search
+                | Mode::Replace
+        ) {
+            break;
+        }
+        let esc = KeyEvent::new(KeyCode::Esc, Modifiers::NONE);
+        if InputHandler::handle_key_event_no_dirty(editor, esc).is_err() {
+            break;
+        }
+    }
+    if !matches!(editor.mode(), Mode::Normal | Mode::Insert) {
+        editor.set_mode(Mode::Normal);
+    }
+}
+
+impl GuiKeyInput {
+    /// Converts the browser key to a core key event. `Ok(None)` means the key
+    /// has no editor meaning (CapsLock, AltGraph, Dead, Insert, bare modifiers...)
+    /// and must be dropped without dispatching or reporting an error.
+    fn into_core(self) -> Result<Option<ovim_core::key::KeyEvent>> {
+        use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
+
+        let code = match self.key.as_str() {
+            "Enter" => KeyCode::Enter,
+            "Escape" => KeyCode::Esc,
+            "Tab" if self.shift => KeyCode::BackTab,
+            "Tab" => KeyCode::Tab,
+            "Backspace" => KeyCode::Backspace,
+            "Delete" => KeyCode::Delete,
+            "ArrowLeft" => KeyCode::Left,
+            "ArrowRight" => KeyCode::Right,
+            "ArrowUp" => KeyCode::Up,
+            "ArrowDown" => KeyCode::Down,
+            "Home" => KeyCode::Home,
+            "End" => KeyCode::End,
+            "PageUp" => KeyCode::PageUp,
+            "PageDown" => KeyCode::PageDown,
+            key if key.starts_with('F')
+                && key.len() > 1
+                && key[1..].bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                key[1..]
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|number| (1..=24).contains(number))
+                    .map(KeyCode::F)
+                    .unwrap_or(KeyCode::Null)
+            }
+            key => {
+                let mut chars = key.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) => KeyCode::Char(ch),
+                    // Named keys with no editor meaning (CapsLock, AltGraph, Dead,
+                    // Insert, Unidentified, Fn, ...) are not errors.
+                    _ if key.bytes().all(|byte| byte.is_ascii_alphanumeric()) => return Ok(None),
+                    _ => anyhow::bail!("Unsupported GUI key: {key}"),
+                }
+            }
+        };
+
+        let mut modifiers = Modifiers::NONE;
+        if self.shift {
+            modifiers |= Modifiers::SHIFT;
+        }
+        if self.control {
+            modifiers |= Modifiers::CONTROL;
+        }
+        if self.alt {
+            modifiers |= Modifiers::ALT;
+        }
+        if self.meta {
+            modifiers |= Modifiers::SUPER;
+        }
+        Ok(Some(KeyEvent::new(code, modifiers)))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiSnapshot {
+    pub revision: u64,
+    pub mode: String,
+    pub dashboard: bool,
+    pub file_path: Option<String>,
+    pub file_name: String,
+    pub workspace_path: Option<String>,
+    pub project_name: String,
+    pub language: String,
+    pub encoding: String,
+    pub line_ending: String,
+    pub modified: bool,
+    pub has_unsaved_changes: bool,
+    pub buffer_revision: usize,
+    pub read_only: bool,
+    pub selection_text: Option<String>,
+    pub cursor: GuiCursor,
+    pub horizontal_offset: usize,
+    pub wrap: bool,
+    pub tab_width: usize,
+    pub expand_tab: bool,
+    pub first_line: usize,
+    pub total_lines: usize,
+    pub lines: Vec<GuiLine>,
+    pub layout: GuiLayoutNode,
+    pub panes: Vec<GuiPane>,
+    pub tabs: Vec<GuiTab>,
+    pub git_branch: Option<String>,
+    /// Register of the macro being recorded (`q` for `qq`), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording: Option<String>,
+    /// Enclosing symbols of the cursor (class, method), outermost first.
+    pub symbol_breadcrumbs: Vec<GuiBreadcrumb>,
+    pub git_changes: GuiGitChanges,
+    pub diagnostics: GuiDiagnostics,
+    pub lsp_status: String,
+    pub status_message: String,
+    pub prompt: Option<GuiPrompt>,
+    pub picker: Option<GuiPicker>,
+    pub completion: Option<GuiCompletion>,
+    pub hover: Option<GuiHover>,
+    /// Parameter hints for the call being typed (insert mode).
+    pub signature_help: Option<GuiSignatureHelp>,
+    pub file_tree: Option<GuiFileTree>,
+    pub ai_chat: Option<GuiAiChat>,
+    pub test_panel: Option<GuiTestPanel>,
+    pub problems: Option<GuiProblemList>,
+    pub lsp_manager: Option<GuiLspManager>,
+    pub search_replace: Option<GuiSearchReplace>,
+    pub debug: Option<GuiDebugPanel>,
+    pub run_console: Option<GuiRunConsole>,
+    pub theme: GuiTheme,
+    /// Whether a printable character typed now would be inserted literally
+    /// at the cursor.
+    ///
+    /// The one fact predictive local echo cannot recover from a frame. A
+    /// pending `i_CTRL-R`, a half-typed mapping, a visible completion menu, a
+    /// visual-block insert and the modal consent dialogs each change what a
+    /// plain character means without changing a single rendered cell, so the
+    /// editor reports it rather than the client working it out from the
+    /// projection: every state that makes it false is invisible in the frame.
+    pub predictable_insert: bool,
+    /// How many commands the editor has taken in over this conversation.
+    ///
+    /// A frontend counts the keys it has sent and subtracts: what is left is
+    /// the run this frame does not yet account for, which is exactly the run
+    /// predictive echo may draw for itself. The count rises for every client
+    /// and for every command -- a mouse click moves the cursor a speculation is
+    /// anchored to as surely as a key does -- so it can only ever overstate
+    /// what the editor has consumed of one client's typing, and overstating
+    /// makes that client speak for less rather than more.
+    pub input_epoch: u64,
+    /// What the editor's system-clipboard policy is doing.
+    ///
+    /// A frontend driving an editor on another host has to mirror the policy
+    /// rather than invent one, and the two facts it needs are cheap enough to
+    /// ride on every frame. The clipboard *text* deliberately does not: a
+    /// yanked buffer can be megabytes, and a snapshot is a full projection
+    /// with no delta encoding, so a large yank would be re-sent with every
+    /// keystroke's frame. [`GuiCommand::ReadClipboard`] fetches it once, when
+    /// the generation says there is something new to fetch.
+    pub clipboard: GuiClipboard,
+    pub should_quit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCursor {
+    pub line: usize,
+    pub column: usize,
+    pub display_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiLine {
+    pub number: usize,
+    pub continuation: bool,
+    pub display_start: usize,
+    pub current: bool,
+    pub segments: Vec<GuiSegment>,
+    pub code_lenses: Vec<GuiCodeLens>,
+    pub git: Option<String>,
+    pub diagnostic: Option<String>,
+    pub diff: Option<String>,
+    /// `enabled`, `conditional` or `disabled` when the line has a breakpoint.
+    pub breakpoint: Option<String>,
+    /// The debugger is stopped on this line.
+    pub executing: bool,
+    /// Number of lines hidden below this line by a closed fold.
+    pub folded: Option<usize>,
+    /// Fold gutter mark of the innermost fold around the line: `open` and
+    /// `closed` on its header, `inside` on the lines below it.
+    pub fold: Option<String>,
+}
+
+/// A lens label and the exact document revision it was rendered for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCodeLens {
+    pub index: usize,
+    pub generation: u64,
+    pub title: String,
+    pub mode: String,
+    pub file_path: String,
+    pub version: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GuiLayoutNode {
+    Pane {
+        pane: usize,
+    },
+    Split {
+        direction: String,
+        ratio: f32,
+        first: Box<GuiLayoutNode>,
+        second: Box<GuiLayoutNode>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiPane {
+    pub index: usize,
+    pub buffer_id: u64,
+    pub focused: bool,
+    pub file_name: String,
+    pub modified: bool,
+    pub cursor: GuiCursor,
+    pub first_line: usize,
+    pub scroll_subrow: usize,
+    pub horizontal_offset: usize,
+    pub total_lines: usize,
+    pub lines: Vec<GuiLine>,
+    pub markdown: Option<GuiMarkdownDocument>,
+    pub diff_review: Option<diff::GuiDiffDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiMarkdownDocument {
+    pub text: String,
+    pub view_lines: Vec<usize>,
+    pub highlights: Vec<Vec<GuiMarkdownHighlight>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GuiMarkdownHighlight {
+    pub start: usize,
+    pub end: usize,
+    pub token: String,
+}
+
+fn project_markdown(editor: &Editor, buffer_id: u64) -> Option<GuiMarkdownDocument> {
+    let document = editor.pseudocode_markdown(buffer_id)?;
+    Some(GuiMarkdownDocument {
+        text: document.text.clone(),
+        view_lines: document.view_lines.clone(),
+        highlights: document
+            .highlights
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|(range, group)| GuiMarkdownHighlight {
+                        start: range.start,
+                        end: range.end,
+                        token: syntax_name(*group).to_string(),
+                    })
+                    .collect()
+            })
+            .collect(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiSegment {
+    pub text: String,
+    pub cells: usize,
+    pub token: Option<String>,
+    pub cursor: bool,
+    pub selected: bool,
+    pub search_match: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTab {
+    pub id: u64,
+    pub index: usize,
+    pub title: String,
+    pub active: bool,
+    pub modified: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiGitChanges {
+    pub added: usize,
+    pub modified: usize,
+    pub removed: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiDiagnostics {
+    pub errors: usize,
+    pub warnings: usize,
+    pub information: usize,
+    pub hints: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiPrompt {
+    pub prefix: String,
+    pub text: String,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiPicker {
+    pub title: String,
+    pub query: String,
+    pub file_filter: Option<String>,
+    pub selected: usize,
+    pub total: usize,
+    pub items: Vec<GuiPickerItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiPickerItem {
+    pub index: usize,
+    pub display: String,
+    pub location: String,
+    pub detail: Option<String>,
+    pub matched: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCompletion {
+    pub selected: usize,
+    /// Number of items matching, of which `items` is the visible window.
+    pub total: usize,
+    pub items: Vec<GuiCompletionItem>,
+    /// Markdown for the side popup: signature and documentation of the
+    /// selected item.
+    pub documentation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCompletionItem {
+    pub index: usize,
+    pub label: String,
+    /// Text right after the label (`labelDetails.detail`, e.g. a signature).
+    pub detail: Option<String>,
+    /// Right-aligned dimmed text (`labelDetails.description`, e.g. a package).
+    pub description: Option<String>,
+    pub kind: Option<String>,
+    /// One-cell glyph and colour family of the kind.
+    pub kind_glyph: String,
+    pub kind_class: String,
+    pub deprecated: bool,
+    /// Char positions of `label` matched by what the user typed.
+    pub matched: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiSignatureHelp {
+    /// Signature text before / of / after the active parameter.
+    pub before: String,
+    pub active: String,
+    pub after: String,
+    pub documentation: Option<String>,
+    pub signature_index: usize,
+    pub signature_count: usize,
+    pub line: usize,
+    pub display_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiHover {
+    pub content: String,
+    pub line: Option<usize>,
+    pub display_column: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiFileTree {
+    pub reveal_generation: u32,
+    pub root: String,
+    pub selected: usize,
+    pub items: Vec<GuiFileTreeItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiFileTreeItem {
+    pub index: usize,
+    pub name: String,
+    pub path: String,
+    pub depth: usize,
+    pub directory: bool,
+    pub expanded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiAiChat {
+    pub external_agent: bool,
+    pub external_question: bool,
+    pub profile: String,
+    pub model: String,
+    pub pending_code_attachment: Option<GuiCodeAttachment>,
+    pub pending_diff_comments: Option<String>,
+    pub profiles: Vec<GuiAiProfileOption>,
+    pub reasoning_effort: String,
+    pub reasoning_effort_selection: String,
+    pub reasoning_effort_default: String,
+    pub reasoning_efforts: Vec<String>,
+    pub permission_mode: Option<String>,
+    pub permission_modes: Vec<GuiPermissionModeOption>,
+    pub yolo_mode: bool,
+    pub shell_allowed: bool,
+    pub comprehension_policy: String,
+    pub comprehension_checkpoint: Option<String>,
+    pub activity: String,
+    pub waiting: bool,
+    pub input: String,
+    pub input_cursor: usize,
+    pub pending_images: Vec<String>,
+    pub queued_inputs: Vec<GuiQueuedChatInput>,
+    pub setup: Option<GuiChatSetup>,
+    pub messages: Vec<GuiChatMessage>,
+    pub streaming: Option<String>,
+    pub streaming_thinking: Option<String>,
+    pub thinking_live: bool,
+    pub focus: String,
+    pub agents: Vec<GuiAgentOption>,
+    pub selected_agent_id: Option<String>,
+    pub followed_agent_id: Option<String>,
+    pub agent_cursor: usize,
+    pub approval: Option<String>,
+    /// Whether the pending approval can be remembered (core only supports it
+    /// for a parked tool approval).
+    pub approval_can_remember: bool,
+    /// Oldest pending approval of a delegated child agent, if any.
+    pub agent_approval: Option<GuiAgentApproval>,
+    pub code_explanation: Option<GuiCodeExplanation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiAgentApproval {
+    /// Request event the decision targets; sent back so a decision can never
+    /// retarget to a different child that became oldest in the meantime.
+    pub request_id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCodeAttachment {
+    pub buffer_id: u64,
+    pub label: String,
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+    pub linewise: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiQueuedChatInput {
+    pub id: u64,
+    pub kind: String,
+    pub content: String,
+    pub image_count: usize,
+    pub has_code_attachment: bool,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCodeExplanation {
+    pub answer_in_progress: bool,
+    pub current: usize,
+    pub total: usize,
+    pub page: GuiCodeExplanationPage,
+    pub discussion: GuiCodeExplanationDiscussion,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GuiCodeExplanationPage {
+    Concept {
+        title: String,
+        body: String,
+    },
+    Code {
+        path: String,
+        start_line: usize,
+        end_line: usize,
+        comment: String,
+    },
+    Diff {
+        title: String,
+        old_path: Option<String>,
+        new_path: Option<String>,
+        comment: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GuiCodeExplanationDiscussion {
+    Navigating {
+        question_count: usize,
+        exchange_total: usize,
+        latest_question: Option<String>,
+        latest_answer: Option<String>,
+        latest_failed: bool,
+    },
+    Composing {
+        input: String,
+        cursor: usize,
+        question_count: usize,
+    },
+    Answering {
+        question: String,
+        answer: String,
+        question_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatMessage {
+    pub id: String,
+    pub index: usize,
+    pub selected: bool,
+    pub role: String,
+    pub content: String,
+    pub attachment: Option<String>,
+    pub model: Option<String>,
+    pub tool_name: Option<String>,
+    pub replay_tool_call_id: Option<String>,
+    pub replay_label: Option<String>,
+    pub tools: Vec<String>,
+    pub images: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTestPanel {
+    pub scope: String,
+    pub command: String,
+    pub directory: String,
+    pub status: String,
+    pub elapsed_ms: u64,
+    pub summary: Option<String>,
+    pub failure: Option<GuiTestFailure>,
+    pub truncated: usize,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTestFailure {
+    pub message: String,
+    pub file: Option<String>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiProblemList {
+    pub kind: String,
+    pub title: String,
+    pub selected: usize,
+    pub total: usize,
+    pub items: Vec<GuiProblem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiProblem {
+    pub index: usize,
+    pub severity: String,
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GuiBreadcrumb {
+    pub name: String,
+    pub kind: String,
+}
+
+/// The "Replace in files" review panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiSearchReplace {
+    pub find: String,
+    pub replace: String,
+    pub files: String,
+    /// `find`, `replace`, `files` or `results`.
+    pub focus: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub searching: bool,
+    pub searched: bool,
+    pub truncated: bool,
+    pub error: Option<String>,
+    pub total_matches: usize,
+    pub checked_matches: usize,
+    pub file_count: usize,
+    pub selected: usize,
+    pub rows: Vec<GuiSearchReplaceRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiSearchReplaceRow {
+    pub index: usize,
+    /// `file` or `match`.
+    pub kind: String,
+    /// `checked`, `unchecked` or (files only) `partial`.
+    pub state: String,
+    pub path: String,
+    pub line: usize,
+    /// Matches in the file (file rows only).
+    pub count: usize,
+    pub before: String,
+    pub matched: String,
+    pub replacement: String,
+    pub after: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiLspManager {
+    pub filter: String,
+    pub selected: usize,
+    pub show_detail: bool,
+    pub items: Vec<GuiLspEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiLspEntry {
+    pub index: usize,
+    pub language: String,
+    pub section: String,
+    pub command: Option<String>,
+    pub state: Option<String>,
+    pub installing: Option<String>,
+    pub install_hint: Option<String>,
+    pub extensions: Vec<String>,
+    pub root_markers: Vec<String>,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiDebugPanel {
+    pub running: bool,
+    pub reason: Option<String>,
+    pub execution_line: Option<u64>,
+    pub stack: Vec<GuiDebugFrame>,
+    /// Variables, watches, breakpoints and exception filters (everything
+    /// but the call stack), with `index` addressing the TUI panel's row list.
+    pub rows: Vec<GuiDebugRow>,
+    pub output: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiDebugRow {
+    /// Row index for `gui_debug_panel_row`.
+    pub index: usize,
+    /// `header`, `note`, `variable`, `watch`, `breakpoint` or `exception`.
+    pub kind: String,
+    pub depth: usize,
+    pub label: String,
+    pub value: Option<String>,
+    pub type_name: Option<String>,
+    /// Variables and watches with children.
+    pub expandable: bool,
+    pub expanded: bool,
+    /// Breakpoints and exception filters: switched on.
+    pub enabled: Option<bool>,
+    pub conditional: bool,
+    /// Thread rows: the thread whose stack and variables are shown.
+    pub selected: bool,
+}
+
+/// The run console: output of builds, runs and debug sessions, kept after
+/// the process exits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiRunConsole {
+    pub title: String,
+    /// `run` or `debug`.
+    pub mode: String,
+    /// `running`, `succeeded`, `failed`, `stopped`, or `error`.
+    pub status: String,
+    pub status_text: String,
+    pub active: bool,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub elapsed_ms: u64,
+    /// 1-based position of the viewed run in the history.
+    pub run_index: usize,
+    pub run_count: usize,
+    /// Lines dropped from the front (retention cap plus snapshot window).
+    pub truncated: usize,
+    /// Index of `lines[0]` within the run, for `:RunJump`.
+    pub first_index: usize,
+    pub lines: Vec<GuiRunLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiRunLine {
+    /// `stdout`, `stderr`, `build`, `system`, or `debugger`.
+    pub kind: String,
+    pub text: String,
+    /// Points at a source location (stack frame, compiler error).
+    pub jumpable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiDebugFrame {
+    pub name: String,
+    pub file: String,
+    pub line: u64,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTheme {
+    pub name: String,
+    pub background: String,
+    pub foreground: String,
+    pub surface: String,
+    pub surface_selected: String,
+    pub border: String,
+    pub accent: String,
+    pub accent_foreground: String,
+    pub muted: String,
+    pub cursor_line: String,
+    pub selection: String,
+    pub search: String,
+    pub error: String,
+    pub warning: String,
+    pub info: String,
+    pub success: String,
+    pub syntax: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiVectorSource {
+    pub source: String,
+    pub file_name: String,
+}
+
+/// Draft owned by the editor after an atomic composer edit and optional action.
+/// `revision` is the last published snapshot; newer snapshots include this action.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatInputState {
+    pub input: String,
+    pub cursor: usize,
+    pub revision: u64,
+}
+
+/// A frontend-owned terminal launch. Kept separate from snapshots so rendering
+/// or reconnecting the snapshot stream never replays a process launch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTerminalRequest {
+    pub command: Option<String>,
+}
+
+// A workspace supplies search context without dismissing the startup dashboard.
+async fn open_startup_file(editor: &mut Editor, file: Option<FileArg>) {
     if let Some(file) = file {
         let path = Path::new(&file.path);
         let result = if path.is_dir() {
@@ -245,29 +1257,74 @@ async fn run_editor(
                     );
                     editor.buffer_mut().validate_cursor_position();
                 }
+                editor.set_mode(Mode::Normal);
             }
-            editor.set_mode(Mode::Normal);
         }
     }
+}
+
+/// The GUI does not run the terminal renderer, which normally records the
+/// buffer width used by the shared diff review layout. Keep that width in
+/// sync with the focused GUI pane so split reviews reach its actual center.
+pub(crate) fn update_diff_review_geometry(editor: &mut Editor) {
+    let Some(window) = editor
+        .window_manager()
+        .and_then(|manager| manager.focused_window())
+    else {
+        return;
+    };
+    let width = window.width();
+    let text_width = compute_text_width(editor, width);
+    editor.set_last_layout(
+        ovim_core::Rect {
+            width,
+            height: window.height(),
+            ..Default::default()
+        },
+        width as usize - text_width,
+        text_width,
+        0,
+    );
+    editor.relayout_diff_review();
+}
+
+pub(crate) async fn run_editor(
+    file: Option<FileArg>,
+    resume: bool,
+    services: EditorServices,
+    mut requests: mpsc::UnboundedReceiver<GuiRequest>,
+    updates: watch::Sender<Option<GuiSnapshot>>,
+    terminal_requests: watch::Sender<Option<GuiTerminalRequest>>,
+    ready: std_mpsc::SyncSender<Result<(), String>>,
+) {
+    let mut editor = Editor::new().with_services(services);
+    editor.load_ai_chat_preference();
+    editor.enable_diff_review_persistence();
+    editor.enable_recent_files();
+    if let Err(error) = editor.enable_lua() {
+        editor.set_status_message(format!("Lua configuration: {error}"));
+    }
+    editor.language_catalog().install_as_process_catalog();
+
+    open_startup_file(&mut editor, file).await;
 
     editor.set_ai_conversation_resume_enabled(resume);
     editor.enable_lsp();
-    let (java_status_tx, java_status_rx) = mpsc::channel(64);
-    crate::lsp_init::init_java_status_sender(java_status_tx);
-    let mut channels = FrontendChannels::new(java_status_rx);
+    let mut tick_state = TickState::new();
+    let mut tick = tokio::time::interval(TICK_RATE);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // `:openwin` can raise a modal directory picker that stays up for as long
     // as the user browses, so its outcome returns here asynchronously instead
     // of stalling snapshot publishing behind the dialog.
     let (window_status_tx, mut window_status_rx) = mpsc::unbounded_channel::<String>();
-    let mut tick = tokio::time::interval(TICK_RATE);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_external_check = Instant::now();
     let mut revision = 1u64;
     let mut inputs = 0u64;
     let mut dimensions = (120u16, 40u16);
+    let mut projection_cache = GuiProjectionCache::default();
 
     handle_viewport_resize(&mut editor, dimensions.0, dimensions.1);
-    let mut last_snapshot = snapshot(&editor, revision, inputs);
+    update_diff_review_geometry(&mut editor);
+    let mut last_snapshot = snapshot_with_cache(&editor, revision, inputs, &mut projection_cache);
     let mut last_render_version = editor.render_input_version();
     updates.send_replace(Some(last_snapshot.clone()));
     let _ = ready.send(Ok(()));
@@ -275,13 +1332,14 @@ async fn run_editor(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                process_editor_tick(&mut editor, &mut channels).await;
-                process_picker_results(&mut editor, &mut channels);
-                editor.process_pending_rehighlight().await;
-                if last_external_check.elapsed() >= EXTERNAL_FILE_RATE {
-                    process_external_file_change(&mut editor);
-                    last_external_check = Instant::now();
+                let report = editor.tick(&mut tick_state).await;
+                if let Some(request) = report.terminal_request {
+                    dispatch_terminal_request(&mut editor, request, &terminal_requests);
                 }
+                if let Some(pending) = report.window_open {
+                    dispatch_window_open(pending, &window_status_tx);
+                }
+                update_diff_review_geometry(&mut editor);
                 publish_if_changed(
                     &editor,
                     &mut revision,
@@ -289,6 +1347,7 @@ async fn run_editor(
                     &mut last_snapshot,
                     &mut last_render_version,
                     &updates,
+                    &mut projection_cache,
                 );
             }
             request = requests.recv() => {
@@ -296,16 +1355,20 @@ async fn run_editor(
                 if matches!(request, GuiRequest::Shutdown) {
                     break;
                 }
-                handle_request(request, &mut editor, &mut dimensions, &mut revision, &mut inputs)
-                    .await;
-                let rejected_terminal = editor.take_pending_terminal_session().is_some();
-                let rejected_shell = editor.take_pending_shell_command().is_some();
-                if rejected_terminal || rejected_shell {
-                    editor.set_status_message("External shell sessions require the TUI frontend".to_string());
-                }
+                handle_request(
+                    request,
+                    &mut editor,
+                    &mut dimensions,
+                    &mut revision,
+                    &mut inputs,
+                    &mut projection_cache,
+                ).await;
+                // Open a queued project window now rather than on the next
+                // tick, so the dialog follows the keystroke that asked for it.
                 if let Some(pending) = editor.take_pending_window_open() {
                     dispatch_window_open(pending, &window_status_tx);
                 }
+                update_diff_review_geometry(&mut editor);
                 publish_if_changed(
                     &editor,
                     &mut revision,
@@ -313,6 +1376,7 @@ async fn run_editor(
                     &mut last_snapshot,
                     &mut last_render_version,
                     &updates,
+                    &mut projection_cache,
                 );
             }
             status = window_status_rx.recv() => {
@@ -325,6 +1389,7 @@ async fn run_editor(
                     &mut last_snapshot,
                     &mut last_render_version,
                     &updates,
+                    &mut projection_cache,
                 );
             }
         }
@@ -350,6 +1415,28 @@ fn dispatch_window_open(_pending: PendingWindowOpen, status: &mpsc::UnboundedSen
     let _ = status.send(crate::editor::WINDOW_FRONTEND_REQUIRED.to_string());
 }
 
+fn dispatch_terminal_request(
+    editor: &mut Editor,
+    request: TerminalRequest,
+    terminal_requests: &watch::Sender<Option<GuiTerminalRequest>>,
+) {
+    match request {
+        TerminalRequest::Session(session) => {
+            if terminal_requests
+                .send(Some(GuiTerminalRequest {
+                    command: session.command,
+                }))
+                .is_err()
+            {
+                editor.set_status_message("Terminal frontend is not connected".to_string());
+            }
+        }
+        TerminalRequest::Shell(_) => editor.set_status_message(
+            "Use :term <command> to run shell commands in the GUI terminal".to_string(),
+        ),
+    }
+}
+
 fn publish_if_changed(
     editor: &Editor,
     revision: &mut u64,
@@ -357,15 +1444,20 @@ fn publish_if_changed(
     previous: &mut GuiSnapshot,
     previous_render_version: &mut u64,
     updates: &watch::Sender<Option<GuiSnapshot>>,
+    projection_cache: &mut GuiProjectionCache,
 ) {
     let render_version = editor.render_input_version();
-    if render_version == *previous_render_version {
+    // Quitting is shell state, not a render invalidation. It still has to cross
+    // the GUI snapshot boundary so the webview can approve the native close.
+    // Without this exception, `:qa!` succeeds after the confirmation dialog but
+    // the application remains open because `should_quit` is never published.
+    if render_version == *previous_render_version && editor.should_quit() == previous.should_quit {
         return;
     }
     *previous_render_version = render_version;
     // Compare at the current revision so time-based runtime ticks that did not
     // affect the visible projection produce no webview traffic or DOM work.
-    let mut next = snapshot(editor, *revision, inputs);
+    let mut next = snapshot_with_cache(editor, *revision, inputs, projection_cache);
     if next == *previous {
         return;
     }
@@ -409,7 +1501,6 @@ fn activate_gui_ai_chat(editor: &mut Editor) -> Result<()> {
 
     editor.open_ai_chat(ovim_core::ai::chat_types::ChatOpts {
         name: "chat".into(),
-        profile: editor.ai_chat_context_profile("chat"),
         allow_edits: true,
         ..Default::default()
     })
@@ -477,18 +1568,13 @@ fn projected_workspace_path(editor: &Editor) -> Option<std::path::PathBuf> {
         })
 }
 
-/// The workspace a diff command compares, or the message shown when the
-/// editor is not sitting in one.
-fn workspace_or_error(workspace: Option<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
-    workspace.ok_or_else(|| "Open a file in a Git worktree first".to_string())
-}
-
 pub(crate) async fn handle_request(
     request: GuiRequest,
     editor: &mut Editor,
     dimensions: &mut (u16, u16),
     revision: &mut u64,
     inputs: &mut u64,
+    projection_cache: &mut GuiProjectionCache,
 ) {
     // Counted before the command is answered, and counted for every command
     // rather than only for keystrokes. A frontend measures its own speculation
@@ -507,7 +1593,13 @@ pub(crate) async fn handle_request(
                 *dimensions = next;
                 handle_viewport_resize(editor, next.0, next.1);
             }
-            let _ = reply.send(Ok(snapshot(editor, *revision, *inputs)));
+            update_diff_review_geometry(editor);
+            let _ = reply.send(Ok(snapshot_with_cache(
+                editor,
+                *revision,
+                *inputs,
+                projection_cache,
+            )));
             return;
         }
         GuiRequest::VectorSource { reply } => {
@@ -544,43 +1636,59 @@ pub(crate) async fn handle_request(
             let result = draft_vector_feedback(editor, &feedback);
             (reply, result)
         }
-        GuiRequest::DiffReview { spec, reply } => {
-            // Walking Git objects is real work, so it runs on the blocking
-            // pool and answers from there. Awaiting it here would stall the
-            // editor loop -- including the snapshot tick -- for the whole walk.
-            let workspace = projected_workspace_path(editor);
-            tokio::task::spawn_blocking(move || {
-                let result = workspace_or_error(workspace).and_then(|path| {
-                    ovim_core::native_diff::review(&path, spec.as_deref())
-                        .map_err(|error| format!("{error:#}"))
-                });
-                let _ = reply.send(result);
-            });
+        GuiRequest::WorkspaceDirectory { reply } => {
+            let directory = projected_workspace_path(editor)
+                .map(Ok)
+                .unwrap_or_else(std::env::current_dir)
+                .map_err(|error| format!("Could not determine the workspace directory: {error}"));
+            let _ = reply.send(directory);
             return;
         }
-        GuiRequest::DiffFilePatch { spec, path, reply } => {
-            let workspace = projected_workspace_path(editor);
-            tokio::task::spawn_blocking(move || {
-                let result = workspace_or_error(workspace).and_then(|root| {
-                    ovim_core::native_diff::file_patch(&root, spec.as_deref(), &path)
-                        .map_err(|error| format!("{error:#}"))
-                });
-                let _ = reply.send(result);
-            });
-            return;
-        }
-        GuiRequest::OpenDiffBuffer {
-            title,
-            content,
+        GuiRequest::DiffComment {
+            pane,
+            buffer_id,
+            comment,
+            reply,
+        } => (
+            reply,
+            diff::add_comment(editor, pane, buffer_id, comment).map_err(anyhow::Error::msg),
+        ),
+        GuiRequest::DiffAction {
+            pane,
+            buffer_id,
+            action,
             reply,
         } => {
-            editor.open_diff_buffer_in_new_tab(&title, &content);
-            (reply, Ok(()))
+            let result = diff::perform_diff_action(editor, pane, buffer_id, &action)
+                .map_err(anyhow::Error::msg);
+            (reply, result)
+        }
+        GuiRequest::OpenDiffSource {
+            pane,
+            buffer_id,
+            path,
+            line,
+            side,
+            definition_column,
+            reply,
+        } => {
+            let result = if let Some(column) = definition_column {
+                diff::goto_diff_definition(editor, pane, buffer_id, &path, line, &side, column)
+            } else {
+                diff::open_diff_source(editor, pane, buffer_id, &path, line, &side)
+            }
+            .map_err(anyhow::Error::msg);
+            if result.is_ok() {
+                refresh_after_input(editor);
+                editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
         }
         GuiRequest::Key { input, reply } => {
-            let result = input
-                .into_core()
-                .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+            let result = input.into_core().and_then(|event| match event {
+                Some(event) => InputHandler::handle_key_event_no_dirty(editor, event),
+                None => Ok(()),
+            });
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
@@ -609,14 +1717,23 @@ pub(crate) async fn handle_request(
                 .ok_or_else(|| anyhow::anyhow!("Chat draft changed before the GUI edit arrived"));
             if result.is_ok() {
                 if let Some(action) = action {
-                    result = action
-                        .into_core()
-                        .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+                    result = action.into_core().and_then(|event| match event {
+                        Some(event) => InputHandler::handle_key_event_no_dirty(editor, event),
+                        None => Ok(()),
+                    });
                 }
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
             }
-            (reply, result)
+            let result = result
+                .map(|()| GuiChatInputState {
+                    input: editor.ai_chat_input().to_string(),
+                    cursor: editor.ai_chat_input_cursor(),
+                    revision: *revision,
+                })
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+            return;
         }
         GuiRequest::ManageQueuedChatInput { id, action, reply } => {
             let changed = match action.as_str() {
@@ -635,8 +1752,44 @@ pub(crate) async fn handle_request(
             }
             (reply, result)
         }
-        GuiRequest::AiPolicy { action, reply } => {
+        GuiRequest::AiPolicy {
+            action,
+            target,
+            reply,
+        } => {
             let changed = match action.as_str() {
+                "approve-tool" | "deny-tool" | "approve-tool-remember" => {
+                    let allow = action != "deny-tool";
+                    if editor.ai_chat_has_pending_no_repo_folder_approval() {
+                        editor.ai_chat_resolve_pending_no_repo_folder_approval(allow)
+                    } else if action == "approve-tool-remember"
+                        && !editor.ai_chat_pending_tool_approval_can_remember()
+                    {
+                        false
+                    } else {
+                        editor.ai_chat_resolve_pending_tool_approval(
+                            allow,
+                            action == "approve-tool-remember",
+                        )
+                    }
+                }
+                "approve-agent" | "deny-agent" => {
+                    match target.as_deref().filter(|target| !target.is_empty()) {
+                        Some(request_id) => {
+                            match editor.ai_agent_resolve_approval_request(
+                                request_id,
+                                action == "approve-agent",
+                            ) {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    let _ = reply.send(Err(error));
+                                    return;
+                                }
+                            }
+                        }
+                        None => false,
+                    }
+                }
                 "toggle-yolo" => editor.set_ai_chat_yolo_mode(!editor.ai_chat_yolo_mode()),
                 "toggle-comprehension" => {
                     editor.toggle_ai_chat_comprehension_policy();
@@ -654,7 +1807,7 @@ pub(crate) async fn handle_request(
             (reply, result)
         }
         GuiRequest::EditorCommand { command, reply } => {
-            let result = match InputHandler::execute_command_api(editor, &command) {
+            let result = match ovim_core::commands::execute_command_captured(editor, &command) {
                 ovim_core::CommandResult::Success(success) => {
                     if let Some(message) = success.message {
                         editor.set_status_message(message.into_owned());
@@ -668,6 +1821,17 @@ pub(crate) async fn handle_request(
             };
             refresh_after_input(editor);
             editor.dispatch_pending_intents().await;
+            (reply, result)
+        }
+        GuiRequest::ReplayChatTool {
+            tool_call_id,
+            reply,
+        } => {
+            let result = editor
+                .replay_ai_chat_tool(&tool_call_id)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!(editor.status_message().to_owned()));
+            refresh_after_input(editor);
             (reply, result)
         }
         GuiRequest::SelectChatMessage { index, reply } => {
@@ -714,6 +1878,19 @@ pub(crate) async fn handle_request(
             }
             (reply, result)
         }
+        GuiRequest::PositionWalkthrough {
+            current,
+            rows,
+            reply,
+        } => {
+            if editor
+                .ai_code_explanation_view()
+                .is_some_and(|view| view.current == current)
+            {
+                editor.position_code_explanation(rows);
+            }
+            (reply, Ok(()))
+        }
         GuiRequest::SetCursor {
             pane,
             line,
@@ -724,24 +1901,67 @@ pub(crate) async fn handle_request(
                 let _ = reply.send(Err(format!("Unknown editor pane: {pane}")));
                 return;
             }
-            editor.set_mode(Mode::Normal);
-            let text = editor
-                .buffer()
-                .line_text(line)
-                .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-                .unwrap_or_default();
-            let char_column = crate::display::display_col_to_char_col(
-                &text,
-                display_column,
-                editor.indent_options().tab_width,
-            );
-            let grapheme_column =
-                crate::unicode::char_to_grapheme_col(&text, crate::unicode::CharCol(char_column));
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(line, grapheme_column);
-            editor.buffer_mut().validate_cursor_position();
+            leave_modal_mode_for_click(editor);
+            let column = pointer_grapheme_column(editor, line, display_column);
+            editor.place_cursor_from_pointer(line, column);
+            editor.update_scroll_offset();
+            refresh_after_input(editor);
+            (reply, Ok(()))
+        }
+        GuiRequest::CodeLens {
+            pane,
+            file_path,
+            version,
+            index,
+            generation,
+            mode,
+            reply,
+        } => {
+            let result = if !editor.focus_window(pane) {
+                Err(anyhow::anyhow!("Unknown editor pane: {pane}"))
+            } else {
+                let mode = match mode.as_str() {
+                    "run" => Ok(ovim_core::launch::LaunchMode::Run),
+                    "debug" => Ok(ovim_core::launch::LaunchMode::Debug),
+                    _ => Err(anyhow::anyhow!("Unknown code lens action: {mode}")),
+                };
+                mode.and_then(|mode| {
+                    editor.activate_code_lens(&file_path, version, index, generation, mode)
+                })
+            };
+            refresh_after_input(editor);
+            (reply, result)
+        }
+        GuiRequest::Mouse {
+            pane,
+            line,
+            display_column,
+            kind,
+            click_count,
+            shift,
+            reply,
+        } => {
+            if !editor.focus_window(pane) {
+                let _ = reply.send(Err(format!("Unknown editor pane: {pane}")));
+                return;
+            }
+            let column = pointer_grapheme_column(editor, line, display_column);
+            match kind {
+                GuiMouseKind::Down => {
+                    // Shift-press extends a running selection; every other press
+                    // starts from Normal/Insert like a plain click does.
+                    if !(shift && editor.mode().is_visual()) {
+                        leave_modal_mode_for_click(editor);
+                    }
+                    editor.pointer_press(line, column, click_count, shift);
+                }
+                GuiMouseKind::Drag => editor.pointer_drag(line, column),
+                GuiMouseKind::Up => {
+                    // The release position is the last drag position.
+                    editor.pointer_drag(line, column);
+                    editor.pointer_release();
+                }
+            }
             editor.update_scroll_offset();
             refresh_after_input(editor);
             (reply, Ok(()))
@@ -774,17 +1994,24 @@ pub(crate) async fn handle_request(
             }
             (reply, result)
         }
-        GuiRequest::SelectAiProfile { profile, reply } => {
+        GuiRequest::SelectAiProfile {
+            profile,
+            model,
+            reply,
+        } => {
             let result = if editor.mode() != Mode::AiChat {
                 Err(anyhow::anyhow!("AI chat is not active"))
-            } else if editor.ai_set_profile(&profile) {
+            } else if match model.as_deref() {
+                Some(model) => editor.ai_select_chat_model(&profile, model),
+                None => editor.ai_select_chat_profile(&profile),
+            } {
                 if let Some(chat) = editor.ai_state.chat.as_mut() {
                     chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
                 }
                 refresh_after_input(editor);
                 Ok(())
             } else {
-                Err(anyhow::anyhow!("Unknown AI profile: {profile}"))
+                Err(anyhow::anyhow!("Could not select AI profile/model; stop any active turn and check the selection"))
             };
             (reply, result)
         }
@@ -802,10 +2029,38 @@ pub(crate) async fn handle_request(
             };
             (reply, result)
         }
+        GuiRequest::SelectPermissionMode { mode, reply } => {
+            let result = if editor.mode() != Mode::AiChat {
+                Err(anyhow::anyhow!("AI chat is not active"))
+            } else if editor.set_ai_chat_permission_mode(&mode) {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
+                }
+                refresh_after_input(editor);
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(editor.status_message().to_string()))
+            };
+            (reply, result)
+        }
         GuiRequest::SelectTab { index, reply } => {
             editor.goto_tab(index);
             refresh_after_input(editor);
             (reply, Ok(()))
+        }
+        GuiRequest::Scroll { pane, lines, reply } => {
+            // Direct viewport scroll: no key dispatch, so it works in any mode and
+            // never touches pending operators, macros, completions or focus.
+            let delta = isize::try_from(lines.clamp(-MAX_GUI_SCROLL_LINES, MAX_GUI_SCROLL_LINES))
+                .unwrap_or_default();
+            let result = editor
+                .scroll_window_viewport(pane, delta)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown editor pane: {pane}"));
+            if result.is_ok() {
+                refresh_after_input(editor);
+            }
+            (reply, result)
         }
         GuiRequest::FocusPane { index, reply } => {
             let result = editor
@@ -936,6 +2191,108 @@ pub(crate) async fn handle_request(
             }
             (reply, result)
         }
+        GuiRequest::SearchReplaceRow {
+            index,
+            action,
+            reply,
+        } => {
+            use crate::editor::search_replace::SearchReplaceField;
+            use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
+            let result: anyhow::Result<()> = (|| {
+                let Some(panel) = editor.search_replace_panel_mut() else {
+                    return Err(anyhow::anyhow!("Replace in files is not open"));
+                };
+                if index < panel.row_count() {
+                    panel.selected = index;
+                }
+                match action.as_str() {
+                    "select" => {}
+                    "toggle" => panel.toggle_selected(),
+                    "toggle-all" => panel.toggle_all(),
+                    "case" => {
+                        panel.case_sensitive = !panel.case_sensitive;
+                        panel.mark_dirty_now();
+                    }
+                    "word" => {
+                        panel.whole_word = !panel.whole_word;
+                        panel.mark_dirty_now();
+                    }
+                    "regex" => {
+                        panel.regex = !panel.regex;
+                        panel.mark_dirty_now();
+                    }
+                    "field-find" => panel.focus = SearchReplaceField::Find,
+                    "field-replace" => panel.focus = SearchReplaceField::Replace,
+                    "field-files" => panel.focus = SearchReplaceField::Files,
+                    "open" | "apply" => {}
+                    other => return Err(anyhow::anyhow!("Unknown replace action: {other}")),
+                }
+                Ok(())
+            })();
+            let result = match (result, action.as_str()) {
+                (Ok(()), "open") => {
+                    if let Some(panel) = editor.search_replace_panel_mut() {
+                        panel.focus = SearchReplaceField::Results;
+                    }
+                    InputHandler::handle_key_event_no_dirty(
+                        editor,
+                        KeyEvent::new(KeyCode::Enter, Modifiers::NONE),
+                    )
+                }
+                (Ok(()), "apply") => InputHandler::handle_key_event_no_dirty(
+                    editor,
+                    KeyEvent::new(KeyCode::Enter, Modifiers::ALT),
+                ),
+                (other, _) => other,
+            };
+            if result.is_ok() {
+                refresh_after_input(editor);
+                editor.dispatch_pending_intents().await;
+            }
+            (reply, result)
+        }
+        GuiRequest::DebugPanelRow {
+            index,
+            action,
+            reply,
+        } => {
+            let rows = editor.debug_panel_rows().len();
+            let result = if index >= rows {
+                Err(anyhow::anyhow!("Unknown debug panel row: {index}"))
+            } else {
+                editor.dap_manager_mut().state.panel.cursor = index;
+                match action.as_str() {
+                    "activate" => editor.debug_panel_activate(),
+                    "delete" => editor.debug_panel_delete(),
+                    "toggle" => editor.debug_panel_toggle_enabled(),
+                    other => ovim_core::log_debug!("gui", "unknown debug panel action {other}"),
+                }
+                refresh_after_input(editor);
+                Ok(())
+            };
+            (reply, result)
+        }
+        GuiRequest::ToggleBreakpoint { line, reply } => {
+            let path = editor.buffer().file_path().map(std::path::PathBuf::from);
+            let result = match path {
+                Some(path) if line >= 1 => {
+                    editor.toggle_breakpoint_at(&path, line as u64);
+                    refresh_after_input(editor);
+                    Ok(())
+                }
+                _ => Err(anyhow::anyhow!("No file to set a breakpoint in")),
+            };
+            (reply, result)
+        }
+        GuiRequest::ToggleFold { line, reply } => {
+            let result = if line >= 1 && editor.toggle_fold_at_gutter(line - 1) {
+                refresh_after_input(editor);
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("No fold starts on line {line}"))
+            };
+            (reply, result)
+        }
         GuiRequest::SelectDebugFrame { index, reply } => {
             let result = (index < editor.debug_state().stack_frames.len())
                 .then_some(())
@@ -951,10 +2308,9 @@ pub(crate) async fn handle_request(
             return;
         }
         GuiRequest::WriteClipboard { text, reply } => {
+            // Bounded here as well as by the sender: this is the end that
+            // holds the buffer, and a client is free to be wrong.
             let result = match clipboard::within_limit(&text) {
-                // Straight into the `+` register, which is where `p` reads
-                // from under `clipboard=unnamedplus` and where `"+p` reads
-                // from whatever the option says.
                 Ok(()) => {
                     editor.registers_mut().set_clipboard(text);
                     Ok(())
@@ -977,6 +2333,16 @@ pub(crate) async fn handle_request(
 /// the frame so a frontend can tell which of its own keys the frame accounts
 /// for. See [`echo`] for what that buys.
 pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
+    snapshot_with_cache(editor, revision, inputs, &mut GuiProjectionCache::default())
+}
+
+pub(crate) fn snapshot_with_cache(
+    editor: &Editor,
+    revision: u64,
+    inputs: u64,
+    projection_cache: &mut GuiProjectionCache,
+) -> GuiSnapshot {
+    projection_cache.begin_snapshot();
     let buffer = editor.buffer();
     let cursor = buffer.cursor();
     let total_lines = buffer.line_count();
@@ -1005,6 +2371,8 @@ pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
         true,
         tab_width,
         wrap_width,
+        editor.wrap_map(),
+        projection_cache,
         editor.horizontal_offset(),
         text_view_width,
     );
@@ -1039,9 +2407,10 @@ pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
         first_line,
         cursor_display_column,
         tab_width,
+        projection_cache,
     );
 
-    GuiSnapshot {
+    let snapshot = GuiSnapshot {
         revision,
         mode: editor.mode().display_name().to_string(),
         dashboard: editor.should_show_dashboard(),
@@ -1097,6 +2466,20 @@ pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
             })
             .collect(),
         git_branch: editor.git_branch().map(str::to_string),
+        recording: editor.is_recording_macro().then(|| {
+            editor
+                .recording_register()
+                .map(String::from)
+                .unwrap_or_default()
+        }),
+        symbol_breadcrumbs: editor
+            .breadcrumbs()
+            .into_iter()
+            .map(|item| GuiBreadcrumb {
+                name: item.name,
+                kind: item.kind,
+            })
+            .collect(),
         git_changes: GuiGitChanges {
             added,
             modified,
@@ -1122,12 +2505,15 @@ pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
                     .map(|(line, column)| display_column(buffer, line, column, tab_width)),
             }
         }),
+        signature_help: signature_help(editor, buffer, tab_width),
         file_tree: file_tree(editor),
         ai_chat: ai_chat(editor),
         test_panel: test_panel(editor),
         problems: problem_list(editor),
+        search_replace: search_replace(editor),
         lsp_manager: lsp_manager(editor),
         debug: debug_panel(editor),
+        run_console: run_console(editor),
         theme: theme(editor),
         predictable_insert: echo::predictable_insert(editor),
         input_epoch: inputs,
@@ -1139,7 +2525,9 @@ pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
             generation: editor.registers().clipboard_generation(),
         },
         should_quit: editor.should_quit(),
-    }
+    };
+    projection_cache.finish_snapshot();
+    snapshot
 }
 
 fn display_column(
@@ -1148,12 +2536,9 @@ fn display_column(
     grapheme_column: usize,
     tab_width: usize,
 ) -> usize {
-    let text = buffer
-        .line_text(line)
-        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-        .unwrap_or_default();
-    let char_column = crate::unicode::grapheme_to_char_col(&text, GraphemeCol(grapheme_column));
-    crate::display::char_col_to_display_col(&text, char_column.0, tab_width)
+    let index = buffer.line_index(line);
+    let char_column = index.grapheme_to_char(GraphemeCol(grapheme_column));
+    index.char_to_display(char_column.0, tab_width)
 }
 
 fn diff_line_kind(text: &str) -> &'static str {
@@ -1187,20 +2572,33 @@ fn project_lines(
     focused: bool,
     tab_width: usize,
     wrap_width: Option<usize>,
+    wrap_map: Option<&crate::editor::WrapMap>,
+    projection_cache: &mut GuiProjectionCache,
     horizontal_offset: usize,
     text_view_width: usize,
 ) -> Vec<GuiLine> {
     let attached_selection = editor
         .ai_chat_pending_code_attachment()
-        .filter(|attachment| attachment.buffer_id == buffer.id())
+        .filter(|attachment| editor.mode() == Mode::AiChat && attachment.buffer_id == buffer.id())
         .map(|attachment| {
             (
                 (attachment.start_line, 0),
                 (attachment.end_line, usize::MAX),
             )
         });
+    // The untouched placeholder of an expanded snippet is drawn as a selection
+    // (typing replaces it), like the terminal does (OV-00469).
+    let placeholder_selection = editor
+        .snippet_placeholder_highlight()
+        .filter(|_| editor.visual_selection().is_none())
+        .map(|(line, start, end)| ((line, start), (line, end.saturating_sub(1).max(start))));
     let selection = focused
-        .then(|| editor.visual_selection().or(attached_selection))
+        .then(|| {
+            editor
+                .visual_selection()
+                .or(attached_selection)
+                .or(placeholder_selection)
+        })
         .flatten();
     let selection_mode = if editor.visual_selection().is_some() {
         editor.mode()
@@ -1213,16 +2611,48 @@ fn project_lines(
         Mode::Visual
     };
     let highlights = focused.then(|| editor.current_search()).flatten();
+    let projected_decorations = if focused {
+        editor
+            .decorations
+            .project_all(buffer.rope(), buffer.edit_log())
+    } else {
+        Default::default()
+    };
     let mut projected = Vec::with_capacity(visible);
 
     'lines: for line_index in first_line..buffer.line_count() {
-        let text = buffer
-            .line_text(line_index)
-            .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-            .unwrap_or_default();
-        let syntax = buffer.highlights_for_line(line_index);
+        // Lines inside a closed fold are not shown.
+        if buffer.is_line_folded(line_index) {
+            continue;
+        }
+        let indexed_line = buffer.line_index(line_index);
+        let line_start = buffer.rope().line_to_char(line_index);
+        let inline_text: std::sync::Arc<[(usize, std::sync::Arc<str>)]> = projected_decorations
+            .for_line(line_index)
+            .iter()
+            .filter_map(|decoration| match decoration.placement {
+                ovim_core::editor::decoration::DecorationPlacement::Inline { char_offset } => {
+                    Some((
+                        char_offset.saturating_sub(line_start),
+                        std::sync::Arc::<str>::from(decoration.text.as_str()),
+                    ))
+                }
+                ovim_core::editor::decoration::DecorationPlacement::EndOfLine { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let eol_display = indexed_line.display_width(tab_width)
+            + inline_text
+                .iter()
+                .filter(|(anchor, _)| *anchor < indexed_line.len_chars())
+                .map(|(_, text)| {
+                    text.graphemes(true)
+                        .map(crate::display::grapheme_display_width)
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
         let search_matches = highlights
-            .map(|search| search.find_all_in_line(&text))
+            .map(|search| search.find_all_in_index(&indexed_line))
             .unwrap_or_default();
         let diagnostic = if focused {
             editor.diagnostics_for_line(line_index)
@@ -1248,28 +2678,136 @@ fn project_lines(
                     .saturating_add(HORIZONTAL_OVERSCAN),
             )
         });
-        let (segment_start, segments) = segments_for_line(
-            &text,
-            line_index,
-            cursor_line,
-            cursor_column,
-            selection_mode,
-            selection,
-            &syntax,
-            &search_matches,
-            tab_width,
-            display_window,
-        );
-        let visual_rows = if wrap_width.is_some() {
-            split_visual_rows(segments, wrap_width)
+        let remaining = visible.saturating_sub(projected.len());
+        let visual_rows = if let Some(width) = wrap_width {
+            let cached_layout = wrap_map
+                .and_then(|map| map.line_layout(line_index))
+                .filter(|layout| std::sync::Arc::ptr_eq(layout.line(), &indexed_line))
+                .cloned();
+            let layout = cached_layout.unwrap_or_else(|| {
+                projection_cache.layout(indexed_line.clone(), width, tab_width, inline_text.clone())
+            });
+            let skip = if line_index == first_line {
+                scroll_subrow.min(layout.row_count().saturating_sub(1))
+            } else {
+                0
+            };
+            let mut rows = layout
+                .row_fragments(skip..skip.saturating_add(remaining))
+                .into_iter()
+                .map(|row| {
+                    let byte_range = fragment_source_byte_range(&row.fragments);
+                    let char_range = fragment_source_char_range(&row.fragments);
+                    let syntax = buffer.highlights_in_byte_range(line_index, byte_range);
+                    let visible_matches = matches_in_char_range(&search_matches, char_range);
+                    let segments = gui_segments_from_layout(
+                        &row.fragments,
+                        line_index,
+                        cursor_line,
+                        cursor_column,
+                        selection_mode,
+                        selection,
+                        &syntax,
+                        visible_matches,
+                    );
+                    (row.index, row.display_start, segments)
+                })
+                .collect::<Vec<_>>();
+            if line_index == cursor_line && cursor_column >= indexed_line.grapheme_count() {
+                let position = layout.position_for_char(indexed_line.len_chars());
+                if position.row >= skip && position.row < skip.saturating_add(remaining) {
+                    let cursor = GuiSegment {
+                        text: " ".to_string(),
+                        cells: 1,
+                        token: None,
+                        cursor: true,
+                        selected: false,
+                        search_match: false,
+                    };
+                    if let Some((_, _, segments)) =
+                        rows.iter_mut().find(|(row, _, _)| *row == position.row)
+                    {
+                        segments.push(cursor);
+                    } else if rows.len() < remaining {
+                        let display_start = layout
+                            .display_range_for_row(layout.row_count().saturating_sub(1))
+                            .map(|range| range.end)
+                            .unwrap_or(0);
+                        rows.push((position.row, display_start, vec![cursor]));
+                    }
+                }
+            }
+            rows
         } else {
-            vec![(segment_start, coalesce_segments(segments))]
+            let (start, end) = display_window.unwrap_or((0, usize::MAX));
+            let fragments = if inline_text.is_empty() {
+                ovim_core::line_layout::source_fragments_for_display_range(
+                    &indexed_line,
+                    tab_width,
+                    start..end,
+                )
+            } else {
+                projection_cache
+                    .layout(
+                        indexed_line.clone(),
+                        text_view_width,
+                        tab_width,
+                        inline_text.clone(),
+                    )
+                    .fragments_for_display_range(start..end)
+            };
+            let display_start = fragments
+                .first()
+                .map(|fragment| fragment.display_start)
+                .unwrap_or(start);
+            let byte_range = fragment_source_byte_range(&fragments);
+            let char_range = fragment_source_char_range(&fragments);
+            let syntax = buffer.highlights_in_byte_range(line_index, byte_range);
+            let visible_matches = matches_in_char_range(&search_matches, char_range);
+            let segments = gui_segments_from_layout(
+                &fragments,
+                line_index,
+                cursor_line,
+                cursor_column,
+                selection_mode,
+                selection,
+                &syntax,
+                visible_matches,
+            );
+            let mut segments = segments;
+            if line_index == cursor_line
+                && cursor_column >= indexed_line.grapheme_count()
+                && eol_display >= start
+                && eol_display < end
+            {
+                segments.push(GuiSegment {
+                    text: " ".to_string(),
+                    cells: 1,
+                    token: None,
+                    cursor: true,
+                    selected: false,
+                    search_match: false,
+                });
+            }
+            vec![(0, display_start, segments)]
         };
-        let skip = if line_index == first_line {
-            scroll_subrow.min(visual_rows.len().saturating_sub(1))
-        } else {
-            0
-        };
+        let breakpoint = buffer
+            .file_path()
+            .map(std::path::Path::new)
+            .and_then(|path| editor.breakpoint_marker_in(path, line_index as u64 + 1))
+            .map(|marker| {
+                match marker {
+                    ovim_core::editor::BreakpointMarker::Enabled => "enabled",
+                    ovim_core::editor::BreakpointMarker::Conditional => "conditional",
+                    ovim_core::editor::BreakpointMarker::Disabled => "disabled",
+                }
+                .to_string()
+            });
+        let executing = buffer
+            .file_path()
+            .map(std::path::Path::new)
+            .zip(editor.execution_position())
+            .is_some_and(|(path, (file, line))| file == path && line == line_index as u64 + 1);
         let git = buffer
             .git_status()
             .get_line_status(line_index)
@@ -1283,20 +2821,76 @@ fn project_lines(
         let diff = buffer
             .display_name()
             .filter(|name| name.starts_with("Diff · "))
-            .map(|_| diff_line_kind(&text).to_string());
-        for (visual_index, (display_start, segments)) in
-            visual_rows.into_iter().enumerate().skip(skip)
-        {
+            .map(|_| {
+                let prefix = indexed_line.slice_chars(0..indexed_line.len_chars().min(64));
+                diff_line_kind(&prefix).to_string()
+            });
+        for (visual_index, display_start, mut segments) in visual_rows {
             let continuation = visual_index > 0;
+            if segments.is_empty() {
+                // An empty line has no cell of its own, so its placeholder
+                // carries the selection (vim highlights the line break).
+                segments.push(GuiSegment {
+                    text: " ".to_string(),
+                    cells: 1,
+                    token: None,
+                    cursor: line_index == cursor_line && cursor_column == 0,
+                    selected: !continuation
+                        && selection
+                            .is_some_and(|range| selected_at(line_index, 0, selection_mode, range)),
+                    search_match: false,
+                });
+            }
             projected.push(GuiLine {
                 number: line_index + 1,
                 continuation,
                 display_start,
                 current: cursor_line == line_index,
                 segments,
+                code_lenses: if focused && !continuation {
+                    editor
+                        .code_lens_actions(line_index)
+                        .into_iter()
+                        .map(|action| GuiCodeLens {
+                            index: action.index,
+                            generation: editor.code_lens_generation(),
+                            title: action.title,
+                            mode: match action.mode {
+                                ovim_core::launch::LaunchMode::Run => "run",
+                                ovim_core::launch::LaunchMode::Debug => "debug",
+                            }
+                            .into(),
+                            file_path: buffer.file_path().unwrap_or_default().into(),
+                            version: buffer.version(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
                 git: (!continuation).then(|| git.clone()).flatten(),
                 diagnostic: (!continuation).then(|| diagnostic.clone()).flatten(),
                 diff: (!continuation).then(|| diff.clone()).flatten(),
+                breakpoint: (!continuation).then(|| breakpoint.clone()).flatten(),
+                executing: !continuation && executing,
+                folded: (!continuation)
+                    .then(|| buffer.fold_manager().folded_line_count_at(line_index))
+                    .flatten(),
+                fold: (!continuation)
+                    .then(|| {
+                        buffer
+                            .fold_manager()
+                            .gutter_chain(line_index)
+                            .last()
+                            .and_then(|mark| match mark {
+                                ovim_core::fold::FoldGutterMark::OpenStart => Some("open"),
+                                ovim_core::fold::FoldGutterMark::ClosedStart => Some("closed"),
+                                ovim_core::fold::FoldGutterMark::Inside => Some("inside"),
+                                ovim_core::fold::FoldGutterMark::Blank => None,
+                            })
+                            .map(str::to_string)
+                    })
+                    .flatten()
+                    .filter(|_| editor.options.foldcolumn > 0),
             });
             if projected.len() >= visible {
                 break 'lines;
@@ -1313,6 +2907,7 @@ fn project_panes(
     active_first_line: usize,
     active_display_column: usize,
     tab_width: usize,
+    projection_cache: &mut GuiProjectionCache,
 ) -> (GuiLayoutNode, Vec<GuiPane>) {
     let Some(manager) = editor.window_manager() else {
         let cursor = editor.buffer().cursor();
@@ -1334,6 +2929,8 @@ fn project_panes(
                 horizontal_offset: editor.horizontal_offset(),
                 total_lines: editor.buffer().line_count(),
                 lines: active_lines.to_vec(),
+                markdown: project_markdown(editor, editor.buffer().id()),
+                diff_review: projection_cache.diff_review(editor, editor.buffer()),
             }],
         );
     };
@@ -1345,9 +2942,10 @@ fn project_panes(
         .filter_map(|index| {
             let window = manager.get_window(index)?;
             let focused = index == focused_index;
-            let buffer = editor
-                .get_buffer(window.buffer_id())
-                .unwrap_or_else(|| editor.buffer());
+            // Every window views the editor's current buffer, as in the
+            // terminal UI. Focusing a window keeps the current buffer, so
+            // `Window::buffer_id` does not say what the pane shows.
+            let buffer = editor.buffer();
             let cursor = if focused {
                 editor.buffer().cursor()
             } else {
@@ -1376,19 +2974,18 @@ fn project_panes(
                     editor.options.wrap.then(|| {
                         crate::frontend::compute_text_width(editor, window.width()).max(1)
                     }),
+                    window.wrap_map(),
+                    projection_cache,
                     window.horizontal_offset(),
                     crate::frontend::compute_text_width(editor, window.width()).max(1),
                 )
             };
-            let line_text = buffer
-                .line_text(cursor.line())
-                .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-                .unwrap_or_default();
-            let char_column = crate::unicode::grapheme_to_char_col(&line_text, cursor.col());
+            let cursor_line_index = buffer.line_index(cursor.line());
+            let char_column = cursor_line_index.grapheme_to_char(cursor.col());
             let display_column = if focused {
                 active_display_column
             } else {
-                crate::display::char_col_to_display_col(&line_text, char_column.0, tab_width)
+                cursor_line_index.char_to_display(char_column.0, tab_width)
             };
             let file_name = buffer
                 .file_path()
@@ -1414,6 +3011,8 @@ fn project_panes(
                 horizontal_offset: window.horizontal_offset(),
                 total_lines: buffer.line_count(),
                 lines,
+                markdown: project_markdown(editor, buffer.id()),
+                diff_review: projection_cache.diff_review(editor, buffer),
             })
         })
         .collect();
@@ -1445,7 +3044,135 @@ fn project_layout(node: &crate::editor::WindowNode, pane: &mut usize) -> GuiLayo
     }
 }
 
+fn fragment_source_byte_range(
+    fragments: &[ovim_core::line_layout::LayoutFragment],
+) -> std::ops::Range<usize> {
+    fragment_source_range(fragments, |source| source.bytes.clone())
+}
+
+fn fragment_source_char_range(
+    fragments: &[ovim_core::line_layout::LayoutFragment],
+) -> std::ops::Range<usize> {
+    fragment_source_range(fragments, |source| source.chars.clone())
+}
+
+fn fragment_source_range(
+    fragments: &[ovim_core::line_layout::LayoutFragment],
+    range: impl Fn(&ovim_core::line_layout::SourceSpan) -> std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let mut start = usize::MAX;
+    let mut end = 0;
+    for source in fragments
+        .iter()
+        .filter_map(|fragment| fragment.source.as_ref())
+    {
+        let source = range(source);
+        start = start.min(source.start);
+        end = end.max(source.end);
+    }
+    if start == usize::MAX {
+        0..0
+    } else {
+        start..end
+    }
+}
+
+fn matches_in_char_range(
+    matches: &[(usize, usize)],
+    range: std::ops::Range<usize>,
+) -> &[(usize, usize)] {
+    if range.start >= range.end {
+        return &[];
+    }
+    let start = matches.partition_point(|&(_, end)| end <= range.start);
+    let count = matches[start..].partition_point(|&(match_start, _)| match_start < range.end);
+    &matches[start..start + count]
+}
+
 #[allow(clippy::too_many_arguments)]
+fn gui_segments_from_layout(
+    fragments: &[ovim_core::line_layout::LayoutFragment],
+    line: usize,
+    cursor_line: usize,
+    cursor_column: usize,
+    mode: Mode,
+    selection: Option<((usize, usize), (usize, usize))>,
+    highlights: &[(std::ops::Range<usize>, HighlightGroup)],
+    search_matches: &[(usize, usize)],
+) -> Vec<GuiSegment> {
+    use ovim_core::line_layout::LayoutFragmentKind;
+
+    let mut segments = Vec::new();
+    let mut highlight_sweep = LastRangeSweep::new(highlights);
+    let mut search_sweep = AnyRangeSweep::new(search_matches);
+
+    for fragment in fragments {
+        if matches!(fragment.kind, LayoutFragmentKind::Padding) {
+            continue;
+        }
+        if matches!(fragment.kind, LayoutFragmentKind::InlineDecoration { .. }) {
+            if !fragment.text.is_empty() {
+                segments.push(GuiSegment {
+                    text: fragment.text.clone(),
+                    cells: fragment.cells,
+                    token: None,
+                    cursor: false,
+                    selected: false,
+                    search_match: false,
+                });
+            }
+            continue;
+        }
+        let Some(source) = fragment.source.as_ref() else {
+            continue;
+        };
+
+        match fragment.kind {
+            LayoutFragmentKind::Text => {
+                let mut char_offset = 0usize;
+                for (grapheme_offset, (byte_offset, grapheme)) in
+                    fragment.text.grapheme_indices(true).enumerate()
+                {
+                    let byte = source.bytes.start + byte_offset;
+                    let char_column = source.chars.start + char_offset;
+                    let grapheme_column = source.graphemes.start + grapheme_offset;
+                    segments.push(GuiSegment {
+                        text: grapheme.to_string(),
+                        cells: crate::display::grapheme_display_width(grapheme),
+                        token: highlight_sweep
+                            .value_at(byte)
+                            .map(|group| syntax_name(*group).to_string()),
+                        cursor: line == cursor_line && grapheme_column == cursor_column,
+                        selected: selection
+                            .is_some_and(|range| selected_at(line, grapheme_column, mode, range)),
+                        search_match: search_sweep.contains(char_column),
+                    });
+                    char_offset += grapheme.chars().count();
+                }
+            }
+            LayoutFragmentKind::Tab | LayoutFragmentKind::Control => {
+                let grapheme_column = source.graphemes.start;
+                let char_column = source.chars.start;
+                segments.push(GuiSegment {
+                    text: fragment.text.clone(),
+                    cells: fragment.cells,
+                    token: highlight_sweep
+                        .value_at(source.bytes.start)
+                        .map(|group| syntax_name(*group).to_string()),
+                    cursor: line == cursor_line && grapheme_column == cursor_column,
+                    selected: selection
+                        .is_some_and(|range| selected_at(line, grapheme_column, mode, range)),
+                    search_match: search_sweep.contains(char_column),
+                });
+            }
+            LayoutFragmentKind::InlineDecoration { .. } | LayoutFragmentKind::Padding => {}
+        }
+    }
+    coalesce_segments(segments)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn segments_for_line(
     text: &str,
     line: usize,
@@ -1463,18 +3190,22 @@ fn segments_for_line(
     let mut char_column = 0usize;
     let mut grapheme_count = 0usize;
     let mut first_display_column = None;
+    let mut highlight_sweep = LastRangeSweep::new(highlights);
+    let mut search_sweep = AnyRangeSweep::new(search_matches);
+    let mut reached_line_end = true;
 
     for (column, (byte, grapheme)) in text.grapheme_indices(true).enumerate() {
-        let token = highlights
-            .iter()
-            .rev()
-            .find(|(range, _)| range.start <= byte && byte < range.end)
-            .map(|(_, group)| syntax_name(*group));
+        if display_window.is_some_and(|(_, end)| display_column >= end) {
+            reached_line_end = false;
+            break;
+        }
+
+        let token = highlight_sweep
+            .value_at(byte)
+            .map(|group| syntax_name(*group));
         let cursor = line == cursor_line && column == cursor_column;
         let selected = selection.is_some_and(|range| selected_at(line, column, mode, range));
-        let search_match = search_matches
-            .iter()
-            .any(|(start, end)| *start <= char_column && char_column < *end);
+        let search_match = search_sweep.contains(char_column);
         let control = if grapheme.chars().count() == 1 {
             grapheme
                 .chars()
@@ -1517,7 +3248,7 @@ fn segments_for_line(
         grapheme_count = column + 1;
     }
 
-    if line == cursor_line && cursor_column >= grapheme_count {
+    if reached_line_end && line == cursor_line && cursor_column >= grapheme_count {
         let visible = display_window.is_none_or(|(start, end)| {
             display_column.saturating_add(1) > start && display_column < end
         });
@@ -1550,6 +3281,85 @@ fn segments_for_line(
     (first_display_column.unwrap_or(0), segments)
 }
 
+/// Monotonic interval lookup that preserves the previous "last range wins"
+/// rule for overlapping syntax highlights. Input order is the precedence
+/// order; ranges do not need to be sorted by start.
+struct LastRangeSweep<'a, T> {
+    ranges: &'a [(std::ops::Range<usize>, T)],
+    starts: Vec<usize>,
+    next: usize,
+    active: std::collections::BinaryHeap<usize>,
+}
+
+impl<'a, T> LastRangeSweep<'a, T> {
+    fn new(ranges: &'a [(std::ops::Range<usize>, T)]) -> Self {
+        let mut starts: Vec<usize> = (0..ranges.len()).collect();
+        starts.sort_by_key(|&index| (ranges[index].0.start, index));
+        Self {
+            ranges,
+            starts,
+            next: 0,
+            active: std::collections::BinaryHeap::new(),
+        }
+    }
+
+    fn value_at(&mut self, position: usize) -> Option<&'a T> {
+        while self.next < self.starts.len() {
+            let index = self.starts[self.next];
+            let range = &self.ranges[index].0;
+            if range.start > position {
+                break;
+            }
+            self.next += 1;
+            if range.start < range.end {
+                self.active.push(index);
+            }
+        }
+
+        while let Some(&index) = self.active.peek() {
+            if position < self.ranges[index].0.end {
+                return Some(&self.ranges[index].1);
+            }
+            self.active.pop();
+        }
+        None
+    }
+}
+
+/// Monotonic union lookup for search-match intervals.
+struct AnyRangeSweep {
+    ranges: Vec<(usize, usize)>,
+    next: usize,
+    active_ends: std::collections::BinaryHeap<usize>,
+}
+
+impl AnyRangeSweep {
+    fn new(ranges: &[(usize, usize)]) -> Self {
+        let mut ranges = ranges.to_vec();
+        ranges.sort_unstable_by_key(|&(start, end)| (start, end));
+        Self {
+            ranges,
+            next: 0,
+            active_ends: std::collections::BinaryHeap::new(),
+        }
+    }
+
+    fn contains(&mut self, position: usize) -> bool {
+        while self.next < self.ranges.len() && self.ranges[self.next].0 <= position {
+            let (start, end) = self.ranges[self.next];
+            self.next += 1;
+            if start < end {
+                self.active_ends.push(end);
+            }
+        }
+        while self.active_ends.peek().is_some_and(|&end| end <= position) {
+            self.active_ends.pop();
+        }
+        !self.active_ends.is_empty()
+    }
+}
+
+#[cfg(test)]
 fn split_visual_rows(
     segments: Vec<GuiSegment>,
     wrap_width: Option<usize>,
@@ -1606,10 +3416,21 @@ fn split_visual_rows(
     rows
 }
 
+/// A single grapheme that occupies more than one cell (CJK, emoji). The
+/// frontend sizes every segment to `cells * cell_width`, so a wide glyph merged
+/// into a run of narrow ones would drift off the cell grid whenever the font's
+/// real advance differs from two cells. Keeping each wide grapheme in its own
+/// segment pins every following glyph back onto the grid.
+fn is_wide_grapheme(segment: &GuiSegment) -> bool {
+    segment.cells >= 2 && segment.text.graphemes(true).count() == 1
+}
+
 fn coalesce_segments(segments: Vec<GuiSegment>) -> Vec<GuiSegment> {
     let mut merged: Vec<GuiSegment> = Vec::with_capacity(segments.len());
     for segment in segments {
         if let Some(previous) = merged.last_mut()
+            && !is_wide_grapheme(previous)
+            && !is_wide_grapheme(&segment)
             && previous.token == segment.token
             && previous.selected == segment.selected
             && previous.search_match == segment.search_match
@@ -1674,6 +3495,7 @@ fn picker(editor: &Editor) -> Option<GuiPicker> {
         crate::editor::PickerMode::Completion => "Completions",
         crate::editor::PickerMode::LspLocations => "Locations",
     };
+    let title = picker.title().unwrap_or(title);
     let total = picker.filtered_result_count();
     let selected = picker.selected_index();
     let start = centered_window_start(selected, total, MAX_PICKER_ITEMS);
@@ -1683,7 +3505,19 @@ fn picker(editor: &Editor) -> Option<GuiPicker> {
             index,
             display: item.display.clone(),
             location: item.location.clone(),
-            detail: item.content.clone(),
+            detail: if picker.is_symbol_search() {
+                // `kind · container  file:line`
+                let columns =
+                    ovim_core::editor::project_nav::symbol_row_columns(item, picker.base_dir());
+                Some(match &columns.container {
+                    Some(container) => {
+                        format!("{} \u{b7} {}  {}", columns.kind, container, columns.file)
+                    }
+                    None => format!("{}  {}", columns.kind, columns.file),
+                })
+            } else {
+                item.content.clone()
+            },
             matched: item.match_positions.clone(),
         })
         .collect();
@@ -1699,23 +3533,64 @@ fn picker(editor: &Editor) -> Option<GuiPicker> {
     })
 }
 
+fn signature_help(
+    editor: &Editor,
+    buffer: &crate::buffer::Buffer,
+    tab_width: usize,
+) -> Option<GuiSignatureHelp> {
+    if editor.mode() != Mode::Insert {
+        return None;
+    }
+    let signature = editor.signature_help()?;
+    let (before, active, after) = signature.label_segments();
+    let (line, column) = signature.anchor;
+    Some(GuiSignatureHelp {
+        before,
+        active,
+        after,
+        documentation: signature
+            .parameter_documentation
+            .clone()
+            .or_else(|| signature.documentation.clone()),
+        signature_index: signature.signature_index,
+        signature_count: signature.signature_count,
+        line,
+        display_column: display_column(buffer, line, column, tab_width),
+    })
+}
+
 fn completion(editor: &Editor) -> Option<GuiCompletion> {
+    use ovim_core::editor::{
+        completion_documentation_markdown, completion_item_is_deprecated, completion_kind_style,
+        completion_row_text,
+    };
     let menu = editor.completion_menu();
-    let selected = menu.selected_index();
-    let start = centered_window_start(selected, menu.items().len(), MAX_COMPLETION_ITEMS);
-    menu.is_visible().then(|| GuiCompletion {
-        selected,
-        items: menu
-            .items()
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(MAX_COMPLETION_ITEMS)
-            .map(|(index, item)| GuiCompletionItem {
-                index,
-                label: item.label.clone(),
-                detail: item.detail.clone(),
-                kind: item.kind.map(|kind| format!("{kind:?}")),
+    if !menu.is_visible() {
+        return None;
+    }
+    let window = menu.window(MAX_COMPLETION_ITEMS);
+    Some(GuiCompletion {
+        selected: menu.selected_index(),
+        total: menu.len(),
+        documentation: menu
+            .selected_item()
+            .and_then(completion_documentation_markdown),
+        items: window
+            .filter_map(|index| {
+                let item = menu.get(index)?;
+                let text = completion_row_text(item);
+                let kind = completion_kind_style(item.kind);
+                Some(GuiCompletionItem {
+                    index,
+                    label: item.label.clone(),
+                    detail: Some(text.label_suffix).filter(|s| !s.is_empty()),
+                    description: Some(text.description).filter(|s| !s.is_empty()),
+                    kind: item.kind.map(|kind| format!("{kind:?}")),
+                    kind_glyph: kind.glyph.to_string(),
+                    kind_class: kind.class.name().to_string(),
+                    deprecated: completion_item_is_deprecated(item),
+                    matched: menu.matched_positions(index).to_vec(),
+                })
             })
             .collect(),
     })
@@ -1724,16 +3599,14 @@ fn completion(editor: &Editor) -> Option<GuiCompletion> {
 fn file_tree(editor: &Editor) -> Option<GuiFileTree> {
     let tree = editor.file_tree();
     let selected = tree.selected_index();
-    let start = centered_window_start(selected, tree.flattened().len(), MAX_FILE_TREE_ITEMS);
     tree.is_visible().then(|| GuiFileTree {
+        reveal_generation: tree.reveal_generation(),
         root: tree.root_name().to_string(),
         selected,
         items: tree
             .flattened()
             .iter()
             .enumerate()
-            .skip(start)
-            .take(MAX_FILE_TREE_ITEMS)
             .map(|(index, node)| GuiFileTreeItem {
                 index,
                 name: node.name().to_string(),
@@ -1780,7 +3653,11 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             .collect::<std::collections::HashMap<_, _>>();
         let selected_queued_id = editor.ai_chat_history_selected_queued_id();
         GuiAiChat {
+            external_agent: editor.ai_chat_uses_external_agent(),
+            external_question: editor.ai_chat_has_external_question(),
             profile: editor.ai_chat_effective_profile(),
+            model: editor.ai_chat_selected_model().to_string(),
+            pending_diff_comments: editor.pending_diff_comments().map(|c| c.message()),
             pending_code_attachment: editor.ai_chat_pending_code_attachment().map(|attachment| {
                 GuiCodeAttachment {
                     buffer_id: attachment.buffer_id,
@@ -1792,28 +3669,23 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                     linewise: attachment.linewise,
                 }
             }),
-            profiles: editor
-                .ai_profile_names_sorted()
-                .into_iter()
-                .filter_map(|id| {
-                    editor
-                        .ai_state
-                        .config
-                        .resolve_profile(&id)
-                        .map(|profile| GuiAiProfileOption {
-                            id,
-                            provider: profile.provider.to_string(),
-                            model: profile.model.clone(),
-                        })
-                })
-                .collect(),
+            profiles: editor.ai_chat_model_options(),
             reasoning_effort: editor.ai_chat_reasoning_effort(),
             reasoning_effort_selection: editor.ai_chat_reasoning_effort_selection(),
-            reasoning_efforts: ovim_core::editor::AI_CHAT_REASONING_EFFORTS
+            reasoning_effort_default: editor.ai_chat_default_reasoning_effort(),
+            reasoning_efforts: editor
+                .ai_chat_reasoning_efforts()
                 .iter()
                 .map(|effort| (*effort).to_string())
                 .collect(),
+            permission_mode: editor.ai_chat_permission_mode().map(str::to_owned),
+            permission_modes: editor
+                .ai_chat_pickable_permission_modes()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             yolo_mode: editor.ai_chat_yolo_mode(),
+            shell_allowed: editor.ai_chat_shell_allowed_session(),
             comprehension_policy: editor.ai_chat_comprehension_policy().as_str().to_string(),
             comprehension_checkpoint: editor
                 .ai_chat_comprehension_checkpoint_summary()
@@ -1835,7 +3707,8 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                     .to_string(),
                     content: truncate_panel_text(&item.content, 8_000),
                     image_count: item.images.len(),
-                    has_code_attachment: item.code_attachment.is_some(),
+                    has_code_attachment: item.code_attachment.is_some()
+                        || item.diff_comments.is_some(),
                     selected: selected_queued_id == Some(item.id),
                 })
                 .collect(),
@@ -1873,6 +3746,16 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                             .as_deref()
                             .and_then(|id| tool_names.get(id).copied())
                             .map(str::to_string),
+                        replay_tool_call_id: message
+                            .tool_call_id
+                            .as_deref()
+                            .filter(|id| editor.ai_chat_tool_replay_label(id).is_some())
+                            .map(str::to_owned),
+                        replay_label: message
+                            .tool_call_id
+                            .as_deref()
+                            .and_then(|id| editor.ai_chat_tool_replay_label(id))
+                            .map(str::to_owned),
                         tools: message
                             .tool_calls
                             .iter()
@@ -1923,8 +3806,22 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             approval: editor
                 .ai_chat_pending_tool_approval_summary()
                 .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary()),
+            approval_can_remember: editor.ai_chat_pending_tool_approval_can_remember(),
+            agent_approval: agent_approval(editor),
             code_explanation: code_explanation(editor),
         }
+    })
+}
+
+fn agent_approval(editor: &Editor) -> Option<GuiAgentApproval> {
+    let snapshot = editor.ai_agent_current_snapshot().ok().flatten()?;
+    let (agent, approval) = snapshot.oldest_pending_approval()?;
+    let prompt = crate::ui::project_agent_approval_prompt(&snapshot)?;
+    Some(GuiAgentApproval {
+        request_id: approval.request_event_id.as_str().to_string(),
+        agent_id: agent.agent_id.to_string(),
+        agent_name: agent.task_name.clone(),
+        summary: prompt.summary,
     })
 }
 
@@ -1964,15 +3861,28 @@ fn code_explanation(editor: &Editor) -> Option<GuiCodeExplanation> {
             end_line,
             comment,
         },
+        ovim_core::editor::CodeExplanationPageView::Diff {
+            title,
+            old_path,
+            new_path,
+            comment,
+        } => GuiCodeExplanationPage::Diff {
+            title,
+            old_path,
+            new_path,
+            comment,
+        },
     };
     let discussion = match view.discussion {
         ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count,
+            exchange_total,
             latest_question,
             latest_answer,
             latest_failed,
         } => GuiCodeExplanationDiscussion::Navigating {
             question_count,
+            exchange_total,
             latest_question,
             latest_answer,
             latest_failed,
@@ -1997,6 +3907,7 @@ fn code_explanation(editor: &Editor) -> Option<GuiCodeExplanation> {
         },
     };
     Some(GuiCodeExplanation {
+        answer_in_progress: editor.ai_code_explanation_answering(),
         current: view.current,
         total: view.total,
         page,
@@ -2080,6 +3991,90 @@ fn problem_list(editor: &Editor) -> Option<GuiProblemList> {
     })
 }
 
+fn search_replace(editor: &Editor) -> Option<GuiSearchReplace> {
+    use crate::editor::search_replace::ReviewRow;
+    if !editor.is_search_replace_open() {
+        return None;
+    }
+    let panel = editor.search_replace_panel()?;
+    let rows = panel.rows();
+    let start = centered_window_start(panel.selected, rows.len(), 200);
+    let items = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(200)
+        .map(|(index, row)| match *row {
+            ReviewRow::File(file) => {
+                let file = &panel.results[file];
+                let checked = file.checked_count();
+                GuiSearchReplaceRow {
+                    index,
+                    kind: "file".to_string(),
+                    state: if checked == file.matches.len() {
+                        "checked"
+                    } else if checked == 0 {
+                        "unchecked"
+                    } else {
+                        "partial"
+                    }
+                    .to_string(),
+                    path: file.rel.clone(),
+                    line: 0,
+                    count: file.matches.len(),
+                    before: String::new(),
+                    matched: String::new(),
+                    replacement: String::new(),
+                    after: String::new(),
+                }
+            }
+            ReviewRow::Match(file, m) => {
+                let file = &panel.results[file];
+                let entry = &file.matches[m];
+                let text = &entry.found.line_text;
+                GuiSearchReplaceRow {
+                    index,
+                    kind: "match".to_string(),
+                    state: if entry.checked {
+                        "checked"
+                    } else {
+                        "unchecked"
+                    }
+                    .to_string(),
+                    path: file.rel.clone(),
+                    line: entry.found.line + 1,
+                    count: 0,
+                    before: truncate_panel_text(text[..entry.found.start_byte].trim_start(), 200),
+                    matched: truncate_panel_text(
+                        &text[entry.found.start_byte..entry.found.end_byte],
+                        200,
+                    ),
+                    replacement: truncate_panel_text(&panel.replacement_for(&entry.found), 200),
+                    after: truncate_panel_text(text[entry.found.end_byte..].trim_end(), 200),
+                }
+            }
+        })
+        .collect();
+    Some(GuiSearchReplace {
+        find: panel.find.text().to_string(),
+        replace: panel.replace.text().to_string(),
+        files: panel.files.text().to_string(),
+        focus: panel.focus.as_str().to_string(),
+        regex: panel.regex,
+        case_sensitive: panel.case_sensitive,
+        whole_word: panel.whole_word,
+        searching: panel.searching,
+        searched: panel.searched,
+        truncated: panel.truncated,
+        error: panel.error.clone(),
+        total_matches: panel.total_matches(),
+        checked_matches: panel.checked_matches(),
+        file_count: panel.results.len(),
+        selected: panel.selected,
+        rows: items,
+    })
+}
+
 fn lsp_manager(editor: &Editor) -> Option<GuiLspManager> {
     let panel = editor.lsp_manager_panel()?;
     let filtered = panel.filtered_entries();
@@ -2120,10 +4115,75 @@ fn lsp_manager(editor: &Editor) -> Option<GuiLspManager> {
     })
 }
 
+fn gui_debug_rows(editor: &Editor) -> Vec<GuiDebugRow> {
+    use ovim_core::dap::panel::RowKind;
+    let mut in_stack = false;
+    editor
+        .debug_panel_rows()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            // The call stack has its own list in the GUI.
+            match &row.kind {
+                RowKind::Header => in_stack = row.label.starts_with("Call Stack"),
+                RowKind::Note if in_stack => return None,
+                RowKind::Frame { .. } => return None,
+                _ => {}
+            }
+            if in_stack {
+                return None;
+            }
+            let mut selected = false;
+            let (kind, expandable, expanded, enabled, conditional) = match &row.kind {
+                RowKind::Header => ("header", false, false, None, false),
+                RowKind::Note => ("note", false, false, None, false),
+                RowKind::Frame { .. } => return None,
+                RowKind::Variable { var_ref, expanded } => {
+                    ("variable", *var_ref > 0, *expanded, None, false)
+                }
+                RowKind::Watch {
+                    var_ref, expanded, ..
+                } => ("watch", *var_ref > 0, *expanded, None, false),
+                RowKind::Breakpoint {
+                    enabled,
+                    conditional,
+                    ..
+                } => ("breakpoint", false, false, Some(*enabled), *conditional),
+                RowKind::Exception { enabled, .. } => {
+                    ("exception", false, false, Some(*enabled), false)
+                }
+                // Clicking a thread inspects it, like Enter in the TUI panel.
+                RowKind::Thread {
+                    selected: is_selected,
+                    ..
+                } => {
+                    selected = *is_selected;
+                    ("thread", false, false, None, false)
+                }
+            };
+            Some(GuiDebugRow {
+                index,
+                kind: kind.to_string(),
+                depth: row.depth,
+                label: truncate_panel_text(&row.label, 300),
+                value: row.value.map(|v| truncate_panel_text(&v, 300)),
+                type_name: row.type_,
+                expandable,
+                expanded,
+                enabled,
+                conditional,
+                selected,
+            })
+        })
+        .take(400)
+        .collect()
+}
+
 fn debug_panel(editor: &Editor) -> Option<GuiDebugPanel> {
     let debug = editor.debug_state();
-    (debug.session_active && debug.panels_visible).then(|| GuiDebugPanel {
+    debug.panels_visible.then(|| GuiDebugPanel {
         running: debug.is_running,
+        rows: gui_debug_rows(editor),
         reason: debug.stop_reason.clone(),
         execution_line: debug.execution_line,
         stack: debug
@@ -2150,6 +4210,60 @@ fn debug_panel(editor: &Editor) -> Option<GuiDebugPanel> {
             .take(300)
             .rev()
             .map(|line| truncate_panel_text(line, 2_000))
+            .collect(),
+    })
+}
+
+fn run_console(editor: &Editor) -> Option<GuiRunConsole> {
+    use ovim_core::launch::{LineKind, RunOutcome, RunStatus};
+    let console = editor.run_console();
+    if !console.open {
+        return None;
+    }
+    let run = console.viewed()?;
+    let (status, active) = match &run.status {
+        RunStatus::Active(_) => ("running", true),
+        RunStatus::Done(RunOutcome::Succeeded) => ("succeeded", false),
+        RunStatus::Done(RunOutcome::Stopped) | RunStatus::Done(RunOutcome::Ended) => {
+            ("stopped", false)
+        }
+        RunStatus::Done(RunOutcome::Failed) | RunStatus::Done(RunOutcome::BuildFailed) => {
+            ("failed", false)
+        }
+        RunStatus::Done(RunOutcome::Error(_)) => ("error", false),
+    };
+    let start = run.lines.len().saturating_sub(500);
+    Some(GuiRunConsole {
+        title: run.title.clone(),
+        mode: match run.mode {
+            ovim_core::launch::LaunchMode::Run => "run",
+            ovim_core::launch::LaunchMode::Debug => "debug",
+        }
+        .to_string(),
+        status: status.to_string(),
+        status_text: run.status_text(),
+        active,
+        command: run.command.clone(),
+        exit_code: run.exit_code,
+        elapsed_ms: ((run.elapsed().as_millis().min(u64::MAX as u128) as u64) / 100) * 100,
+        run_index: console.viewed_index().map(|i| i + 1).unwrap_or(1),
+        run_count: console.runs.len(),
+        truncated: run.truncated + start,
+        first_index: start,
+        lines: run.lines[start..]
+            .iter()
+            .map(|line| GuiRunLine {
+                kind: match line.kind {
+                    LineKind::Stdout => "stdout",
+                    LineKind::Stderr => "stderr",
+                    LineKind::Build => "build",
+                    LineKind::System => "system",
+                    LineKind::Debugger => "debugger",
+                }
+                .to_string(),
+                text: truncate_panel_text(&line.text, 2_000),
+                jumpable: line.location.is_some(),
+            })
             .collect(),
     })
 }
@@ -2332,13 +4446,13 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     #[test]
     fn a_realistic_snapshot_survives_a_json_round_trip() {
-        // The frontend only ever sees `snapshot()`'s output, so the round trip
-        // is checked against a projected frame rather than a hand-built one:
-        // splits, tabs, syntax segments, an open chat, and a status message
-        // between them reach every branch a plain buffer would leave empty.
+        // A frontend on another host reads frames back, so every field the
+        // projection writes has to come back equal. A fixture with splits,
+        // tabs, highlighting and an open chat reaches most of the frame.
         let content: String = (0..80)
             .map(|line| format!("let value_{line} = {line};\n"))
             .collect();
@@ -2351,8 +4465,6 @@ mod tests {
         editor.focus_next_window();
         editor.split_window_horizontal();
         editor.new_tab();
-        // Come back to the source buffer so the projected frame is the
-        // interesting one rather than the empty scratch tab.
         editor.first_tab();
         editor
             .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
@@ -2376,10 +4488,6 @@ mod tests {
 
     #[test]
     fn the_snapshot_wire_format_stays_camel_case() {
-        // The TypeScript frontend reads these exact keys. Adding `Deserialize`
-        // must not have renamed anything, so a few representative fields --
-        // one plain, one nested struct, one internally tagged enum -- are
-        // pinned here.
         let mut editor = Editor::with_content("hello\n");
         editor.set_file_path("src/sample.rs".to_string());
 
@@ -2389,7 +4497,435 @@ mod tests {
         assert!(json["totalLines"].is_number());
         assert!(json["gitChanges"]["added"].is_number());
         assert_eq!(json["layout"]["kind"], "pane");
+        assert!(json["inputEpoch"].is_number());
+        assert!(json["clipboard"]["generation"].is_number());
         assert!(json.get("file_name").is_none());
+    }
+
+    /// The walkthrough card reads `startLine`, `questionCount`, ... in camelCase.
+    /// Tagged enums need `rename_all_fields`; `rename_all` alone only renames
+    /// the variant tags, which rendered titles like `src/main.rs:undefined`.
+    #[test]
+    fn walkthrough_variant_fields_serialize_in_camel_case() {
+        let page = serde_json::to_value(GuiCodeExplanationPage::Code {
+            path: "src/main.rs".into(),
+            start_line: 4,
+            end_line: 9,
+            comment: String::new(),
+        })
+        .unwrap();
+        assert_eq!(page["kind"], "code");
+        assert_eq!(page["startLine"], 4);
+        assert_eq!(page["endLine"], 9);
+        let diff = serde_json::to_value(GuiCodeExplanationPage::Diff {
+            title: "t".into(),
+            old_path: Some("a".into()),
+            new_path: Some("b".into()),
+            comment: String::new(),
+        })
+        .unwrap();
+        assert_eq!(diff["oldPath"], "a");
+        assert_eq!(diff["newPath"], "b");
+        let discussion = serde_json::to_value(GuiCodeExplanationDiscussion::Navigating {
+            question_count: 2,
+            exchange_total: 3,
+            latest_question: Some("why?".into()),
+            latest_answer: Some("because".into()),
+            latest_failed: false,
+        })
+        .unwrap();
+        assert_eq!(discussion["state"], "navigating");
+        assert_eq!(discussion["questionCount"], 2);
+        assert_eq!(discussion["exchangeTotal"], 3);
+        assert_eq!(discussion["latestQuestion"], "why?");
+        assert_eq!(discussion["latestAnswer"], "because");
+        assert_eq!(discussion["latestFailed"], false);
+    }
+
+    /// OV-00473: the GUI gets one fold mark per line (innermost fold), and a
+    /// click on a header toggles it through the same core command as `za`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn gui_lines_carry_the_fold_gutter_mark() {
+        let mut editor = Editor::with_content("a {\n  b {\n    c\n  }\n}\nd\n");
+        editor
+            .buffer_mut()
+            .set_file_path("/tmp/fold_gui.txt".into());
+        handle_viewport_resize(&mut editor, 100, 30);
+        // Fold commands compute the folds; open everything, close the inner one.
+        editor.fold_command('R');
+        let marks = |editor: &Editor| -> Vec<Option<String>> {
+            snapshot(editor, 1, 0).panes[0]
+                .lines
+                .iter()
+                .map(|line| line.fold.clone())
+                .collect()
+        };
+        let text = |value: &str| Some(value.to_string());
+        assert_eq!(
+            marks(&editor),
+            [
+                text("open"),
+                text("open"),
+                text("inside"),
+                text("inside"),
+                None,
+                None
+            ]
+        );
+        assert!(editor.toggle_fold_at_gutter(1));
+        let closed = snapshot(&editor, 2, 0).panes[0].lines.clone();
+        // The body of the closed fold is not projected; its header says so.
+        assert_eq!(closed[1].fold.as_deref(), Some("closed"));
+        assert_eq!(closed[1].folded, Some(1));
+        assert!(!editor.toggle_fold_at_gutter(5), "no fold starts on `d`");
+    }
+
+    /// OV-00469: the placeholder of an expanded snippet (typing replaces it)
+    /// is highlighted in the GUI like in the terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn gui_highlights_the_untouched_snippet_placeholder() {
+        let mut editor = Editor::with_content("ca");
+        editor
+            .buffer_mut()
+            .set_file_path("/tmp/snippet_gui.txt".into());
+        handle_viewport_resize(&mut editor, 100, 30);
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, crate::unicode::CharCol(2));
+        let item = lsp_types::CompletionItem {
+            label: "call".into(),
+            insert_text: Some("call(${1:first}, ${2:second})".into()),
+            insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+            ..Default::default()
+        };
+        editor
+            .completion_menu_mut()
+            .show(vec![item], 0, "ca".into());
+        editor.accept_completion();
+        assert_eq!(editor.buffer().line_text(0).unwrap(), "call(first, second)");
+
+        let selected = |editor: &Editor| -> String {
+            snapshot(editor, 1, 0).panes[0].lines[0]
+                .segments
+                .iter()
+                .filter(|segment| segment.selected)
+                .map(|segment| segment.text.clone())
+                .collect()
+        };
+        assert_eq!(selected(&editor), "first");
+        // Typing over the placeholder drops the highlight.
+        for ch in "x".chars() {
+            crate::editor::InputHandler::handle_key_event(
+                &mut editor,
+                ovim_core::KeyEvent::new(ovim_core::KeyCode::Char(ch), ovim_core::Modifiers::NONE),
+            )
+            .unwrap();
+        }
+        assert_eq!(selected(&editor), "");
+    }
+
+    /// OV-00477: thread rows are clickable in the GUI debug panel (they were
+    /// plain notes): the row says which thread is shown and activating
+    /// another one switches the panel to its stack, like Enter in the TUI.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn gui_debug_panel_lists_threads_and_switches_between_them() {
+        use ovim_core::dap::types::DapThread;
+        let mut editor = Editor::default();
+        {
+            let state = &mut editor.dap_manager_mut().state;
+            state.panels_visible = true;
+            state.is_running = false;
+            state.stopped_thread = Some(1);
+            state.event_thread = Some(1);
+            state.threads = vec![
+                DapThread {
+                    id: 1,
+                    name: "main".into(),
+                },
+                DapThread {
+                    id: 7,
+                    name: "worker".into(),
+                },
+            ];
+        }
+        let threads = |editor: &Editor| -> Vec<(usize, String, bool)> {
+            gui_debug_rows(editor)
+                .into_iter()
+                .filter(|row| row.kind == "thread")
+                .map(|row| (row.index, row.label, row.selected))
+                .collect()
+        };
+        let rows = threads(&editor);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].1, "main (1)");
+        assert!(rows[0].2 && !rows[1].2, "main is the shown thread");
+
+        // The same request the click sends.
+        editor.dap_manager_mut().state.panel.cursor = rows[1].0;
+        editor.debug_panel_activate();
+        let rows = threads(&editor);
+        assert!(!rows[0].2 && rows[1].2, "the worker is shown now: {rows:?}");
+        assert_eq!(editor.debug_state().stopped_thread, Some(7));
+    }
+
+    #[test]
+    fn gui_diff_geometry_tracks_the_focused_pane_width() {
+        let mut editor = Editor::default();
+        for columns in [210, 90] {
+            handle_viewport_resize(&mut editor, columns, 40);
+            update_diff_review_geometry(&mut editor);
+            let pane = editor.window_manager().unwrap().focused_window().unwrap();
+            assert_eq!(
+                editor.render_cache.last_buffer_area.unwrap().width,
+                pane.width()
+            );
+            assert_eq!(
+                editor.render_cache.last_text_width,
+                compute_text_width(&editor, pane.width())
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn gui_split_review_separator_tracks_pane_resizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = git2::Repository::init(directory.path()).unwrap();
+        repository.set_head("refs/heads/main").unwrap();
+        let path = directory.path().join("sample.rs");
+        std::fs::write(&path, "fn main() {\n    let value = 1;\n}\n").unwrap();
+        let mut index = repository.index().unwrap();
+        index.add_path(Path::new("sample.rs")).unwrap();
+        index.write().unwrap();
+        let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Ovim", "ovim@example.com").unwrap();
+        repository
+            .commit(Some("HEAD"), &signature, &signature, "base", &tree, &[])
+            .unwrap();
+        std::fs::write(&path, "fn main() {\n    let value = 2;\n}\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.options.textwidth = None;
+        editor.open_file(&path).unwrap();
+        handle_viewport_resize(&mut editor, 180, 40);
+        update_diff_review_geometry(&mut editor);
+        editor.open_diff_review(None).unwrap();
+        editor.set_diff_review_layout(crate::editor::DiffLayout::Split);
+
+        for columns in [180, 240] {
+            handle_viewport_resize(&mut editor, columns, 40);
+            update_diff_review_geometry(&mut editor);
+            let separator = editor
+                .buffer()
+                .rope()
+                .lines()
+                .find_map(|line| {
+                    let text = line.to_string();
+                    text.contains("let value = 1;")
+                        .then(|| text.chars().position(|character| character == '│'))
+                        .flatten()
+                })
+                .unwrap();
+            let center = (editor.render_cache.last_text_width - 1) / 2;
+            assert!(
+                separator.abs_diff(center) <= 1,
+                "{columns}-column pane has separator at {separator}, expected {center}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn replace_in_files_review_projects_rows_checkboxes_and_previews() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("a.txt"), "one foo\ntwo\nfoo foo\n").unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(root.join("a.txt")).unwrap();
+        assert!(search_replace(&editor).is_none());
+
+        editor.open_search_replace(Some("foo".to_string()));
+        editor.run_search_replace_now();
+        editor.search_replace_panel_mut().unwrap().replace =
+            crate::editor::SingleLineInput::new("bar");
+        editor.search_replace_panel_mut().unwrap().selected = 2;
+        editor.search_replace_panel_mut().unwrap().toggle_selected();
+
+        let panel = search_replace(&editor).expect("panel projected while open");
+        assert_eq!(panel.total_matches, 3);
+        assert_eq!(panel.checked_matches, 2);
+        assert_eq!(panel.file_count, 1);
+        assert_eq!(panel.rows.len(), 4, "one file row and three matches");
+        assert_eq!(panel.rows[0].kind, "file");
+        assert_eq!(panel.rows[0].state, "partial");
+        assert_eq!(panel.rows[1].before, "one ");
+        assert_eq!(panel.rows[1].matched, "foo");
+        assert_eq!(panel.rows[1].replacement, "bar");
+        assert_eq!(panel.rows[2].state, "unchecked");
+        assert_eq!(panel.rows[3].line, 3);
+
+        editor.close_search_replace();
+        assert!(
+            search_replace(&editor).is_none(),
+            "hidden panels are not projected"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_tree_projects_all_loaded_rows_and_repeated_reveals() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..420 {
+            std::fs::write(directory.path().join(format!("module-{index:03}.rs")), "").unwrap();
+        }
+        let mut editor = Editor::default();
+        editor.file_tree_mut().open(directory.path());
+        let target = directory.path().join("module-350.rs");
+        editor.open_file(&target).unwrap();
+        editor.toggle_file_tree();
+        let first = file_tree(&editor).unwrap();
+        assert!(first.items.len() > 420);
+        assert_eq!(first.items[first.selected].name, "module-350.rs");
+        editor.set_mode(Mode::Normal);
+        editor.toggle_file_tree();
+        let second = file_tree(&editor).unwrap();
+        assert_eq!(second.selected, first.selected);
+        assert_eq!(second.reveal_generation, first.reveal_generation + 1);
+        editor.file_tree_mut().select_next();
+        let next = file_tree(&editor).unwrap();
+        assert_eq!(next.reveal_generation, second.reveal_generation);
+        assert_eq!(next.selected, second.selected + 1);
+    }
+
+    #[tokio::test]
+    async fn claude_profile_projects_the_external_runtime_to_gui() {
+        let mut editor = Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.name = "claude_code".into();
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        assert!(editor.ai_set_profile("claude_code"));
+        activate_gui_ai_chat(&mut editor).unwrap();
+        let view = snapshot(&editor, 1, 0);
+        let chat = view.ai_chat.unwrap();
+        assert_eq!(chat.profile, "claude_code");
+        assert!(chat.external_agent);
+        assert!(!chat.yolo_mode);
+        assert_eq!(chat.comprehension_policy, "off");
+        assert!(!chat.reasoning_efforts.contains(&"none".to_string()));
+        assert!(chat.setup.is_none());
+        assert_eq!(chat.model, "default");
+        assert!(chat
+            .profiles
+            .iter()
+            .any(|option| option.id == "claude_code" && option.model == "claude-fable-5-1"));
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::SelectAiProfile {
+                profile: "claude_code".into(),
+                model: Some("claude-fable-5-1".into()),
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 1,
+            &mut 0,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap().unwrap();
+        assert_eq!(
+            snapshot(&editor, 2, 0).ai_chat.unwrap().model,
+            "claude-fable-5-1"
+        );
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].model,
+            "default"
+        );
+    }
+
+    #[test]
+    fn gui_projection_cache_reuses_warm_layout_and_releases_stale_line_versions() {
+        let mut cache = GuiProjectionCache::default();
+        let old_line = ovim_core::text_index::LineIndex::from_text("abcdefgh");
+        let old_line_weak = std::sync::Arc::downgrade(&old_line);
+        let first_inline: std::sync::Arc<[(usize, std::sync::Arc<str>)]> =
+            std::sync::Arc::from([(2, std::sync::Arc::<str>::from(": A"))]);
+
+        cache.begin_snapshot();
+        let first = cache.layout(old_line.clone(), 4, 4, first_inline.clone());
+        cache.finish_snapshot();
+        let first_weak = std::sync::Arc::downgrade(&first);
+
+        cache.begin_snapshot();
+        let warm = cache.layout(old_line.clone(), 4, 4, first_inline);
+        assert!(std::sync::Arc::ptr_eq(&first, &warm));
+        let changed_inline = cache.layout(
+            old_line.clone(),
+            4,
+            4,
+            std::sync::Arc::from([(2, std::sync::Arc::<str>::from(": B"))]),
+        );
+        assert!(!std::sync::Arc::ptr_eq(&warm, &changed_inline));
+        let inline_text: String = changed_inline
+            .row_fragments(0..changed_inline.row_count())
+            .iter()
+            .flat_map(|row| &row.fragments)
+            .filter(|fragment| {
+                matches!(
+                    fragment.kind,
+                    ovim_core::line_layout::LayoutFragmentKind::InlineDecoration { .. }
+                )
+            })
+            .map(|fragment| fragment.text.as_str())
+            .collect();
+        assert_eq!(inline_text, ": B");
+        cache.finish_snapshot();
+
+        drop(first);
+        drop(warm);
+        drop(changed_inline);
+        drop(old_line);
+
+        let new_line = ovim_core::text_index::LineIndex::from_text("abcdXefgh");
+        cache.begin_snapshot();
+        let current = cache.layout(new_line, 4, 4, std::sync::Arc::from([]));
+        cache.finish_snapshot();
+
+        assert!(first_weak.upgrade().is_none());
+        assert!(old_line_weak.upgrade().is_none());
+        assert_eq!(current.line().len_chars(), 9);
+    }
+
+    #[test]
+    fn markdown_pseudo_snapshot_carries_document_for_every_pane_of_its_buffer() {
+        let mut editor = Editor::with_content("# Hello\n\n**world**\n");
+        editor.set_file_path("/example/readme.md".into());
+        editor.split_window_vertical();
+        editor.set_pseudocode(true).unwrap();
+        let view = snapshot(&editor, 1, 0);
+        let focused = view.panes.iter().find(|pane| pane.focused).unwrap();
+        assert_eq!(focused.buffer_id, editor.buffer().id());
+        assert_eq!(focused.file_name, "Pseudocode: readme.md");
+        assert!(view
+            .panes
+            .iter()
+            .all(|pane| pane.markdown.is_some() && pane.file_name == "Pseudocode: readme.md"));
+        let document = focused.markdown.as_ref().unwrap();
+        assert_eq!(document.text, "# Hello\n\n**world**\n");
+        assert_eq!(document.view_lines, vec![0, 1, 2]);
+        assert!(view.read_only);
+        assert!(view.file_path.is_none());
+        editor.set_pseudocode(false).unwrap();
+        assert!(snapshot(&editor, 2, 0)
+            .panes
+            .iter()
+            .all(|pane| pane.markdown.is_none()));
     }
 
     #[test]
@@ -2493,6 +5029,116 @@ mod tests {
             .iter()
             .flat_map(|line| &line.segments)
             .all(|segment| segment.selected));
+
+        editor.close_ai_chat();
+        let closed = snapshot(&editor, 2, 0);
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert!(closed
+            .lines
+            .iter()
+            .flat_map(|line| &line.segments)
+            .all(|segment| !segment.selected));
+        assert!(editor.ai_chat_pending_code_attachment().is_some());
+
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts {
+                name: "chat".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let reopened = snapshot(&editor, 3, 0);
+        assert!(reopened.lines[4..=5]
+            .iter()
+            .flat_map(|line| &line.segments)
+            .all(|segment| segment.selected));
+    }
+
+    #[tokio::test]
+    async fn gui_startup_preserves_dashboard_until_a_file_is_opened() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sample.txt");
+        std::fs::write(&path, "first\nsecond\n").unwrap();
+        let mut editor = Editor::new();
+
+        open_startup_file(&mut editor, None).await;
+        assert!(snapshot(&editor, 1, 0).dashboard);
+        open_startup_file(
+            &mut editor,
+            Some(FileArg::parse(directory.path().to_str().unwrap())),
+        )
+        .await;
+        assert!(snapshot(&editor, 2, 0).dashboard);
+        assert_eq!(
+            editor.picker_base_dir(),
+            directory.path().canonicalize().unwrap()
+        );
+
+        open_startup_file(
+            &mut editor,
+            Some(FileArg::parse(&format!("{}:2:2", path.display()))),
+        )
+        .await;
+        assert!(!snapshot(&editor, 3, 0).dashboard);
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        assert_eq!(editor.buffer().cursor().col().0, 1);
+    }
+
+    #[tokio::test]
+    async fn gui_chat_input_response_preserves_rejected_and_noop_action_drafts() {
+        let mut editor = Editor::with_content("");
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let mut revision = 7;
+        for (draft, expected) in [
+            ("/unknown", "/unknown"),
+            ("/unknown", "/unknown"),
+            ("", ""),
+            ("/yolo on", ""),
+        ] {
+            let previous = editor.ai_chat_input().to_string();
+            let previous_cursor = editor.ai_chat_input_cursor();
+            let (reply, response) = oneshot::channel();
+            handle_request(
+                GuiRequest::UpdateChatInput {
+                    expected_input: previous,
+                    expected_cursor: previous_cursor,
+                    input: draft.to_string(),
+                    cursor: draft.len(),
+                    action: Some(GuiKeyInput {
+                        key: "Enter".into(),
+                        shift: false,
+                        control: false,
+                        alt: false,
+                        meta: false,
+                    }),
+                    reply,
+                },
+                &mut editor,
+                &mut (100, 30),
+                &mut revision,
+                &mut 0,
+                &mut GuiProjectionCache::default(),
+            )
+            .await;
+            assert_eq!(
+                response.await.unwrap().unwrap(),
+                GuiChatInputState {
+                    input: expected.to_string(),
+                    cursor: expected.len(),
+                    revision: 7,
+                }
+            );
+            assert_eq!(editor.ai_chat_input(), expected);
+            assert!(editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .runtime_turn
+                .is_none());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2534,7 +5180,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let file = dir.path().join("demo.rs");
-        std::fs::write(&file, "fn demo() {}\n").unwrap();
+        std::fs::write(&file, "fn demo() {}\n".repeat(100)).unwrap();
         let mut editor = Editor::default();
         editor.open_file(&file).unwrap();
         editor
@@ -2552,8 +5198,8 @@ mod tests {
                     },
                     {
                         "type": "code",
-                        "path": "demo.rs",
-                        "start_line": 1,
+                        "path": file.to_string_lossy(),
+                        "start_line": 40,
                         "comment": "This function is the entry point."
                     }
                 ]
@@ -2615,11 +5261,108 @@ mod tests {
             code_page.page,
             GuiCodeExplanationPage::Code {
                 ref path,
-                start_line: 1,
-                end_line: 1,
+                start_line: 40,
+                end_line: 40,
                 ref comment,
             } if path == "demo.rs" && comment.contains("entry point")
         ));
+
+        handle_viewport_resize(&mut editor, 100, 30);
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::PositionWalkthrough {
+                current: 2,
+                rows: 11,
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 3,
+            &mut 0,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap().unwrap();
+        assert_eq!(snapshot(&editor, 3, 0).first_line, 34);
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::Key {
+                input: GuiKeyInput {
+                    key: "e".into(),
+                    control: true,
+                    shift: false,
+                    alt: false,
+                    meta: false,
+                },
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 4,
+            &mut 0,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap().unwrap();
+        assert_eq!(snapshot(&editor, 4, 0).first_line, 35);
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::PositionWalkthrough {
+                current: 1,
+                rows: 1,
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 5,
+            &mut 0,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap().unwrap();
+        assert_eq!(
+            snapshot(&editor, 5, 0).first_line,
+            35,
+            "stale page geometry must not undo manual scrolling"
+        );
+    }
+
+    /// The chat card only offers "Allow and remember" and child-agent
+    /// decisions when core can honor them; a stale click must fail loudly
+    /// instead of answering some other approval.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn gui_policy_rejects_unavailable_remember_and_child_approvals() {
+        let mut editor = Editor::default();
+        activate_gui_ai_chat(&mut editor).unwrap();
+        let chat = snapshot(&editor, 1, 0).ai_chat.unwrap();
+        assert!(chat.approval.is_none());
+        assert!(!chat.approval_can_remember);
+        assert!(chat.agent_approval.is_none());
+        for (action, target) in [
+            ("approve-tool-remember", None),
+            ("approve-agent", Some("evt_missing")),
+            ("deny-agent", Some("evt_missing")),
+            ("approve-agent", None),
+        ] {
+            let (reply, response) = oneshot::channel();
+            handle_request(
+                GuiRequest::AiPolicy {
+                    action: action.into(),
+                    target: target.map(str::to_string),
+                    reply,
+                },
+                &mut editor,
+                &mut (100, 30),
+                &mut 2,
+                &mut 0,
+                &mut GuiProjectionCache::default(),
+            )
+            .await;
+            assert!(
+                response.await.unwrap().is_err(),
+                "{action} must fail without a matching pending approval"
+            );
+        }
     }
 
     #[test]
@@ -2743,6 +5486,41 @@ mod tests {
     }
 
     #[test]
+    fn wide_graphemes_are_never_merged_with_neighbouring_runs() {
+        // Unstyled text: every segment shares token/selection state, so only
+        // the wide-grapheme rule keeps these from collapsing into one run.
+        let (_, per_grapheme) = segments_for_line(
+            "ab日本cd😀e",
+            0,
+            1,
+            0,
+            Mode::Normal,
+            None,
+            &[],
+            &[],
+            4,
+            None,
+        );
+        let segments = coalesce_segments(per_grapheme);
+
+        let runs: Vec<(&str, usize)> = segments
+            .iter()
+            .map(|segment| (segment.text.as_str(), segment.cells))
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("ab", 2),
+                ("日", 2),
+                ("本", 2),
+                ("cd", 2),
+                ("😀", 2),
+                ("e", 1)
+            ]
+        );
+    }
+
+    #[test]
     fn horizontal_projection_bounds_a_generated_long_line() {
         let text = "x".repeat(100_000);
         let (start, segments) = segments_for_line(
@@ -2767,6 +5545,683 @@ mod tests {
     }
 
     #[test]
+    fn gui_interval_sweeps_preserve_overlap_precedence_and_search_union() {
+        let highlights = vec![
+            (0..6, HighlightGroup::String),
+            (2..4, HighlightGroup::Comment),
+            (1..5, HighlightGroup::Keyword),
+        ];
+        let searches = vec![(4, 6), (1, 3)];
+
+        let (_, segments) = segments_for_line(
+            "abcdef",
+            0,
+            1,
+            0,
+            Mode::Normal,
+            None,
+            &highlights,
+            &searches,
+            4,
+            None,
+        );
+
+        assert_eq!(
+            segments[0].token.as_deref(),
+            Some(syntax_name(HighlightGroup::String))
+        );
+        assert_eq!(
+            segments[1].token.as_deref(),
+            Some(syntax_name(HighlightGroup::Keyword))
+        );
+        assert_eq!(
+            segments[2].token.as_deref(),
+            Some(syntax_name(HighlightGroup::Keyword))
+        );
+        assert_eq!(
+            segments[4].token.as_deref(),
+            Some(syntax_name(HighlightGroup::Keyword))
+        );
+        assert_eq!(
+            segments[5].token.as_deref(),
+            Some(syntax_name(HighlightGroup::String))
+        );
+        assert!(!segments[0].search_match);
+        assert!(segments[1].search_match);
+        assert!(segments[2].search_match);
+        assert!(!segments[3].search_match);
+        assert!(segments[4].search_match);
+        assert!(segments[5].search_match);
+    }
+
+    async fn send_request(
+        editor: &mut Editor,
+        build: impl FnOnce(oneshot::Sender<Result<(), String>>) -> GuiRequest,
+    ) -> Result<(), String> {
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            build(reply),
+            editor,
+            &mut (100, 30),
+            &mut 1,
+            &mut 0,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap()
+    }
+
+    fn focused_pane(editor: &Editor) -> Option<usize> {
+        snapshot(editor, 1, 0)
+            .panes
+            .iter()
+            .position(|pane| pane.focused)
+    }
+
+    fn key_input(key: &str) -> GuiKeyInput {
+        GuiKeyInput {
+            key: key.into(),
+            control: false,
+            shift: false,
+            alt: false,
+            meta: false,
+        }
+    }
+
+    #[test]
+    fn keys_without_editor_meaning_are_ignored_not_errors() {
+        for key in [
+            "CapsLock",
+            "AltGraph",
+            "NumLock",
+            "ContextMenu",
+            "Pause",
+            "PrintScreen",
+            "ScrollLock",
+            "Unidentified",
+            "Dead",
+            "Process",
+            "OS",
+            "Super",
+            "Hyper",
+            "Fn",
+            "FnLock",
+            "Insert",
+            "Shift",
+        ] {
+            assert!(
+                matches!(key_input(key).into_core(), Ok(None)),
+                "{key} should be dropped silently"
+            );
+        }
+        for (key, number) in [("F1", 1), ("F24", 24)] {
+            assert_eq!(
+                key_input(key).into_core().unwrap().unwrap().code,
+                ovim_core::KeyCode::F(number),
+            );
+        }
+        assert_eq!(
+            key_input("F25").into_core().unwrap().unwrap().code,
+            ovim_core::KeyCode::Null,
+        );
+        assert!(matches!(key_input("a").into_core(), Ok(Some(_))));
+        assert!(
+            key_input("a b").into_core().is_err(),
+            "text is still validated"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_commands_reach_the_gui_from_keys_and_command_actions() {
+        for (typed, command) in [
+            (true, "term"),
+            (true, "term printf x | cat"),
+            (false, "terminal"),
+            (false, "shell printf x | cat"),
+        ] {
+            let mut editor = Editor::with_content("keep this buffer\n");
+            if typed {
+                for character in format!(":{command}").chars() {
+                    send_request(&mut editor, |reply| GuiRequest::Key {
+                        input: key_input(&character.to_string()),
+                        reply,
+                    })
+                    .await
+                    .unwrap();
+                }
+                send_request(&mut editor, |reply| GuiRequest::Key {
+                    input: key_input("Enter"),
+                    reply,
+                })
+                .await
+                .unwrap();
+            } else {
+                send_request(&mut editor, |reply| GuiRequest::EditorCommand {
+                    command: command.to_string(),
+                    reply,
+                })
+                .await
+                .unwrap();
+            }
+            let request = editor
+                .tick(&mut TickState::new())
+                .await
+                .terminal_request
+                .unwrap();
+            let (sender, mut receiver) = watch::channel(None);
+            dispatch_terminal_request(&mut editor, request, &sender);
+            receiver.changed().await.unwrap();
+            assert_eq!(
+                receiver
+                    .borrow_and_update()
+                    .as_ref()
+                    .unwrap()
+                    .command
+                    .as_deref(),
+                command.contains(' ').then_some("printf x | cat")
+            );
+            assert_eq!(editor.buffer().rope().to_string(), "keep this buffer\n");
+            assert!(editor
+                .tick(&mut TickState::new())
+                .await
+                .terminal_request
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn terminal_request_reports_a_disconnected_frontend() {
+        let (sender, _) = watch::channel(None);
+        let mut editor = Editor::new();
+        dispatch_terminal_request(
+            &mut editor,
+            TerminalRequest::Session(ovim_core::editor::PendingTerminalSession { command: None }),
+            &sender,
+        );
+        assert_eq!(
+            editor.status_message(),
+            "Terminal frontend is not connected"
+        );
+    }
+
+    #[test]
+    fn unicode_gui_keys_are_dispatched_as_characters() {
+        for (key, character) in [("é", 'é'), ("中", '中'), ("🦀", '🦀')] {
+            assert_eq!(
+                key_input(key).into_core().unwrap().unwrap().code,
+                ovim_core::KeyCode::Char(character),
+                "{key} must not be parsed as a function key",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ignored_key_leaves_status_and_pending_operator_alone() {
+        let mut editor = Editor::with_content("one two\n");
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input("d"),
+            reply,
+        })
+        .await
+        .unwrap();
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input("CapsLock"),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(editor.status_message().is_empty());
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input("w"),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.buffer().rope().to_string(), "two\n");
+    }
+
+    #[test]
+    fn snapshot_reports_the_macro_register_being_recorded() {
+        let mut editor = Editor::with_content("one\n");
+        assert_eq!(snapshot(&editor, 1, 0).recording, None);
+        let json = serde_json::to_value(snapshot(&editor, 1, 0)).unwrap();
+        assert!(json.get("recording").is_none());
+        let press = |editor: &mut Editor, key: char| {
+            crate::editor::InputHandler::handle_key_event(
+                editor,
+                ovim_core::KeyEvent::new(ovim_core::KeyCode::Char(key), ovim_core::Modifiers::NONE),
+            )
+            .unwrap();
+        };
+        press(&mut editor, 'q');
+        press(&mut editor, 'q');
+        assert_eq!(snapshot(&editor, 2, 0).recording.as_deref(), Some("q"));
+        let json = serde_json::to_value(snapshot(&editor, 2, 0)).unwrap();
+        assert_eq!(json["recording"], "q");
+        press(&mut editor, 'q');
+        assert_eq!(snapshot(&editor, 3, 0).recording, None);
+    }
+
+    /// vim: `vjj` from "a" over an empty line to "b" highlights the empty line
+    /// like the others (nvim --clean, checked with screenattr).
+    #[test]
+    fn visual_selection_highlights_empty_lines_with_and_without_wrap() {
+        for wrap in [false, true] {
+            let mut editor = Editor::with_content("a\n\nb\n");
+            editor.options.wrap = wrap;
+            handle_viewport_resize(&mut editor, 100, 30);
+            editor.set_visual_start(0, 0);
+            editor.set_mode(Mode::Visual);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(2, ovim_core::unicode::GraphemeCol(0));
+            let view = snapshot(&editor, 1, 0);
+            let lines = &view.panes[0].lines;
+            let selected =
+                |line: usize| lines[line].segments.iter().any(|segment| segment.selected);
+            assert!(selected(0) && selected(1) && selected(2), "wrap={wrap}");
+
+            // Outside the selection the placeholder stays plain.
+            editor.set_mode(Mode::Normal);
+            let view = snapshot(&editor, 2, 0);
+            assert!(
+                view.panes[0].lines[1]
+                    .segments
+                    .iter()
+                    .all(|segment| !segment.selected),
+                "wrap={wrap}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn click_in_insert_mode_keeps_insert_and_breaks_the_undo_group() {
+        let mut editor = Editor::with_content("abcdef\nsecond\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["i", "X", "Y"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        send_request(&mut editor, |reply| GuiRequest::SetCursor {
+            pane: 0,
+            line: 1,
+            display_column: 3,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Insert);
+        for key in ["Z", "Z", "Escape"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        // vim (nvim --clean, mouse click mid-insert): `u` removes only "ZZ".
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecZZond\n");
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn click_leaves_visual_and_command_modes_through_escape() {
+        let mut editor = Editor::with_content("abc\ndef\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["v", "l"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(editor.mode(), Mode::Visual);
+        send_request(&mut editor, |reply| GuiRequest::SetCursor {
+            pane: 0,
+            line: 1,
+            display_column: 1,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        assert_eq!(editor.buffer().cursor().col().0, 1);
+
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input(":"),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Command);
+        send_request(&mut editor, |reply| GuiRequest::SetCursor {
+            pane: 0,
+            line: 0,
+            display_column: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.command_line(), "");
+    }
+
+    async fn mouse(
+        editor: &mut Editor,
+        kind: GuiMouseKind,
+        line: usize,
+        display_column: usize,
+        click_count: u8,
+        shift: bool,
+    ) -> Result<(), String> {
+        send_request(editor, |reply| GuiRequest::Mouse {
+            pane: 0,
+            line,
+            display_column,
+            kind,
+            click_count,
+            shift,
+            reply,
+        })
+        .await
+    }
+
+    fn selected_text(editor: &Editor) -> String {
+        editor.visual_selection_text().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn mouse_drag_selects_charwise_and_projects_the_selection() {
+        // nvim --clean (mouse=a): press (1,3), drag, release (2,9) -> `v` v=[1,3] cur=[2,9].
+        let mut editor = Editor::with_content("foo bar baz\nhello world  x\nlast line\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        mouse(&mut editor, GuiMouseKind::Down, 0, 2, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        mouse(&mut editor, GuiMouseKind::Drag, 0, 5, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        mouse(&mut editor, GuiMouseKind::Up, 1, 8, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "o bar baz\nhello wor");
+        let view = snapshot(&editor, 1, 0);
+        assert!(view.panes[0].lines[0]
+            .segments
+            .iter()
+            .any(|segment| segment.selected));
+        assert!(view.panes[0].lines[1]
+            .segments
+            .iter()
+            .any(|segment| segment.selected));
+        assert!(view.panes[0].lines[2]
+            .segments
+            .iter()
+            .all(|segment| !segment.selected));
+        // A later plain press leaves Visual and places the cursor (nvim: mode `n`).
+        mouse(&mut editor, GuiMouseKind::Down, 2, 3, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 2, 3, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 2);
+        assert_eq!(editor.buffer().cursor().col().0, 3);
+    }
+
+    #[tokio::test]
+    async fn mouse_multi_click_selects_word_then_line_and_drag_extends_them() {
+        // nvim: double-click `bar` -> `v` v=[1,5] cur=[1,7]; drag into `world` -> cur=[2,11].
+        let mut editor = Editor::with_content("foo bar baz\nhello world  x\nlast line\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for count in [1, 2] {
+            mouse(&mut editor, GuiMouseKind::Down, 0, 5, count, false)
+                .await
+                .unwrap();
+            if count == 1 {
+                mouse(&mut editor, GuiMouseKind::Up, 0, 5, 1, false)
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "bar");
+        mouse(&mut editor, GuiMouseKind::Drag, 1, 8, 2, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 8, 2, false)
+            .await
+            .unwrap();
+        assert_eq!(selected_text(&editor), "bar baz\nhello world");
+
+        // nvim: triple-click -> `V` on that line.
+        mouse(&mut editor, GuiMouseKind::Down, 2, 3, 3, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 2, 3, 3, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::VisualLine);
+        assert_eq!(selected_text(&editor), "last line");
+    }
+
+    #[tokio::test]
+    async fn mouse_shift_press_extends_from_the_cursor_or_the_far_end() {
+        // nvim: cursor (1,3), shift-click (2,6) -> `v` v=[1,3] cur=[2,6]; then
+        // shift-click (1,1) moves the end nearest the click -> v=[2,6] cur=[1,1].
+        let mut editor = Editor::with_content("foo bar baz\nhello world  x\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["l", "l"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        mouse(&mut editor, GuiMouseKind::Down, 1, 5, 1, true)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 5, 1, true)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "o bar baz\nhello ");
+        mouse(&mut editor, GuiMouseKind::Down, 0, 0, 1, true)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "foo bar baz\nhello ");
+    }
+
+    #[tokio::test]
+    async fn mouse_drag_from_insert_mode_ends_the_insert_session() {
+        // nvim: from Insert, a drag selects in Visual mode; the typed text is its
+        // own undo step (a click has always been one).
+        let mut editor = Editor::with_content("abcdef\nsecond\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["i", "X", "Y"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        mouse(&mut editor, GuiMouseKind::Down, 0, 4, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Insert);
+        mouse(&mut editor, GuiMouseKind::Drag, 1, 3, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 3, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "cdef\nseco");
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecond\n");
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "abcdef\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn mouse_maps_display_columns_through_tabs_and_wide_characters() {
+        let mut editor = Editor::with_content("a\tb\n日本語x\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        // Tab width 4: `b` starts at display column 4; each CJK cell pair is one grapheme.
+        mouse(&mut editor, GuiMouseKind::Down, 0, 4, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Drag, 1, 3, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 3, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(selected_text(&editor), "b\n日本");
+        // A line past the end of the buffer clamps to the last line.
+        mouse(&mut editor, GuiMouseKind::Down, 0, 0, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Drag, 50, 0, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 50, 0, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert!(editor.buffer().cursor().line() >= 1);
+    }
+
+    #[tokio::test]
+    async fn mouse_leaves_command_mode_and_rejects_unknown_panes() {
+        let mut editor = Editor::with_content("abc\ndef\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input(":"),
+            reply,
+        })
+        .await
+        .unwrap();
+        mouse(&mut editor, GuiMouseKind::Down, 1, 1, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::Mouse {
+                pane: 7,
+                line: 0,
+                display_column: 0,
+                kind: GuiMouseKind::Down,
+                click_count: 1,
+                shift: false,
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 1,
+            &mut 0,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        assert!(response.await.unwrap().is_err());
+    }
+
+    #[test]
+    fn mouse_kind_deserializes_from_the_frontend_strings() {
+        let kinds: Vec<GuiMouseKind> = serde_json::from_str(r#"["down","drag","up"]"#).unwrap();
+        assert_eq!(
+            kinds,
+            [GuiMouseKind::Down, GuiMouseKind::Drag, GuiMouseKind::Up]
+        );
+    }
+
+    #[tokio::test]
+    async fn scroll_moves_one_pane_without_keys_focus_or_pending_state() {
+        let content: String = (0..200).map(|line| format!("line {line}\n")).collect();
+        let mut editor = Editor::with_content(&content);
+        editor.init_window_manager(100, 30);
+        editor.split_window_vertical();
+        handle_viewport_resize(&mut editor, 100, 30);
+        assert!(editor.focus_window(1));
+        assert_eq!(focused_pane(&editor), Some(1));
+        let first_line =
+            |editor: &Editor, pane: usize| snapshot(editor, 1, 0).panes[pane].first_line;
+        assert_eq!(first_line(&editor, 0), 0);
+
+        // A pending operator and a macro recording both survive the scroll.
+        for key in ["q", "q", "d"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        let recorded_before = editor.buffer().cursor().line();
+        send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 0,
+            lines: 5,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_line(&editor, 0), 5, "the other pane scrolled");
+        assert_eq!(focused_pane(&editor), Some(1), "focus is untouched");
+        assert!(editor.is_recording_macro());
+        assert!(!editor.input_state().is_normal(), "operator still pending");
+        assert_eq!(editor.buffer().cursor().line(), recorded_before);
+
+        // Up again, in a mode that would not take Ctrl-Y (Insert).
+        editor.set_mode(Mode::Insert);
+        send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 0,
+            lines: -3,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_line(&editor, 0), 2);
+        assert_eq!(editor.mode(), Mode::Insert);
+
+        // The focused pane keeps the cursor inside its viewport, like Ctrl-E.
+        editor.set_mode(Mode::Normal);
+        editor.reset_input_state();
+        send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 1,
+            lines: 10,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_line(&editor, 1), 10);
+        assert!(editor.buffer().cursor().line() >= 10);
+
+        let missing = send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 9,
+            lines: 1,
+            reply,
+        })
+        .await;
+        assert!(missing.is_err());
+    }
+
+    #[test]
     fn snapshot_projects_the_real_split_tree() {
         let mut editor = Editor::with_content("one\ntwo\nthree\n");
         editor.init_window_manager(100, 30);
@@ -2788,6 +6243,57 @@ mod tests {
         ));
     }
 
+    /// Windows share the editor's current buffer, as in the terminal UI. An
+    /// unfocused pane must show what the user gets after focusing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn every_split_pane_shows_the_current_buffer_after_buffer_switches() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("util.rs"), "pub fn util() {}\n").unwrap();
+        std::fs::write(root.join("long.txt"), "long\n").unwrap();
+        let mut editor = Editor::default();
+        editor.init_window_manager(100, 30);
+        editor.open_file(root.join("main.rs")).unwrap();
+        editor.open_file(root.join("util.rs")).unwrap();
+        editor.open_file(root.join("main.rs")).unwrap();
+
+        let pane_files = |editor: &Editor| -> Vec<(String, String)> {
+            snapshot(editor, 1, 0)
+                .panes
+                .iter()
+                .map(|pane| {
+                    let text = pane.lines[0]
+                        .segments
+                        .iter()
+                        .map(|segment| segment.text.as_str())
+                        .collect();
+                    (pane.file_name.clone(), text)
+                })
+                .collect()
+        };
+        let main = ("main.rs".to_string(), "fn main() {}".to_string());
+
+        editor.split_window_vertical();
+        assert_eq!(pane_files(&editor), vec![main.clone(), main.clone()]);
+
+        editor.focus_next_window();
+        assert_eq!(pane_files(&editor), vec![main.clone(), main.clone()]);
+
+        editor.focus_prev_window();
+        editor.open_file(root.join("long.txt")).unwrap();
+        let long = ("long.txt".to_string(), "long".to_string());
+        assert_eq!(pane_files(&editor), vec![long.clone(), long.clone()]);
+
+        editor.focus_next_window();
+        assert_eq!(pane_files(&editor), vec![long.clone(), long]);
+        let view = snapshot(&editor, 1, 0);
+        assert!(view
+            .panes
+            .iter()
+            .all(|pane| pane.buffer_id == editor.buffer().id()));
+    }
+
     #[test]
     fn publish_gate_skips_idle_frames_and_emits_dirty_state_once() {
         let mut editor = Editor::with_content("hello\n");
@@ -2795,6 +6301,7 @@ mod tests {
         let mut previous = snapshot(&editor, revision, 0);
         let mut render_version = editor.render_input_version();
         let (updates, receiver) = watch::channel(None);
+        let mut projection_cache = GuiProjectionCache::default();
 
         publish_if_changed(
             &editor,
@@ -2803,6 +6310,7 @@ mod tests {
             &mut previous,
             &mut render_version,
             &updates,
+            &mut projection_cache,
         );
         assert!(receiver.borrow().is_none());
 
@@ -2815,6 +6323,7 @@ mod tests {
             &mut previous,
             &mut render_version,
             &updates,
+            &mut projection_cache,
         );
         assert_eq!(
             receiver.borrow().as_ref().map(|view| view.revision),
@@ -2829,8 +6338,38 @@ mod tests {
             &mut previous,
             &mut render_version,
             &updates,
+            &mut projection_cache,
         );
         assert!(receiver.borrow().is_none());
+    }
+
+    #[test]
+    fn publish_gate_emits_quit_state_without_a_render_change() {
+        let mut editor = Editor::with_content("hello\n");
+        let mut revision = 1;
+        let mut previous = snapshot(&editor, revision, 0);
+        let mut render_version = editor.render_input_version();
+        let initial_render_version = render_version;
+        let (updates, receiver) = watch::channel(None);
+        let mut projection_cache = GuiProjectionCache::default();
+
+        editor.quit();
+        assert_eq!(editor.render_input_version(), initial_render_version);
+
+        publish_if_changed(
+            &editor,
+            &mut revision,
+            0,
+            &mut previous,
+            &mut render_version,
+            &updates,
+            &mut projection_cache,
+        );
+
+        let update = receiver.borrow();
+        let update = update.as_ref().expect("quit snapshot should be published");
+        assert!(update.should_quit);
+        assert_eq!(update.revision, 2);
     }
 
     #[test]

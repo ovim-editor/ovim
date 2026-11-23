@@ -1,12 +1,5 @@
 use std::collections::HashMap;
 
-/// Represents a position in the buffer
-#[derive(Clone, Copy, Debug)]
-pub struct Mark {
-    pub line: usize,
-    pub col: usize,
-}
-
 /// Represents a global mark (includes file path)
 #[derive(Clone, Debug)]
 pub struct GlobalMark {
@@ -17,115 +10,89 @@ pub struct GlobalMark {
     pub col: usize,
 }
 
-/// Manages marks (a-z for buffer-local marks, A-Z for global marks)
+/// Manages the global marks (A-Z), which persist across files. The
+/// buffer-local marks (a-z, `<`, `>`) live on their `Buffer`.
 #[derive(Clone, Debug, Default)]
 pub struct MarkManager {
-    /// Buffer-local marks (a-z)
-    marks: HashMap<char, Mark>,
-    /// Global marks (A-Z) - persist across files
     global_marks: HashMap<char, GlobalMark>,
 }
 
 impl MarkManager {
     /// Creates a new mark manager
     pub fn new() -> Self {
-        Self {
-            marks: HashMap::new(),
-            global_marks: HashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Sets a mark at the given position (buffer-local for a-z, global for A-Z)
-    pub fn set_mark(
+    /// Sets a global mark (A-Z) at the given position
+    pub fn set_global_mark(
         &mut self,
         name: char,
         line: usize,
         col: usize,
         file_path: Option<&str>,
     ) -> bool {
-        if name.is_ascii_lowercase() {
-            self.marks.insert(name, Mark { line, col });
-            true
-        } else if name.is_ascii_uppercase() {
-            self.global_marks.insert(
-                name,
-                GlobalMark {
-                    file_path: file_path.map(str::to_string),
-                    line,
-                    col,
-                },
-            );
-            true
-        } else {
-            false
+        if !name.is_ascii_uppercase() {
+            return false;
         }
-    }
-
-    /// Gets a local mark by name (a-z)
-    pub fn get_mark(&self, name: char) -> Option<Mark> {
-        self.marks.get(&name).copied()
+        self.global_marks.insert(
+            name,
+            GlobalMark {
+                file_path: file_path.map(str::to_string),
+                line,
+                col,
+            },
+        );
+        true
     }
 
     /// Gets a global mark by name (A-Z)
     pub fn get_global_mark(&self, name: char) -> Option<&GlobalMark> {
-        if name.is_ascii_uppercase() {
-            self.global_marks.get(&name)
-        } else {
-            None
-        }
-    }
-
-    /// Clears all local marks (a-z) - global marks are preserved
-    pub fn clear(&mut self) {
-        self.marks.clear();
-    }
-
-    /// Clears all marks including global marks
-    pub fn clear_all(&mut self) {
-        self.marks.clear();
-        self.global_marks.clear();
-    }
-
-    /// Returns an iterator over all local marks
-    pub fn iter(&self) -> impl Iterator<Item = (char, Mark)> + '_ {
-        self.marks.iter().map(|(k, v)| (*k, *v))
+        self.global_marks.get(&name)
     }
 
     /// Returns an iterator over all global marks
     pub fn iter_global(&self) -> impl Iterator<Item = (char, &GlobalMark)> + '_ {
         self.global_marks.iter().map(|(k, v)| (*k, v))
     }
+}
 
-    /// Lists all marks as (name, line, col, file_path) tuples for display
-    pub fn list_marks(&self) -> Vec<(char, usize, usize, Option<String>)> {
-        let mut result = Vec::new();
+/// One position in the jump list: a file plus a cursor position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpEntry {
+    /// Canonical path of the buffer, `None` for a buffer without a file.
+    pub file: Option<String>,
+    pub line: usize,
+    pub col: usize,
+}
 
-        // Local marks (a-z) sorted
-        let mut local: Vec<_> = self.marks.iter().collect();
-        local.sort_by_key(|(k, _)| *k);
-        for (name, mark) in local {
-            result.push((*name, mark.line, mark.col, None));
-        }
+impl JumpEntry {
+    pub fn new(file: Option<String>, line: usize, col: usize) -> Self {
+        Self { file, line, col }
+    }
 
-        // Global marks (A-Z) sorted
-        let mut global: Vec<_> = self.global_marks.iter().collect();
-        global.sort_by_key(|(k, _)| *k);
-        for (name, mark) in global {
-            result.push((*name, mark.line, mark.col, mark.file_path.clone()));
-        }
-
-        result
+    /// Vim de-duplicates on (buffer, line): the column is irrelevant.
+    fn same_place(&self, other: &Self) -> bool {
+        self.line == other.line
+            && match (&self.file, &other.file) {
+                (Some(a), Some(b)) => crate::editor::buffer_manager::paths_identify_same_file(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
-/// Manages the jump list for navigating through cursor positions
+/// Vim-style jump list (`Ctrl-O` / `Ctrl-I`), spanning files.
+///
+/// Mirrors Vim's algorithm (`setpcmark`, `cleanup_jumplist`, `movemark`):
+/// a jump appends the position it leaves; the first `Ctrl-O` after a jump
+/// records where you are so `Ctrl-I` can return; earlier entries for the
+/// same line are dropped, keeping the most recent.
 #[derive(Clone, Debug, Default)]
 pub struct JumpList {
-    /// List of jump positions (line, col)
-    jumps: Vec<(usize, usize)>,
-    /// Current position in the jump list
+    jumps: Vec<JumpEntry>,
+    /// Index of the entry the user is "at"; `== jumps.len()` when not
+    /// currently navigating the list.
     current: usize,
-    /// Maximum size of the jump list
     max_size: usize,
 }
 
@@ -139,54 +106,82 @@ impl JumpList {
         }
     }
 
-    /// Adds a new jump position
-    pub fn add_jump(&mut self, line: usize, col: usize) {
-        // If we're not at the end, truncate everything after current
-        if self.current < self.jumps.len() {
-            self.jumps.truncate(self.current + 1);
+    /// Records the position a jump leaves (Vim's `setpcmark`).
+    pub fn add_jump(&mut self, entry: JumpEntry) {
+        self.jumps.push(entry);
+        if self.jumps.len() > self.max_size.max(1) {
+            self.jumps.remove(0);
         }
+        self.current = self.jumps.len();
+    }
 
-        // Add the new jump
-        self.jumps.push((line, col));
-
-        // Limit size
-        if self.jumps.len() > self.max_size {
-            self.jumps.drain(0..1);
-            // After draining first element, update current index
-            self.current = self.jumps.len().saturating_sub(1);
-        } else {
-            self.current = self.jumps.len().saturating_sub(1);
+    /// Vim's `cleanup_jumplist`: of several entries on the same line only the
+    /// last survives; `current` follows the surviving entries.
+    fn cleanup(&mut self) {
+        let mut kept: Vec<JumpEntry> = Vec::with_capacity(self.jumps.len());
+        let mut new_current = None;
+        for from in 0..self.jumps.len() {
+            if self.current == from {
+                new_current = Some(kept.len());
+            }
+            let has_later_duplicate = self.jumps[from + 1..]
+                .iter()
+                .any(|later| later.same_place(&self.jumps[from]));
+            if !has_later_duplicate {
+                kept.push(self.jumps[from].clone());
+            }
         }
+        self.current = new_current.unwrap_or(kept.len());
+        self.jumps = kept;
+    }
+
+    /// Steps `count` entries through the list (`-1` = Ctrl-O, `+1` = Ctrl-I).
+    /// `here` is the cursor position, recorded on the first step after a jump.
+    fn step(&mut self, count: isize, here: JumpEntry) -> Option<JumpEntry> {
+        self.cleanup();
+        // Not navigating yet: a last jump that left from this very line is a phantom
+        // (jumping "back" would not move), so it goes (Vim's `cleanup_jumplist`).
+        if self.current == self.jumps.len()
+            && self.jumps.last().is_some_and(|last| last.same_place(&here))
+        {
+            self.jumps.pop();
+            self.current = self.jumps.len();
+        }
+        if self.jumps.is_empty() {
+            return None;
+        }
+        let len = self.jumps.len() as isize;
+        let idx = self.current as isize;
+        if idx + count < 0 || idx + count >= len {
+            return None;
+        }
+        let mut idx = idx;
+        if self.current == self.jumps.len() {
+            // First Ctrl-O after a jump: remember where we are.
+            self.add_jump(here);
+            idx = self.jumps.len() as isize - 1; // skip the entry just added
+            if idx + count < 0 {
+                return None;
+            }
+        }
+        idx += count;
+        self.current = idx as usize;
+        self.jumps.get(self.current).cloned()
     }
 
     /// Jumps back in the jump list (Ctrl-O)
-    pub fn jump_back(&mut self) -> Option<(usize, usize)> {
-        if self.current > 0 {
-            self.current -= 1;
-            self.jumps.get(self.current).copied()
-        } else {
-            None
-        }
+    pub fn jump_back(&mut self, here: JumpEntry) -> Option<JumpEntry> {
+        self.step(-1, here)
     }
 
     /// Jumps forward in the jump list (Ctrl-I)
-    pub fn jump_forward(&mut self) -> Option<(usize, usize)> {
-        if self.current + 1 < self.jumps.len() {
-            self.current += 1;
-            self.jumps.get(self.current).copied()
-        } else {
-            None
-        }
+    pub fn jump_forward(&mut self, here: JumpEntry) -> Option<JumpEntry> {
+        self.step(1, here)
     }
 
-    /// Returns whether we can jump back
-    pub fn can_jump_back(&self) -> bool {
-        self.current > 0
-    }
-
-    /// Returns whether we can jump forward
-    pub fn can_jump_forward(&self) -> bool {
-        self.current + 1 < self.jumps.len()
+    /// Entries, oldest first (for `:jumps`-style listings and tests).
+    pub fn entries(&self) -> &[JumpEntry] {
+        &self.jumps
     }
 }
 
@@ -290,6 +285,49 @@ impl TagStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(file: &str, line: usize) -> JumpEntry {
+        JumpEntry::new(Some(file.to_string()), line, 0)
+    }
+
+    /// Cross-checked against `nvim --headless`: a jump from A:1 to B:10 then
+    /// Ctrl-O returns to A:1 and Ctrl-I comes back to B:10.
+    #[test]
+    fn jump_back_then_forward_round_trips_across_files() {
+        let mut list = JumpList::new();
+        list.add_jump(at("/a", 1)); // left A:1 to go to B:10
+        assert_eq!(list.jump_back(at("/b", 10)), Some(at("/a", 1)));
+        assert_eq!(list.jump_forward(at("/a", 1)), Some(at("/b", 10)));
+        assert_eq!(list.jump_forward(at("/b", 10)), None);
+    }
+
+    #[test]
+    fn jump_back_with_empty_list_does_nothing() {
+        let mut list = JumpList::new();
+        assert_eq!(list.jump_back(at("/a", 1)), None);
+        assert_eq!(list.jump_forward(at("/a", 1)), None);
+    }
+
+    #[test]
+    fn earlier_entries_for_the_same_line_are_dropped() {
+        let mut list = JumpList::new();
+        list.add_jump(at("/a", 1));
+        list.add_jump(at("/a", 5));
+        list.add_jump(at("/a", 1)); // same line as the first entry
+        assert_eq!(list.jump_back(at("/a", 9)), Some(at("/a", 1)));
+        assert_eq!(list.jump_back(at("/a", 1)), Some(at("/a", 5)));
+        assert_eq!(list.jump_back(at("/a", 5)), None);
+    }
+
+    #[test]
+    fn new_jump_after_navigating_appends_at_the_end() {
+        let mut list = JumpList::new();
+        list.add_jump(at("/a", 1));
+        list.add_jump(at("/a", 2));
+        assert_eq!(list.jump_back(at("/a", 3)), Some(at("/a", 2)));
+        list.add_jump(at("/a", 2)); // jump away from the entry we sit on
+        assert_eq!(list.jump_back(at("/a", 7)), Some(at("/a", 2)));
+    }
 
     #[test]
     fn test_tag_stack_push_pop() {

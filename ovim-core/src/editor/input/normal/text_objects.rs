@@ -5,160 +5,55 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    CursorPos, Editor, Operator, PendingChangeRepeat, RegisterType, TextObjectRange,
-    TextObjectType, TextObjects,
+    CursorPos, Editor, InputState, Operator, PendingChangeRepeat, RegisterType, TextObjectPrefix,
+    TextObjectRange, TextObjectType, TextObjects,
 };
 use crate::mode::Mode;
 use crate::repeat_action::{CaseTransform, RepeatAction};
-use crate::{KeyCode, KeyEvent};
+use crate::KeyEvent;
 use anyhow::Result;
 
 /// Try to handle a text object after operator + 'i' or 'a'.
 ///
 /// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
-    let text_obj_type = match editor.pending_command() {
-        Some('i') | Some('a') => editor.pending_command().unwrap(),
-        _ => return Ok(false),
+    let InputState::TextObjectPending {
+        operator: Some(operator),
+        prefix,
+    } = *editor.input_state()
+    else {
+        return Ok(false);
     };
-
-    let operator = match editor.pending_operator() {
-        Some(op) => op,
-        None => return Ok(false),
-    };
-
-    editor.clear_pending_command();
-    editor.clear_pending_operator();
+    let count = editor.effective_count();
+    editor.reset_input_state();
     editor.clear_count();
 
-    let result = match key_event.code {
-        KeyCode::Char('w') => {
-            if text_obj_type == 'i' {
-                TextObjects::inner_word(editor.buffer())
-            } else {
-                TextObjects::around_word(editor.buffer())
-            }
-        }
-        KeyCode::Char('W') => {
-            if text_obj_type == 'i' {
-                TextObjects::inner_big_word(editor.buffer())
-            } else {
-                TextObjects::around_big_word(editor.buffer())
-            }
-        }
-        KeyCode::Char('p') => {
-            if text_obj_type == 'i' {
-                TextObjects::inner_paragraph(editor.buffer())
-            } else {
-                TextObjects::around_paragraph(editor.buffer())
-            }
-        }
-        KeyCode::Char('s') => {
-            if text_obj_type == 'i' {
-                TextObjects::inner_sentence(editor.buffer())
-            } else {
-                TextObjects::around_sentence(editor.buffer())
-            }
-        }
-        KeyCode::Char('"') | KeyCode::Char('\'') | KeyCode::Char('`') => {
-            let quote = match key_event.code {
-                KeyCode::Char(c) => c,
-                _ => unreachable!(),
-            };
-            TextObjects::quoted_string(editor.buffer(), quote, text_obj_type == 'a')
-        }
-        KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
-            TextObjects::paired_delimiters(editor.buffer(), '(', ')', text_obj_type == 'a')
-        }
-        KeyCode::Char('[') | KeyCode::Char(']') => {
-            TextObjects::paired_delimiters(editor.buffer(), '[', ']', text_obj_type == 'a')
-        }
-        KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
-            TextObjects::paired_delimiters(editor.buffer(), '{', '}', text_obj_type == 'a')
-        }
-        KeyCode::Char('<') | KeyCode::Char('>') => {
-            TextObjects::paired_delimiters(editor.buffer(), '<', '>', text_obj_type == 'a')
-        }
-        KeyCode::Char('t') => TextObjects::tag(editor.buffer(), text_obj_type == 'a'),
-        KeyCode::Char('i') => {
-            let tab_width = editor.indent_options().tab_width;
-            if text_obj_type == 'i' {
-                TextObjects::inner_indent(editor.buffer(), tab_width)
-            } else {
-                TextObjects::around_indent(editor.buffer(), tab_width)
-            }
-        }
-        KeyCode::Char('f') => {
-            if text_obj_type == 'i' {
-                TextObjects::inner_function(editor.buffer())
-            } else {
-                TextObjects::around_function(editor.buffer())
-            }
-        }
-        _ => {
-            // Unknown text object
-            return Ok(true);
-        }
+    let Some(object_type) = super::super::text_objects::from_key(
+        editor,
+        key_event.code,
+        prefix == TextObjectPrefix::Inner,
+    ) else {
+        return Ok(true);
     };
-
-    // Determine the TextObjectType for semantic repeat
-    let inner = text_obj_type == 'i';
-    let object_type: TextObjectType = match key_event.code {
-        KeyCode::Char('w') => TextObjectType::Word { inner, big: false },
-        KeyCode::Char('W') => TextObjectType::Word { inner, big: true },
-        KeyCode::Char('"') | KeyCode::Char('\'') | KeyCode::Char('`') => {
-            let quote = match key_event.code {
-                KeyCode::Char(c) => c,
-                _ => unreachable!(),
-            };
-            TextObjectType::Quote { char: quote, inner }
-        }
-        KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => TextObjectType::Paired {
-            open: '(',
-            close: ')',
-            inner,
-        },
-        KeyCode::Char('[') | KeyCode::Char(']') => TextObjectType::Paired {
-            open: '[',
-            close: ']',
-            inner,
-        },
-        KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => TextObjectType::Paired {
-            open: '{',
-            close: '}',
-            inner,
-        },
-        KeyCode::Char('<') | KeyCode::Char('>') => TextObjectType::Paired {
-            open: '<',
-            close: '>',
-            inner,
-        },
-        KeyCode::Char('p') => TextObjectType::Paragraph { inner },
-        KeyCode::Char('s') => TextObjectType::Sentence { inner },
-        KeyCode::Char('t') => TextObjectType::Tag { inner },
-        KeyCode::Char('i') => TextObjectType::Indent {
-            inner,
-            tab_width: editor.indent_options().tab_width,
-        },
-        KeyCode::Char('f') => TextObjectType::Function { inner },
-        _ => unreachable!("text object key should be validated before object_type mapping"),
-    };
-
-    let result = if operator == Operator::Change {
-        object_type.resolve_for_change(editor.buffer())
-    } else {
-        result
-    };
-    if let Some(range) = result {
+    // Delete, yank and change act on the range as Vim classifies it (whole lines or not).
+    let result =
+        match operator {
+            Operator::Delete | Operator::Yank | Operator::Change => object_type
+                .resolve_for_operator(editor.buffer_mut(), count, operator == Operator::Change),
+            _ => object_type
+                .resolve_counted(editor.buffer_mut(), count)
+                .map(|range| (range, false)),
+        };
+    if let Some((range, linewise)) = result {
         match operator {
             Operator::Delete => {
-                apply_delete_operator(editor, range, object_type)?;
+                apply_delete_operator(editor, range, object_type, count, linewise)?;
             }
             Operator::Yank => {
-                apply_yank_operator(editor, range, key_event.code)?;
+                apply_yank_operator(editor, range, linewise)?;
             }
             Operator::Change => {
-                apply_change_operator(editor, range, object_type)?;
+                apply_change_operator(editor, range, object_type, count, linewise)?;
             }
             Operator::Lowercase => {
                 apply_case_operator(editor, range, object_type, CaseTransform::Lower)?;
@@ -178,7 +73,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .create_fold(start_line, end_line);
             }
             Operator::Indent | Operator::Dedent | Operator::AutoIndent => {
-                // Don't make sense with text objects
+                // Shift the lines the object covers (`>ip`, `>i{`, `=ip`).
+                let (first, last) = range.covered_lines(editor.buffer());
+                let cursor_before = editor.cursor_position();
+                super::operator_motion::apply_lines(editor, operator, first, last, cursor_before)?;
             }
         }
     }
@@ -190,8 +88,11 @@ fn apply_delete_operator(
     editor: &mut Editor,
     range: TextObjectRange,
     object_type: TextObjectType,
+    count: usize,
+    linewise: bool,
 ) -> Result<()> {
     let cursor_before = editor.cursor_position();
+    let is_paragraph = matches!(object_type, TextObjectType::Paragraph { .. });
 
     let deleted = TextObjects::yank_range(editor.buffer(), range)?;
 
@@ -207,31 +108,33 @@ fn apply_delete_operator(
     });
     let cursor_after = editor.cursor_position();
     if !edits.is_empty() {
-        // Paragraph text objects (dip/dap) are linewise — store the register as
-        // Line so a subsequent `p` pastes it as whole new lines, mirroring the
-        // yank path's `p`-key branch. Otherwise a Character register splices the
-        // paragraph into the middle of the current line.
-        let reg_type = if matches!(object_type, TextObjectType::Paragraph { .. }) {
+        // Linewise objects (dip/dap, di{ over whole lines) go to a Line register so a
+        // subsequent `p` pastes them as whole new lines; a Character register would
+        // splice them into the middle of the current line.
+        let reg_type = if linewise {
             RegisterType::Line
         } else {
             RegisterType::Character
         };
         editor.delete_to_register_with_type(deleted, reg_type);
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.set_repeat_action(RepeatAction::DeleteTextObject { object_type });
+        editor.set_repeat_action(RepeatAction::DeleteTextObject { object_type, count });
     }
     helpers::clamp_cursor_to_buffer(editor);
+    if linewise && !is_paragraph {
+        // Like `dd`, whole-line deletes leave the cursor on the first non-blank.
+        let first_non_blank = editor.buffer().first_non_blank_col(range.start_line);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(range.start_line, first_non_blank);
+    }
 
     Ok(())
 }
 
-fn apply_yank_operator(
-    editor: &mut Editor,
-    range: TextObjectRange,
-    key_code: KeyCode,
-) -> Result<()> {
+fn apply_yank_operator(editor: &mut Editor, range: TextObjectRange, linewise: bool) -> Result<()> {
     let yanked = TextObjects::yank_range(editor.buffer(), range)?;
-    let reg_type = if key_code == KeyCode::Char('p') {
+    let reg_type = if linewise {
         RegisterType::Line
     } else {
         RegisterType::Character
@@ -261,6 +164,10 @@ fn apply_yank_operator(
             end_grapheme,
         );
     }
+    // The cursor goes to the start of what was yanked.
+    editor
+        .buffer_mut()
+        .set_cursor_char_col(range.start_line, range.start_col);
     Ok(())
 }
 
@@ -268,7 +175,20 @@ fn apply_change_operator(
     editor: &mut Editor,
     range: TextObjectRange,
     object_type: TextObjectType,
+    count: usize,
+    linewise: bool,
 ) -> Result<()> {
+    // Lines are changed as lines: they become one empty line to type on.
+    if linewise {
+        let (first, last) = range.covered_lines(editor.buffer());
+        return super::operators::change_lines(
+            editor,
+            first,
+            last + 1,
+            RepeatAction::DeleteTextObject { object_type, count },
+        );
+    }
+
     let cursor = editor.buffer().cursor();
     let cursor_before = CursorPos::new(cursor.line(), cursor.col());
 
@@ -295,7 +215,7 @@ fn apply_change_operator(
         Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     };
     editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteTextObject { object_type },
+        delete_action: RepeatAction::DeleteTextObject { object_type, count },
         linewise: false,
         delete_token,
     });
@@ -318,37 +238,29 @@ fn apply_case_operator(
 
     let transformed = transform.apply_to(&text);
 
-    if transformed != text {
-        editor.record_operation(
-            |buf| {
-                buf.delete_range(
-                    range.start_line,
-                    range.start_col,
-                    range.end_line,
-                    range.end_col,
-                );
-                buf.insert_text_at(range.start_line, range.start_col, &transformed);
-
-                // Keep cursor behavior consistent with prior path: land at end
-                // of the transformed text. Tracked in char-space (CharCol).
-                let mut final_line = range.start_line;
-                let mut final_col = range.start_col;
-                for ch in transformed.chars() {
-                    if ch == '\n' {
-                        final_line += 1;
-                        final_col = crate::unicode::CharCol::ZERO;
-                    } else {
-                        final_col += 1;
-                    }
-                }
-                buf.set_cursor_char_col(final_line, final_col);
-            },
-            Some(RepeatAction::ChangeCaseTextObject {
-                object_type,
-                transform,
-            }),
-        );
+    // The cursor lands on the start of the text object, changed or not, and the
+    // operator is what `.` repeats either way.
+    let cursor_before = editor.cursor_position();
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        if transformed != text {
+            buf.delete_range(
+                range.start_line,
+                range.start_col,
+                range.end_line,
+                range.end_col,
+            );
+            buf.insert_text_at(range.start_line, range.start_col, &transformed);
+        }
+        buf.set_cursor_char_col(range.start_line, range.start_col);
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
+    editor.set_repeat_action(RepeatAction::ChangeCaseTextObject {
+        object_type,
+        transform,
+    });
 
     Ok(())
 }

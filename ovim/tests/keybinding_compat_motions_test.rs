@@ -14,8 +14,9 @@ fn h_m_l_move_within_viewport() {
     test.keys("H");
     assert_eq!(test.cursor().0, 0);
 
+    // vim: the middle of ten lines is the fifth.
     test.keys("M");
-    assert_eq!(test.cursor().0, 5);
+    assert_eq!(test.cursor().0, 4);
 
     test.keys("L");
     assert_eq!(test.cursor().0, 9);

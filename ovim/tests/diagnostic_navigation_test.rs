@@ -173,3 +173,50 @@ fn test_show_diagnostic_at_cursor_hides_diagnostics_after_file_path_change() {
     assert_eq!(test.editor.mode(), ovim::mode::Mode::Normal);
     assert_eq!(test.editor.status_message(), "No diagnostics at cursor");
 }
+
+#[test]
+fn uppercase_diagnostics_skip_other_severities_preserve_columns_and_wrap() {
+    let mut test = EditorTest::new("a😀bcdefghijklmnop\nsecond line\n");
+    let with_severity = |line, character, severity| {
+        let mut diagnostic = make_diagnostic(line, character, "test");
+        diagnostic.severity = severity;
+        diagnostic
+    };
+    // Deliberately unsorted, with two errors and a warning on the same line.
+    test.editor.set_test_diagnostics(vec![
+        with_severity(0, 7, Some(DiagnosticSeverity::ERROR)),
+        with_severity(0, 5, Some(DiagnosticSeverity::WARNING)),
+        with_severity(0, 3, Some(DiagnosticSeverity::ERROR)),
+        with_severity(0, 8, Some(DiagnosticSeverity::INFORMATION)),
+        with_severity(0, 9, Some(DiagnosticSeverity::HINT)),
+        // Missing severity is already treated as an error throughout ovim.
+        with_severity(1, 2, None),
+    ]);
+    test.keys("]D");
+    test.assert_cursor(0, 2);
+    test.keys("]d");
+    test.assert_cursor(0, 4);
+    test.keys("]D");
+    test.assert_cursor(0, 6);
+    test.keys("]D");
+    test.assert_cursor(1, 2);
+    test.keys("]D");
+    test.assert_cursor(0, 2);
+    test.keys("[D");
+    test.assert_cursor(1, 2);
+    test.keys("2[D");
+    test.assert_cursor(0, 2);
+}
+
+#[test]
+fn uppercase_diagnostics_stay_put_when_there_are_no_errors() {
+    let mut test = EditorTest::new("line one\nline two\n");
+    let mut warning = make_diagnostic(1, 2, "warning");
+    warning.severity = Some(DiagnosticSeverity::WARNING);
+    test.editor.set_test_diagnostics(vec![warning]);
+    test.set_cursor(0, 3);
+    test.keys("]D[D");
+    test.assert_cursor(0, 3);
+    test.keys("]d");
+    test.assert_cursor(1, 2);
+}

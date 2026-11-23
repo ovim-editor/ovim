@@ -9,49 +9,31 @@
 //!
 //! Each test below is named after, and commented with, the contract step(s)
 //! from `frontend/mod.rs` it exercises. This is a smoke test of contract
-//! steps 1-4 (viewport resize, tick, picker drain, input dispatch), not a
-//! feature test suite; feature coverage belongs in the other files under
-//! `ovim/tests/`. Steps 5-7 (debounced rehighlight, external file change
-//! polling, and `close_current_file_lsp` on shutdown) are deliberately out
-//! of scope here: they are exercised by the TUI and headless event loops
-//! instead, not by this lib-only test.
+//! steps 1, 2 and 4 (viewport resize, tick, input dispatch), not a feature
+//! test suite; the tick's own ordering and cadence policies are tested in
+//! `ovim-core/src/tick/tests.rs`, and feature coverage belongs in the other
+//! files under `ovim/tests/`.
 
 use ovim::api::parse_key_string;
 use ovim::editor::{Editor, InputHandler};
-use ovim::frontend::{
-    handle_viewport_resize, process_editor_tick, process_picker_results, refresh_after_input,
-    FrontendChannels,
-};
+use ovim::frontend::{handle_viewport_resize, refresh_after_input, TickState};
 use ovim::mode::Mode;
-use tokio::sync::mpsc;
 
-/// Builds a `FrontendChannels` the way a frontend does: it owns the
-/// `java_status_tx` sender (normally wired up via
-/// `ovim::lsp_init::init_java_status_sender` in a real binary) and hands the
-/// receiver half to the channel bundle.
-fn test_channels() -> FrontendChannels {
-    let (_java_status_tx, java_status_rx) = mpsc::channel(1);
-    FrontendChannels::new(java_status_rx)
-}
-
-/// Contract step 2: build a `FrontendChannels` and run `process_editor_tick`
+/// Contract step 2: build a `TickState` and run `Editor::tick`
 /// on a periodic interval to drive background work. A tick against a
 /// freshly created editor (no open file, no LSP, no picker) must complete
 /// promptly rather than panic or hang.
 #[tokio::test(flavor = "current_thread")]
 async fn tick_completes_on_a_default_editor() {
     let mut editor = Editor::with_content("hello\n");
-    let mut channels = test_channels();
+    let mut state = TickState::new();
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        process_editor_tick(&mut editor, &mut channels),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(5), editor.tick(&mut state)).await;
 
     assert!(
-        result.is_ok(),
-        "process_editor_tick did not complete within the timeout"
+        result.is_ok_and(|report| report.terminal_request.is_none()),
+        "Editor::tick did not complete within the timeout"
     );
 }
 
@@ -145,19 +127,17 @@ fn viewport_resize_reflects_chrome_subtracted_from_raw_height() {
     assert_eq!(editor.viewport_height(), 22);
 }
 
-/// Contract steps 2 and 3: a tick followed by draining picker results must
-/// be a no-op when the picker was never opened. `process_editor_tick` only
-/// drives picker background work while `editor.mode() == Mode::Picker`, and
-/// `process_picker_results`'s channels are simply empty, so both should
-/// return cleanly without touching editor state.
+/// Contract step 2: a tick (which also drains picker results) must be a
+/// no-op when the picker was never opened. The tick only drives picker
+/// background work while `editor.mode() == Mode::Picker`, and the result
+/// channels are simply empty, so it returns without touching editor state.
 #[tokio::test(flavor = "current_thread")]
 async fn tick_and_picker_drain_are_a_no_op_without_an_open_picker() {
     let mut editor = Editor::with_content("hello\n");
-    let mut channels = test_channels();
+    let mut state = TickState::new();
     let version_before = editor.buffer().version();
 
-    process_editor_tick(&mut editor, &mut channels).await;
-    process_picker_results(&mut editor, &mut channels);
+    let _report = editor.tick(&mut state).await;
 
     assert_eq!(editor.mode(), Mode::Normal);
     assert_eq!(

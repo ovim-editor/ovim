@@ -51,6 +51,9 @@ pub async fn request_ai_edit(
         }
 
         let response_text = match profile.provider {
+            AiProviderKind::ClaudeCode => {
+                anyhow::bail!("Claude Code is an agent runtime; use AI chat")
+            }
             AiProviderKind::Codex => {
                 let mut input = build_user_prompt(request);
                 if !extra_messages.is_empty() {
@@ -267,7 +270,9 @@ pub(crate) fn append_project_context(system_prompt: &str, project_context: &str)
 /// Build the API endpoint URL for the given provider.
 fn provider_url(profile: &AiProfileConfig) -> String {
     let (default_base, path) = match profile.provider {
-        AiProviderKind::Codex | AiProviderKind::CodexAppServer => ("", ""),
+        AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => {
+            ("", "")
+        }
         AiProviderKind::OpenAi => ("https://api.openai.com/v1", "/chat/completions"),
         AiProviderKind::Anthropic => ("https://api.anthropic.com", "/v1/messages"),
         AiProviderKind::Ollama => ("http://127.0.0.1:11434", "/api/chat"),
@@ -285,7 +290,7 @@ fn provider_headers(
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     match profile.provider {
-        AiProviderKind::Codex | AiProviderKind::CodexAppServer => {}
+        AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => {}
         AiProviderKind::OpenAi => {
             let api_key = read_api_key(profile, registry)?;
             headers.insert(
@@ -312,6 +317,7 @@ fn provider_headers(
 /// Provider label for error messages.
 fn provider_label(provider: AiProviderKind) -> &'static str {
     match provider {
+        AiProviderKind::ClaudeCode => "Claude Code",
         AiProviderKind::Codex => "Codex inference",
         AiProviderKind::CodexAppServer => "Codex app-server",
         AiProviderKind::OpenAi => "OpenAI",
@@ -327,7 +333,8 @@ fn apply_optional_params(body: &mut Value, profile: &AiProfileConfig, tools: Opt
             AiProviderKind::Ollama => {
                 body["options"] = json!({ "temperature": temp });
             }
-            AiProviderKind::Codex | AiProviderKind::CodexAppServer => {}
+            AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => {
+            }
             _ => {
                 body["temperature"] = json!(temp);
             }
@@ -341,11 +348,12 @@ fn apply_optional_params(body: &mut Value, profile: &AiProfileConfig, tools: Opt
         };
         body[key] = json!(max_tokens);
     }
-    // OpenAI reasoning_effort: enable extended thinking and strip incompatible params.
+    // Chat Completions requires a top-level effort, including explicit `none`
+    // for GPT-6 Sol/Luna tool calls. Reasoning modes reject sampling parameters.
     if profile.provider == AiProviderKind::OpenAi {
         if let Some(ref effort) = profile.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
             if effort != "none" {
-                body["reasoning"] = json!({ "effort": effort });
                 body.as_object_mut().unwrap().remove("temperature");
                 body.as_object_mut().unwrap().remove("top_p");
             }
@@ -598,6 +606,9 @@ async fn stream_ai_chat_inner(
         .context("failed to create AI HTTP client")?;
 
     match profile.provider {
+        AiProviderKind::ClaudeCode => {
+            anyhow::bail!("Claude Code requires the external agent runtime")
+        }
         AiProviderKind::Codex | AiProviderKind::CodexAppServer => {
             super::codex_inference::strategy_for(profile.provider)
                 .stream(super::codex_inference::CodexInferenceRequest {
@@ -1119,6 +1130,10 @@ async fn stream_openai_chat(
     Ok(())
 }
 
+/// Output budget for a chat turn when the profile sets none. Thinking models
+/// spend max_tokens on reasoning before the reply or a tool call.
+const ANTHROPIC_CHAT_MAX_TOKENS: u32 = 16384;
+
 async fn stream_anthropic_chat(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
@@ -1131,7 +1146,7 @@ async fn stream_anthropic_chat(
 ) -> Result<()> {
     let mut body = json!({
         "model": profile.model,
-        "max_tokens": profile.max_tokens.unwrap_or(2048),
+        "max_tokens": profile.max_tokens.unwrap_or(ANTHROPIC_CHAT_MAX_TOKENS),
         "messages": chat_messages_to_anthropic_json(messages),
         "stream": true,
     });
@@ -1687,16 +1702,18 @@ mod tests {
         profile.reasoning_effort = Some("low".to_string());
         let mut body = json!({ "model": "o3" });
         apply_optional_params(&mut body, &profile, None);
-        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["reasoning_effort"], "low");
+        assert!(body.get("reasoning").is_none());
         assert!(body.get("temperature").is_none());
     }
 
     #[test]
-    fn reasoning_effort_none_is_noop() {
+    fn reasoning_effort_none_is_explicit() {
         let mut profile = test_profile(AiProviderKind::OpenAi);
         profile.reasoning_effort = Some("none".to_string());
-        let mut body = json!({ "model": "o3" });
+        let mut body = json!({ "model": "gpt-6-sol" });
         apply_optional_params(&mut body, &profile, None);
+        assert_eq!(body["reasoning_effort"], "none");
         assert!(body.get("reasoning").is_none());
         // temperature should still be present
         assert!(body.get("temperature").is_some());
@@ -1709,6 +1726,7 @@ mod tests {
         let mut body = json!({ "model": "claude" });
         apply_optional_params(&mut body, &profile, None);
         assert!(body.get("reasoning").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

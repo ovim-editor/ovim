@@ -91,3 +91,41 @@ pub fn blame_color_for_hash(hash: &str) -> Color {
     });
     BLAME_COLORS[idx % BLAME_COLORS.len()]
 }
+
+/// A commit-colored band makes groups readable even on rows where the author
+/// label is omitted. Adjust foreground contrast for light editor themes.
+pub fn blame_style(color: Color, theme: &Theme) -> Style {
+    let background =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Background));
+    let (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) = (color, background) else {
+        return Style::default().fg(color);
+    };
+    let tint = |base: u8, accent: u8| ((u16::from(base) * 7 + u16::from(accent)) / 8) as u8;
+    let foreground = if u32::from(br) * 299 + u32::from(bg) * 587 + u32::from(bb) * 114 > 140_000 {
+        Color::Rgb(r / 2, g / 2, b / 2)
+    } else {
+        color
+    };
+    Style::default()
+        .fg(foreground)
+        .bg(Color::Rgb(tint(br, r), tint(bg, g), tint(bb, b)))
+}
+
+#[cfg(test)]
+mod blame_tests {
+    use super::*;
+    use crate::syntax::ColorScheme;
+
+    #[test]
+    fn commit_bands_are_stable_distinct_and_adapt_to_light_themes() {
+        let first = blame_color_for_hash("abc01");
+        let second = blame_color_for_hash("abc02");
+        assert_eq!(first, blame_color_for_hash("abc01"));
+        assert_ne!(first, second);
+        let dark = Theme::from_scheme(ColorScheme::gruvbox_dark());
+        let light = Theme::from_scheme(ColorScheme::gruvbox_light());
+        assert_ne!(blame_style(first, &dark).bg, blame_style(second, &dark).bg);
+        assert_ne!(blame_style(first, &dark).fg, blame_style(first, &light).fg);
+        assert_ne!(blame_style(first, &dark).bg, blame_style(first, &light).bg);
+    }
+}

@@ -1,6 +1,13 @@
-import type { WorkbenchSelection, WorkbenchTabReference } from "./workbench";
+import { chordKey } from "./guiInput";
+import {
+    adjacentWorkbenchTab,
+    type WorkbenchSelection,
+    type WorkbenchTabReference,
+} from "./workbench";
 
 export type BrowserKeyIntent =
+    | "next_workbench_tab"
+    | "previous_workbench_tab"
     | "command"
     | "new_tab"
     | "restore_tab"
@@ -25,7 +32,6 @@ export interface BrowserKeyEvent {
 export type BrowserShortcutAction =
     | "file.close"
     | "browser.new-tab"
-    | "browser.restore-tab"
     | "browser.focus-address"
     | "browser.reload"
     | "browser.back"
@@ -34,14 +40,23 @@ export type BrowserShortcutAction =
     | "browser.next-tab";
 
 export const browserShortcutAction = (
-    event: Pick<KeyboardEvent, "key" | "code" | "shiftKey">,
+    event: Pick<KeyboardEvent, "key" | "code" | "shiftKey"> &
+        Partial<Pick<KeyboardEvent, "ctrlKey" | "altKey" | "metaKey">>,
     browserActive: boolean,
     macos: boolean,
 ): BrowserShortcutAction | undefined => {
-    const key = event.key.toLowerCase();
+    // Callers only reach here with the primary modifier held.
+    const key = chordKey({
+        key: event.key,
+        code: event.code,
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey ?? !macos,
+        metaKey: event.metaKey ?? macos,
+        altKey: event.altKey ?? false,
+    }).toLowerCase();
     if (key === "w" && (browserActive || macos)) return "file.close";
-    if (key === "t" && (browserActive || macos))
-        return event.shiftKey ? "browser.restore-tab" : "browser.new-tab";
+    if (key === "t" && !event.shiftKey && (browserActive || macos))
+        return "browser.new-tab";
     if (!browserActive) return undefined;
     if (key === "l") return "browser.focus-address";
     if (key === "r") return "browser.reload";
@@ -123,6 +138,16 @@ export const createBrowserKeyRouter = (options: BrowserKeyRouterOptions) => {
         const sessionId = event.sessionId;
         if (!sessionId || !options.hasSession(sessionId)) return;
         switch (event.intent) {
+            case "next_workbench_tab":
+            case "previous_workbench_tab":
+                options.selectTab(
+                    adjacentWorkbenchTab(
+                        options.tabs(),
+                        options.selection(),
+                        event.intent === "previous_workbench_tab",
+                    ),
+                );
+                break;
             case "command":
                 options.openCommand(sessionId);
                 break;

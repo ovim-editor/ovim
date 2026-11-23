@@ -1,3 +1,6 @@
+pub mod conflict;
+pub mod ops;
+
 use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use git2::{DiffOptions, Oid, Repository};
@@ -20,6 +23,9 @@ pub enum LineStatus {
 pub struct GitStatus {
     /// Map of line number (0-indexed) to status
     line_status: HashMap<usize, LineStatus>,
+    // Deleted lines can share one visible anchor; count changes before they
+    // are projected onto gutter rows.
+    counts: (usize, usize, usize),
 }
 
 impl GitStatus {
@@ -27,6 +33,7 @@ impl GitStatus {
     pub fn new() -> Self {
         Self {
             line_status: HashMap::new(),
+            counts: (0, 0, 0),
         }
     }
 
@@ -53,21 +60,19 @@ impl GitStatus {
 
     /// Returns (added, modified, removed) line counts.
     pub fn change_counts(&self) -> (usize, usize, usize) {
-        let mut added = 0;
-        let mut modified = 0;
-        let mut removed = 0;
-        for status in self.line_status.values() {
-            match status {
-                LineStatus::Added => added += 1,
-                LineStatus::Modified => modified += 1,
-                LineStatus::Removed => removed += 1,
-            }
-        }
-        (added, modified, removed)
+        self.counts
     }
 
     /// Computes git status for a file
     pub fn from_file<P: AsRef<Path>>(file_path: P) -> Result<Self> {
+        Self::from_file_with_pullbase(file_path, None)
+    }
+
+    /// Compare against HEAD by default, or the configured branch's merge-base.
+    pub fn from_file_with_pullbase<P: AsRef<Path>>(
+        file_path: P,
+        branch: Option<&str>,
+    ) -> Result<Self> {
         let file_path = file_path.as_ref();
 
         // Find the git repository
@@ -88,95 +93,80 @@ impl GitStatus {
             Err(_) => return Ok(Self::new()),
         };
 
-        // Get HEAD tree
-        let head = match repo.head() {
-            Ok(head) => head,
-            Err(_) => return Ok(Self::new()), // No HEAD (empty repo)
+        // An unborn repository compares against the empty tree. A configured
+        // pull base still needs a real HEAD to resolve its merge-base.
+        let head_commit = match repo.head() {
+            Ok(head) => Some(head.peel_to_commit()?),
+            Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
+            Err(error) => return Err(error.into()),
         };
-
-        let head_commit = match head.peel_to_commit() {
-            Ok(commit) => commit,
-            Err(_) => return Ok(Self::new()),
+        let base_commit = if let Some(branch) = branch {
+            let base = crate::native_diff::resolve_pullbase(file_path, Some(branch))?;
+            let base_oid = repo
+                .revparse_single(base.base_ref().unwrap())?
+                .peel_to_commit()?
+                .id();
+            let head = head_commit.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Cannot resolve a pull base before the first commit")
+            })?;
+            Some(repo.find_commit(repo.merge_base(head.id(), base_oid)?)?)
+        } else {
+            head_commit
         };
+        let head_tree = base_commit
+            .as_ref()
+            .map(|commit| commit.tree())
+            .transpose()?;
 
-        let head_tree = match head_commit.tree() {
-            Ok(tree) => tree,
-            Err(_) => return Ok(Self::new()),
-        };
-
-        // Create diff between HEAD and working directory
         let mut diff_opts = DiffOptions::new();
-        diff_opts.pathspec(relative_path);
-        diff_opts.context_lines(0); // We only need the changed lines
-
+        diff_opts
+            .pathspec(relative_path)
+            .disable_pathspec_match(true)
+            .context_lines(0)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
         let diff =
-            match repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts)) {
-                Ok(diff) => diff,
-                Err(_) => return Ok(Self::new()),
-            };
+            repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut diff_opts))?;
 
-        // Parse the diff
+        // Zero-context hunks supply coordinates in the working file. Old line
+        // numbers cannot locate deletions after earlier insertions/removals.
+        // Pair replacements within their own hunk, never by proximity to a
+        // different change (which also misclassifies isolated additions).
         let mut line_status = HashMap::new();
-
+        let mut counts = (0, 0, 0);
         diff.foreach(
             &mut |_, _| true,
             None,
-            None,
-            Some(&mut |_delta, _hunk, line| {
-                // Get the new line number (in the working copy)
-                let line_num = line.new_lineno();
-
-                match line.origin() {
-                    '+' => {
-                        // Added line
-                        if let Some(num) = line_num {
-                            line_status.insert(num as usize - 1, LineStatus::Added);
-                        }
+            Some(&mut |_, hunk| {
+                let modified = hunk.old_lines().min(hunk.new_lines());
+                counts.0 += (hunk.new_lines() - modified) as usize;
+                counts.1 += modified as usize;
+                counts.2 += (hunk.old_lines() - modified) as usize;
+                let start = hunk.new_start().saturating_sub(1) as usize;
+                if hunk.new_lines() == 0 {
+                    // A deletion sits after new_start; at BOF/empty files the
+                    // first editor row is the only available anchor.
+                    line_status.entry(start).or_insert(LineStatus::Removed);
+                } else {
+                    for offset in 0..hunk.new_lines() {
+                        let status = if offset < hunk.old_lines() {
+                            LineStatus::Modified
+                        } else {
+                            LineStatus::Added
+                        };
+                        line_status.insert(start + offset as usize, status);
                     }
-                    '-' => {
-                        // Deleted line - mark the line before it
-                        if let Some(num) = line.old_lineno() {
-                            // Show deletion marker on the previous line in the new file
-                            let old_line = num as usize - 1;
-                            line_status.insert(old_line, LineStatus::Removed);
-                        }
-                    }
-                    ' ' => {
-                        // Context line - check if surrounded by changes
-                        // This is a heuristic for "modified" lines
-                    }
-                    _ => {}
                 }
                 true
             }),
-        )
-        .ok();
+            None,
+        )?;
 
-        // Detect modified lines (lines that have both additions and deletions nearby)
-        // This is a simple heuristic - in a real implementation you'd want more sophisticated detection
-        let keys: Vec<usize> = line_status.keys().copied().collect();
-        for &line in &keys {
-            if let Some(status) = line_status.get(&line) {
-                if *status == LineStatus::Added {
-                    // Check if there's a removal nearby
-                    for offset in 1..=3 {
-                        if line >= offset
-                            && line_status.get(&(line - offset)) == Some(&LineStatus::Removed)
-                        {
-                            // Likely a modification
-                            line_status.insert(line, LineStatus::Modified);
-                            break;
-                        }
-                        if line_status.get(&(line + offset)) == Some(&LineStatus::Removed) {
-                            line_status.insert(line, LineStatus::Modified);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(Self { line_status })
+        Ok(Self {
+            line_status,
+            counts,
+        })
     }
 }
 
@@ -307,7 +297,7 @@ impl GitBlame {
 /// Returns the current git branch name for a file path.
 /// Returns `None` for non-git files. Uses short OID for detached HEAD.
 pub fn branch_name<P: AsRef<Path>>(file_path: P) -> Option<String> {
-    let repo = Repository::discover(file_path.as_ref()).ok()?;
+    let (repo, _) = ops::open(file_path.as_ref()).ok()?;
     let head = repo.head().ok()?;
     if head.is_branch() {
         head.shorthand().map(|s| s.to_string())
@@ -336,8 +326,7 @@ pub fn commit_info<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<Commit
         });
     }
 
-    let file_path = file_path.as_ref();
-    let repo = Repository::discover(file_path)?;
+    let (repo, _) = ops::open(file_path.as_ref())?;
     let oid = Oid::from_str(oid_hex)?;
     let commit = repo.find_commit(oid)?;
 
@@ -367,8 +356,7 @@ pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String
         return Ok("Not yet committed".to_string());
     }
 
-    let file_path = file_path.as_ref();
-    let repo = Repository::discover(file_path)?;
+    let (repo, _) = ops::open(file_path.as_ref())?;
     let oid = Oid::from_str(oid_hex)?;
     let commit = repo.find_commit(oid)?;
     let tree = commit.tree()?;
@@ -379,7 +367,16 @@ pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String
         None
     };
 
-    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+    // Without explicit prefixes libgit2 honours the repository's
+    // `diff.mnemonicprefix`, which renames `a/` and `b/` after whatever each
+    // side is (`c/` for a commit, `i/` for the index, `w/` for the worktree).
+    // This patch is shown to the user and highlighted with the diff grammar,
+    // so it should read the same on every machine rather than varying with
+    // whatever the reader happens to have in their gitconfig.
+    // `native_diff::build_diff` pins the prefixes for the same reason.
+    let mut options = DiffOptions::new();
+    options.old_prefix("a").new_prefix("b");
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?;
 
     let mut patch = String::new();
 
@@ -418,6 +415,67 @@ pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `diff.mnemonicprefix` replaces `a/` and `b/` with a letter naming each
+    /// side (`c/` for a commit, `i/` for the index, `w/` for the worktree).
+    /// libgit2 honours it, so before the prefixes were pinned this patch came
+    /// out as `diff --git c/a.txt c/a.txt` for anyone who had the option set
+    /// globally. The patch is parsed and highlighted as a diff downstream and
+    /// is shown to the user, so it has to read the same everywhere.
+    #[test]
+    fn commit_patch_ignores_the_repository_diff_prefix_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("diff.mnemonicprefix", true)
+            .unwrap();
+
+        let file = temp.path().join("a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("a.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Ovim", "ovim@example.com").unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &signature, &signature, "c1", &tree, &[])
+            .unwrap();
+
+        let patch = commit_diff(&file, &oid.to_string()).unwrap();
+
+        assert!(
+            patch.contains("diff --git a/a.txt b/a.txt"),
+            "commit patch inherited the repo's diff prefix config: {patch}"
+        );
+    }
+
+    /// A deleted file (or a deleted directory) still names its repository.
+    #[test]
+    fn commit_views_and_branch_name_resolve_a_deleted_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = Repository::init(&root).unwrap();
+        let file = root.join("nested/a.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "one\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("nested/a.txt"))
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Ovim", "ovim@example.com").unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &signature, &signature, "c1", &tree, &[])
+            .unwrap()
+            .to_string();
+        std::fs::remove_dir_all(root.join("nested")).unwrap();
+
+        assert!(branch_name(&file).is_some());
+        assert_eq!(commit_info(&file, &oid).unwrap().subject, "c1");
+        assert!(commit_diff(&file, &oid).unwrap().contains("+one"));
+    }
 
     #[test]
     fn test_empty_status() {

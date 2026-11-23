@@ -2,6 +2,8 @@ use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
+pub mod lsp_harness;
+
 /// Declarative flow tests for stateful edge cases where fixture-only assertions
 /// are not enough (AI locks, async apply state, undo-depth checks).
 #[macro_export]
@@ -45,6 +47,21 @@ macro_rules! editor_flow_test {
     }};
 }
 
+/// Drains background git refreshes until none are pending. Requires a
+/// multi-threaded runtime so the blocking refresh can run meanwhile.
+#[allow(dead_code, reason = "Only targets that inspect git signs call this.")]
+pub fn settle_git_refresh(editor: &mut Editor) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while editor.git_refresh_pending() {
+        editor.poll_git_refresh();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background git refresh did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 /// Test helper that provides a fluent API for driving editor operations
 /// and capturing snapshots of editor state
 pub struct EditorTest {
@@ -63,7 +80,21 @@ impl EditorTest {
         // semantics, not clipboard integration, and the system clipboard
         // is shared global state that causes flaky cross-test contamination.
         editor.options.clipboard = String::new();
+        // A test that opens a file whose language server is not installed
+        // must not download one. With the default consent dialog, the dialog
+        // would also take the test's next keys as its answer.
+        editor.options.lsp_auto_install = ovim::editor::AutoInstallMode::Off;
         Self { editor }
+    }
+
+    /// Like `new`, but with the default `clipboard=unnamedplus` backed by an
+    /// in-memory clipboard, so yanks, deletes and puts go through the clipboard
+    /// exactly as they do for a user without touching the shared OS clipboard.
+    pub fn with_default_clipboard(content: &str) -> Self {
+        let mut test = Self::new(content);
+        test.editor.options.clipboard = "unnamedplus".to_string();
+        test.editor.registers_mut().use_memory_clipboard();
+        test
     }
 
     /// Press a character key
@@ -142,6 +173,14 @@ impl EditorTest {
                         "Tab" => self.press_key(KeyCode::Tab),
                         "BS" | "Backspace" => self.press_backspace(),
                         "Space" => self.press(' '),
+                        "lt" => self.press('<'),
+                        "Del" | "Delete" => self.press_key(KeyCode::Delete),
+                        "Home" => self.press_key(KeyCode::Home),
+                        "End" => self.press_key(KeyCode::End),
+                        "Left" => self.press_key(KeyCode::Left),
+                        "Right" => self.press_key(KeyCode::Right),
+                        "Up" => self.press_key(KeyCode::Up),
+                        "Down" => self.press_key(KeyCode::Down),
                         // Generic Ctrl+key support
                         key if key.starts_with("C-") => {
                             let char_part = &key[2..];
@@ -364,12 +403,29 @@ impl EditorTest {
     /// Load a file into the editor
     pub fn load_file(&mut self, path: &str) -> &mut Self {
         let _ = self.editor.load_file(path);
+        self.settle_git()
+    }
+
+    /// Waits for background git refreshes (gutter signs) to land.
+    pub fn settle_git(&mut self) -> &mut Self {
+        settle_git_refresh(&mut self.editor);
         self
     }
 
-    /// Set file path without loading
+    /// Attach the buffer to `path` without loading its content.
+    ///
+    /// If the file exists, the buffer also takes its modification time, as if
+    /// it had been read from that file. A buffer attached to an existing file
+    /// it never read is refused on `:w` (E13), which is right for a user and
+    /// not what a test that prepares the file and the buffer separately means.
     pub fn set_file_path(&mut self, path: String) -> &mut Self {
+        let mtime = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
         self.editor.set_file_path(path);
+        if mtime.is_some() {
+            self.editor.buffer_mut().set_file_mtime(mtime);
+        }
         self
     }
 }

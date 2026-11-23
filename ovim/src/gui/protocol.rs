@@ -1,19 +1,20 @@
 //! The serializable half of the GUI protocol.
 //!
-//! Everything a frontend needs to render Ovim, and everything it can ask Ovim
-//! to do, is expressed here as plain data: [`GuiSnapshot`] is a fully
-//! projected frame, [`GuiCommand`] is a request with its reply channel
-//! removed, and [`GuiReply`] is the answer. Because nothing in this module
-//! touches Tauri, an editor loop can produce these values with the GUI feature
-//! switched off, which is what lets the same conversation run over a socket
-//! instead of an in-process channel.
+//! Everything a frontend can ask Ovim to do is expressed here as plain data:
+//! [`GuiCommand`] is a request with its reply channel removed, and
+//! [`GuiReply`] is the answer. The frame itself, [`GuiSnapshot`], is declared
+//! beside the projection that builds it in `gui::mod`; every type in it
+//! derives `Deserialize` as well as `Serialize` so a frontend on another host
+//! can read it back. Because nothing here touches Tauri, an editor loop can
+//! produce these values with the GUI feature switched off, which is what lets
+//! the same conversation run over a socket instead of an in-process channel.
 //!
 //! The wire format is JSON and it is consumed by the TypeScript frontend in
 //! `ovim/gui/src`, so field renames here are breaking changes there.
 
-use anyhow::Result;
+use super::diff::GuiDiffCommentInput;
+use super::{GuiChatInputState, GuiKeyInput, GuiMouseKind, GuiSnapshot, GuiVectorSource};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// The Server-Sent Events name every snapshot frame is published under.
@@ -21,147 +22,6 @@ use std::path::PathBuf;
 /// Shared by the route that writes the stream and the transport that reads it,
 /// so a rename cannot leave one end silently ignoring the other.
 pub const SNAPSHOT_EVENT: &str = "snapshot";
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiKeyInput {
-    pub key: String,
-    #[serde(default)]
-    pub shift: bool,
-    #[serde(default)]
-    pub control: bool,
-    #[serde(default)]
-    pub alt: bool,
-    #[serde(default)]
-    pub meta: bool,
-}
-
-impl GuiKeyInput {
-    pub(super) fn into_core(self) -> Result<ovim_core::key::KeyEvent> {
-        use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
-
-        let code = match self.key.as_str() {
-            "Enter" => KeyCode::Enter,
-            "Escape" => KeyCode::Esc,
-            "Tab" if self.shift => KeyCode::BackTab,
-            "Tab" => KeyCode::Tab,
-            "Backspace" => KeyCode::Backspace,
-            "Delete" => KeyCode::Delete,
-            "ArrowLeft" => KeyCode::Left,
-            "ArrowRight" => KeyCode::Right,
-            "ArrowUp" => KeyCode::Up,
-            "ArrowDown" => KeyCode::Down,
-            "Home" => KeyCode::Home,
-            "End" => KeyCode::End,
-            "PageUp" => KeyCode::PageUp,
-            "PageDown" => KeyCode::PageDown,
-            key if key.len() > 1 && key.starts_with('F') => key[1..]
-                .parse::<u8>()
-                .ok()
-                .filter(|number| (1..=24).contains(number))
-                .map(KeyCode::F)
-                .unwrap_or(KeyCode::Null),
-            key => {
-                let mut chars = key.chars();
-                match (chars.next(), chars.next()) {
-                    (Some(ch), None) => KeyCode::Char(ch),
-                    _ => anyhow::bail!("Unsupported GUI key: {key}"),
-                }
-            }
-        };
-
-        let mut modifiers = Modifiers::NONE;
-        if self.shift {
-            modifiers |= Modifiers::SHIFT;
-        }
-        if self.control {
-            modifiers |= Modifiers::CONTROL;
-        }
-        if self.alt {
-            modifiers |= Modifiers::ALT;
-        }
-        if self.meta {
-            modifiers |= Modifiers::SUPER;
-        }
-        Ok(KeyEvent::new(code, modifiers))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiSnapshot {
-    pub revision: u64,
-    pub mode: String,
-    pub dashboard: bool,
-    pub file_path: Option<String>,
-    pub file_name: String,
-    pub workspace_path: Option<String>,
-    pub project_name: String,
-    pub language: String,
-    pub encoding: String,
-    pub line_ending: String,
-    pub modified: bool,
-    pub has_unsaved_changes: bool,
-    pub buffer_revision: usize,
-    pub read_only: bool,
-    pub selection_text: Option<String>,
-    pub cursor: GuiCursor,
-    pub horizontal_offset: usize,
-    pub wrap: bool,
-    pub tab_width: usize,
-    pub expand_tab: bool,
-    pub first_line: usize,
-    pub total_lines: usize,
-    pub lines: Vec<GuiLine>,
-    pub layout: GuiLayoutNode,
-    pub panes: Vec<GuiPane>,
-    pub tabs: Vec<GuiTab>,
-    pub git_branch: Option<String>,
-    pub git_changes: GuiGitChanges,
-    pub diagnostics: GuiDiagnostics,
-    pub lsp_status: String,
-    pub status_message: String,
-    pub prompt: Option<GuiPrompt>,
-    pub picker: Option<GuiPicker>,
-    pub completion: Option<GuiCompletion>,
-    pub hover: Option<GuiHover>,
-    pub file_tree: Option<GuiFileTree>,
-    pub ai_chat: Option<GuiAiChat>,
-    pub test_panel: Option<GuiTestPanel>,
-    pub problems: Option<GuiProblemList>,
-    pub lsp_manager: Option<GuiLspManager>,
-    pub debug: Option<GuiDebugPanel>,
-    pub theme: GuiTheme,
-    /// Whether a plain printable character typed now is certain to be inserted
-    /// literally at the cursor.
-    ///
-    /// The frontend's predictive echo speculates only while this is true. See
-    /// [`crate::gui::echo`] for why the editor has to answer this rather than
-    /// the client working it out from the projection: every state that makes
-    /// it false is invisible in the frame.
-    pub predictable_insert: bool,
-    /// How many commands the editor has taken in over this conversation.
-    ///
-    /// A frontend counts the keys it has sent and subtracts: what is left is
-    /// the run this frame does not yet account for, which is exactly the run
-    /// predictive echo may draw for itself. The count rises for every client
-    /// and for every command -- a mouse click moves the cursor a speculation is
-    /// anchored to as surely as a key does -- so it can only ever overstate
-    /// what the editor has consumed of one client's typing, and overstating
-    /// makes that client speak for less rather than more.
-    pub input_epoch: u64,
-    /// What the editor's system-clipboard policy is doing.
-    ///
-    /// A frontend driving an editor on another host has to mirror the policy
-    /// rather than invent one, and the two facts it needs are cheap enough to
-    /// ride on every frame. The clipboard *text* deliberately does not: a
-    /// yanked buffer can be megabytes, and a snapshot is a full projection
-    /// with no delta encoding, so a large yank would be re-sent with every
-    /// keystroke's frame. [`GuiCommand::ReadClipboard`] fetches it once, when
-    /// the generation says there is something new to fetch.
-    pub clipboard: GuiClipboard,
-    pub should_quit: bool,
-}
 
 /// The editor's system-clipboard policy, as seen from a frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,442 +54,13 @@ pub struct GuiClipboardText {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCursor {
-    pub line: usize,
-    pub column: usize,
-    pub display_column: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiLine {
-    pub number: usize,
-    pub continuation: bool,
-    pub display_start: usize,
-    pub current: bool,
-    pub segments: Vec<GuiSegment>,
-    pub git: Option<String>,
-    pub diagnostic: Option<String>,
-    pub diff: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum GuiLayoutNode {
-    Pane {
-        pane: usize,
-    },
-    Split {
-        direction: String,
-        ratio: f32,
-        first: Box<GuiLayoutNode>,
-        second: Box<GuiLayoutNode>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPane {
-    pub index: usize,
-    pub buffer_id: u64,
-    pub focused: bool,
-    pub file_name: String,
-    pub modified: bool,
-    pub cursor: GuiCursor,
-    pub first_line: usize,
-    pub scroll_subrow: usize,
-    pub horizontal_offset: usize,
-    pub total_lines: usize,
-    pub lines: Vec<GuiLine>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiSegment {
-    pub text: String,
-    pub cells: usize,
-    pub token: Option<String>,
-    pub cursor: bool,
-    pub selected: bool,
-    pub search_match: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTab {
-    pub id: u64,
-    pub index: usize,
-    pub title: String,
-    pub active: bool,
-    pub modified: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiGitChanges {
-    pub added: usize,
-    pub modified: usize,
-    pub removed: usize,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiDiagnostics {
-    pub errors: usize,
-    pub warnings: usize,
-    pub information: usize,
-    pub hints: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPrompt {
-    pub prefix: String,
-    pub text: String,
-    pub cursor: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPicker {
-    pub title: String,
-    pub query: String,
-    pub file_filter: Option<String>,
-    pub selected: usize,
-    pub total: usize,
-    pub items: Vec<GuiPickerItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiPickerItem {
-    pub index: usize,
-    pub display: String,
-    pub location: String,
-    pub detail: Option<String>,
-    pub matched: Vec<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCompletion {
-    pub selected: usize,
-    pub items: Vec<GuiCompletionItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCompletionItem {
-    pub index: usize,
-    pub label: String,
-    pub detail: Option<String>,
-    pub kind: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiHover {
-    pub content: String,
-    pub line: Option<usize>,
-    pub display_column: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiFileTree {
-    pub root: String,
-    pub selected: usize,
-    pub items: Vec<GuiFileTreeItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiFileTreeItem {
-    pub index: usize,
-    pub name: String,
-    pub path: String,
-    pub depth: usize,
-    pub directory: bool,
-    pub expanded: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAiChat {
-    pub profile: String,
-    pub pending_code_attachment: Option<GuiCodeAttachment>,
-    pub profiles: Vec<GuiAiProfileOption>,
-    pub reasoning_effort: String,
-    pub reasoning_effort_selection: String,
-    pub reasoning_efforts: Vec<String>,
-    pub yolo_mode: bool,
-    pub comprehension_policy: String,
-    pub comprehension_checkpoint: Option<String>,
-    pub activity: String,
-    pub waiting: bool,
-    pub input: String,
-    pub input_cursor: usize,
-    pub pending_images: Vec<String>,
-    pub queued_inputs: Vec<GuiQueuedChatInput>,
-    pub setup: Option<GuiChatSetup>,
-    pub messages: Vec<GuiChatMessage>,
-    pub streaming: Option<String>,
-    pub streaming_thinking: Option<String>,
-    pub thinking_live: bool,
-    pub focus: String,
-    pub agents: Vec<GuiAgentOption>,
-    pub selected_agent_id: Option<String>,
-    pub followed_agent_id: Option<String>,
-    pub agent_cursor: usize,
-    pub approval: Option<String>,
-    pub code_explanation: Option<GuiCodeExplanation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCodeAttachment {
-    pub buffer_id: u64,
-    pub label: String,
-    pub start_line: usize,
-    pub start_column: usize,
-    pub end_line: usize,
-    pub end_column: usize,
-    pub linewise: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiQueuedChatInput {
-    pub id: u64,
-    pub kind: String,
-    pub content: String,
-    pub image_count: usize,
-    pub has_code_attachment: bool,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiCodeExplanation {
-    pub current: usize,
-    pub total: usize,
-    pub page: GuiCodeExplanationPage,
-    pub discussion: GuiCodeExplanationDiscussion,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum GuiCodeExplanationPage {
-    Concept {
-        title: String,
-        body: String,
-    },
-    Code {
-        path: String,
-        start_line: usize,
-        end_line: usize,
-        comment: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
-pub enum GuiCodeExplanationDiscussion {
-    Navigating {
-        question_count: usize,
-        latest_question: Option<String>,
-        latest_answer: Option<String>,
-        latest_failed: bool,
-    },
-    Composing {
-        input: String,
-        cursor: usize,
-        question_count: usize,
-    },
-    Answering {
-        question: String,
-        answer: String,
-        question_count: usize,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiChatMessage {
-    pub id: String,
-    pub index: usize,
-    pub selected: bool,
-    pub role: String,
-    pub content: String,
-    pub attachment: Option<String>,
-    pub model: Option<String>,
-    pub tool_name: Option<String>,
-    pub tools: Vec<String>,
-    pub images: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTestPanel {
-    pub scope: String,
-    pub command: String,
-    pub directory: String,
-    pub status: String,
-    pub elapsed_ms: u64,
-    pub summary: Option<String>,
-    pub failure: Option<GuiTestFailure>,
-    pub truncated: usize,
-    pub lines: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTestFailure {
-    pub message: String,
-    pub file: Option<String>,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiProblemList {
-    pub kind: String,
-    pub title: String,
-    pub selected: usize,
-    pub total: usize,
-    pub items: Vec<GuiProblem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiProblem {
-    pub index: usize,
-    pub severity: String,
-    pub file: String,
-    pub line: usize,
-    pub column: usize,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiLspManager {
-    pub filter: String,
-    pub selected: usize,
-    pub show_detail: bool,
-    pub items: Vec<GuiLspEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiLspEntry {
-    pub index: usize,
-    pub language: String,
-    pub section: String,
-    pub command: Option<String>,
-    pub state: Option<String>,
-    pub installing: Option<String>,
-    pub install_hint: Option<String>,
-    pub extensions: Vec<String>,
-    pub root_markers: Vec<String>,
-    pub capabilities: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiDebugPanel {
-    pub running: bool,
-    pub reason: Option<String>,
-    pub execution_line: Option<u64>,
-    pub stack: Vec<GuiDebugFrame>,
-    pub output: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiDebugFrame {
-    pub name: String,
-    pub file: String,
-    pub line: u64,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiTheme {
-    pub name: String,
-    pub background: String,
-    pub foreground: String,
-    pub surface: String,
-    pub surface_selected: String,
-    pub border: String,
-    pub accent: String,
-    pub accent_foreground: String,
-    pub muted: String,
-    pub cursor_line: String,
-    pub selection: String,
-    pub search: String,
-    pub error: String,
-    pub warning: String,
-    pub info: String,
-    pub success: String,
-    pub syntax: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAgentOption {
-    pub id: String,
-    pub task_name: String,
-    pub lifecycle: String,
-    pub model: String,
-    pub depth: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAiProfileOption {
-    pub id: String,
-    pub provider: String,
-    pub model: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiChatSetup {
-    pub kind: String,
-    pub title: String,
-    pub detail: String,
-    pub masked_input: Option<String>,
-    pub input_cursor: Option<usize>,
-    pub error: Option<String>,
-    pub actions: Vec<GuiChatSetupAction>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiChatSetupAction {
-    pub label: String,
-    pub key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiVectorSource {
-    pub source: String,
-    pub file_name: String,
-}
-
 /// A [`GuiRequest`](super::GuiRequest) payload with its reply channel removed.
 ///
 /// `GuiRequest` embeds a `oneshot::Sender`, so it can never leave the process.
 /// `GuiCommand` carries the same information as data; a transport pairs it
 /// with a reply channel of its own to rebuild the request on the editor side.
 /// The two enums are kept variant-for-variant identical on purpose — the
-/// conversions in `gui::mod` are exhaustive, so adding a request variant
+/// conversions in `gui::bridge` are exhaustive, so adding a request variant
 /// without a command variant fails to compile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -639,6 +70,14 @@ pub struct GuiVectorSource {
     rename_all_fields = "camelCase"
 )]
 pub enum GuiCommand {
+    CodeLens {
+        pane: usize,
+        file_path: String,
+        version: usize,
+        index: usize,
+        generation: u64,
+        mode: String,
+    },
     Snapshot {
         columns: u16,
         rows: u16,
@@ -647,22 +86,28 @@ pub enum GuiCommand {
     VectorFeedback {
         feedback: String,
     },
-    /// The changed-file summary for the editor's workspace.
+    /// The directory the editor treats as its workspace.
     ///
-    /// The review is computed where the repository is rather than handing back
-    /// the worktree path, so a frontend on another host is never asked to open
-    /// a Git repository it cannot see.
-    DiffReview {
-        spec: Option<String>,
+    /// A path on the editor's host: a frontend on another machine must not
+    /// open it locally (the GUI terminal refuses to, over a remote link).
+    WorkspaceDirectory,
+    DiffComment {
+        pane: usize,
+        buffer_id: u64,
+        comment: GuiDiffCommentInput,
     },
-    /// The patch for one file named by a [`GuiCommand::DiffReview`] listing.
-    DiffFilePatch {
-        spec: Option<String>,
+    DiffAction {
+        pane: usize,
+        buffer_id: u64,
+        action: String,
+    },
+    OpenDiffSource {
+        pane: usize,
+        buffer_id: u64,
         path: String,
-    },
-    OpenDiffBuffer {
-        title: String,
-        content: String,
+        line: usize,
+        side: String,
+        definition_column: Option<u32>,
     },
     Key {
         input: GuiKeyInput,
@@ -686,9 +131,16 @@ pub enum GuiCommand {
     },
     SelectAiProfile {
         profile: String,
+        model: Option<String>,
     },
     SelectReasoningEffort {
         effort: String,
+    },
+    SelectPermissionMode {
+        mode: String,
+    },
+    ReplayChatTool {
+        tool_call_id: String,
     },
     SelectChatMessage {
         index: usize,
@@ -699,6 +151,7 @@ pub enum GuiCommand {
     },
     AiPolicy {
         action: String,
+        target: Option<String>,
     },
     EditorCommand {
         command: String,
@@ -712,7 +165,8 @@ pub enum GuiCommand {
     /// Paths naming files on the host that *runs the editor*.
     ///
     /// A remote frontend cannot use this: its drag-and-drop paths are local.
-    /// [`GuiCommand::AttachImageData`] is the transport-independent form.
+    /// [`GuiCommand::AttachImageData`] is the transport-independent form, and
+    /// the bridge switches to it when the link is remote.
     AttachImages {
         paths: Vec<PathBuf>,
     },
@@ -720,13 +174,29 @@ pub enum GuiCommand {
         name: String,
         data: Vec<u8>,
     },
+    PositionWalkthrough {
+        current: usize,
+        rows: usize,
+    },
     SetCursor {
         pane: usize,
         line: usize,
         display_column: usize,
     },
+    Mouse {
+        pane: usize,
+        line: usize,
+        display_column: usize,
+        kind: GuiMouseKind,
+        click_count: u8,
+        shift: bool,
+    },
     SelectTab {
         index: usize,
+    },
+    Scroll {
+        pane: usize,
+        lines: i32,
     },
     FocusPane {
         index: usize,
@@ -750,6 +220,20 @@ pub enum GuiCommand {
     SelectLsp {
         index: usize,
         activate: bool,
+    },
+    SearchReplaceRow {
+        index: usize,
+        action: String,
+    },
+    DebugPanelRow {
+        index: usize,
+        action: String,
+    },
+    ToggleBreakpoint {
+        line: usize,
+    },
+    ToggleFold {
+        line: usize,
     },
     SelectDebugFrame {
         index: usize,
@@ -781,20 +265,24 @@ impl GuiCommand {
         match self {
             GuiCommand::Snapshot { .. } => GuiReplyKind::Snapshot,
             GuiCommand::VectorSource => GuiReplyKind::VectorSource,
-            GuiCommand::DiffReview { .. } => GuiReplyKind::DiffReview,
-            GuiCommand::DiffFilePatch { .. } => GuiReplyKind::DiffPatch,
+            GuiCommand::WorkspaceDirectory => GuiReplyKind::WorkspaceDirectory,
+            GuiCommand::UpdateChatInput { .. } => GuiReplyKind::ChatInputState,
             GuiCommand::ReadClipboard => GuiReplyKind::Clipboard,
             GuiCommand::Shutdown => GuiReplyKind::None,
-            GuiCommand::VectorFeedback { .. }
-            | GuiCommand::OpenDiffBuffer { .. }
+            GuiCommand::CodeLens { .. }
+            | GuiCommand::VectorFeedback { .. }
+            | GuiCommand::DiffComment { .. }
+            | GuiCommand::DiffAction { .. }
+            | GuiCommand::OpenDiffSource { .. }
             | GuiCommand::Key { .. }
             | GuiCommand::OpenAiChat
-            | GuiCommand::UpdateChatInput { .. }
             | GuiCommand::SetChatInputCursor { .. }
             | GuiCommand::SetChatInputWidth { .. }
             | GuiCommand::RemoveChatImage { .. }
             | GuiCommand::SelectAiProfile { .. }
             | GuiCommand::SelectReasoningEffort { .. }
+            | GuiCommand::SelectPermissionMode { .. }
+            | GuiCommand::ReplayChatTool { .. }
             | GuiCommand::SelectChatMessage { .. }
             | GuiCommand::ManageQueuedChatInput { .. }
             | GuiCommand::AiPolicy { .. }
@@ -803,14 +291,21 @@ impl GuiCommand {
             | GuiCommand::Paste { .. }
             | GuiCommand::AttachImages { .. }
             | GuiCommand::AttachImageData { .. }
+            | GuiCommand::PositionWalkthrough { .. }
             | GuiCommand::SetCursor { .. }
+            | GuiCommand::Mouse { .. }
             | GuiCommand::SelectTab { .. }
+            | GuiCommand::Scroll { .. }
             | GuiCommand::FocusPane { .. }
             | GuiCommand::SelectPicker { .. }
             | GuiCommand::SelectCompletion { .. }
             | GuiCommand::SelectFileTree { .. }
             | GuiCommand::SelectProblem { .. }
             | GuiCommand::SelectLsp { .. }
+            | GuiCommand::SearchReplaceRow { .. }
+            | GuiCommand::DebugPanelRow { .. }
+            | GuiCommand::ToggleBreakpoint { .. }
+            | GuiCommand::ToggleFold { .. }
             | GuiCommand::SelectDebugFrame { .. }
             | GuiCommand::WriteClipboard { .. } => GuiReplyKind::Unit,
         }
@@ -829,17 +324,11 @@ impl GuiCommand {
     /// state, so where they sit in the sequence cannot change what any other
     /// command does; and their own answer already describes the editor at
     /// whatever moment the session got round to them, which no client could
-    /// pin down anyway. They are also the slow ones -- the diff commands walk
-    /// Git objects on the session's blocking pool -- so keeping them out of
-    /// the ordered queue is what stops a repository walk from sitting in front
-    /// of the keys typed during it.
+    /// pin down anyway.
     pub fn must_keep_its_place(&self) -> bool {
         !matches!(
             self,
-            GuiCommand::VectorSource
-                | GuiCommand::DiffReview { .. }
-                | GuiCommand::DiffFilePatch { .. }
-                | GuiCommand::ReadClipboard
+            GuiCommand::VectorSource | GuiCommand::WorkspaceDirectory | GuiCommand::ReadClipboard
         )
     }
 }
@@ -855,14 +344,14 @@ pub enum GuiReplyKind {
     Unit,
     Snapshot,
     VectorSource,
-    DiffReview,
-    DiffPatch,
+    WorkspaceDirectory,
+    ChatInputState,
     Clipboard,
 }
 
 /// The answer to a [`GuiCommand`].
 ///
-/// Thirty-one commands share four reply shapes, so the reply is tagged by
+/// Most commands share a handful of reply shapes, so the reply is tagged by
 /// shape rather than by command. Both this enum and [`GuiCommand`] use
 /// adjacent tagging: an internal tag would collide with the payload's own
 /// fields (`EditorCommand` has a `command` field) and cannot wrap a `Result`.
@@ -870,15 +359,15 @@ pub enum GuiReplyKind {
 #[serde(tag = "reply", content = "result", rename_all = "camelCase")]
 pub enum GuiReply {
     Unit(Result<(), String>),
-    /// Boxed because a projected frame dwarfs the other three replies, and
-    /// every command that returns one of those would otherwise pay for its
-    /// size. `Box` is transparent to serde, so the JSON is unaffected.
+    /// Boxed because a projected frame dwarfs the other replies, and every
+    /// command that returns one of those would otherwise pay for its size.
+    /// `Box` is transparent to serde, so the JSON is unaffected.
     Snapshot(Box<Result<GuiSnapshot, String>>),
     VectorSource(Result<GuiVectorSource, String>),
-    /// A changed-file summary computed on the editor's host.
-    DiffReview(Result<ovim_core::native_diff::DiffReview, String>),
-    /// A unified patch for one file, computed on the editor's host.
-    DiffPatch(Result<String, String>),
+    /// A directory on the editor's host.
+    WorkspaceDirectory(Result<PathBuf, String>),
+    /// The composer draft after an atomic edit.
+    ChatInputState(Result<GuiChatInputState, String>),
     /// The text the editor last put on its own host's system clipboard.
     Clipboard(Result<GuiClipboardText, String>),
 }
@@ -890,8 +379,8 @@ impl GuiReply {
             GuiReply::Unit(_) => GuiReplyKind::Unit,
             GuiReply::Snapshot(_) => GuiReplyKind::Snapshot,
             GuiReply::VectorSource(_) => GuiReplyKind::VectorSource,
-            GuiReply::DiffReview(_) => GuiReplyKind::DiffReview,
-            GuiReply::DiffPatch(_) => GuiReplyKind::DiffPatch,
+            GuiReply::WorkspaceDirectory(_) => GuiReplyKind::WorkspaceDirectory,
+            GuiReply::ChatInputState(_) => GuiReplyKind::ChatInputState,
             GuiReply::Clipboard(_) => GuiReplyKind::Clipboard,
         }
     }
@@ -909,24 +398,6 @@ where
     let json = serde_json::to_string(value).expect("GUI protocol values serialize as JSON");
     serde_json::from_str(&json)
         .unwrap_or_else(|error| panic!("GUI protocol value did not deserialize: {error}\n{json}"))
-}
-
-/// A changed-file summary standing in for one a real repository produces.
-#[cfg(test)]
-pub(super) fn sample_diff_review() -> ovim_core::native_diff::DiffReview {
-    ovim_core::native_diff::DiffReview {
-        root: PathBuf::from("workspace/project"),
-        spec: "origin/main...WORKTREE".to_string(),
-        display_spec: "origin/main...working tree".to_string(),
-        files: vec![ovim_core::native_diff::DiffFile {
-            path: "src/main.rs".to_string(),
-            old_path: Some("src/lib.rs".to_string()),
-            status: "renamed".to_string(),
-            additions: 12,
-            deletions: 3,
-            binary: false,
-        }],
-    }
 }
 
 /// One value of every [`GuiCommand`] variant.
@@ -950,6 +421,14 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
         meta: true,
     };
     vec![
+        GuiCommand::CodeLens {
+            pane: 1,
+            file_path: "src/lib.rs".to_string(),
+            version: 17,
+            index: 2,
+            generation: 9,
+            mode: "run".to_string(),
+        },
         GuiCommand::Snapshot {
             columns: 132,
             rows: 44,
@@ -958,16 +437,31 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
         GuiCommand::VectorFeedback {
             feedback: "lighter stroke".to_string(),
         },
-        GuiCommand::DiffReview {
-            spec: Some("origin/main...WORKTREE".to_string()),
+        GuiCommand::WorkspaceDirectory,
+        GuiCommand::DiffComment {
+            pane: 2,
+            buffer_id: 31,
+            comment: GuiDiffCommentInput {
+                id: Some(4),
+                path: "src/main.rs".to_string(),
+                line: 12,
+                side: "new".to_string(),
+                before: true,
+                text: "why?".to_string(),
+            },
         },
-        GuiCommand::DiffFilePatch {
-            spec: Some("origin/main...WORKTREE".to_string()),
+        GuiCommand::DiffAction {
+            pane: 3,
+            buffer_id: 32,
+            action: "toggleLayout".to_string(),
+        },
+        GuiCommand::OpenDiffSource {
+            pane: 1,
+            buffer_id: 33,
             path: "src/main.rs".to_string(),
-        },
-        GuiCommand::OpenDiffBuffer {
-            title: "Diff · src/main.rs".to_string(),
-            content: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+            line: 40,
+            side: "old".to_string(),
+            definition_column: Some(6),
         },
         GuiCommand::Key {
             input: plain_key.clone(),
@@ -985,9 +479,16 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
         GuiCommand::RemoveChatImage { index: 2 },
         GuiCommand::SelectAiProfile {
             profile: "anthropic".to_string(),
+            model: Some("claude-opus".to_string()),
         },
         GuiCommand::SelectReasoningEffort {
             effort: "high".to_string(),
+        },
+        GuiCommand::SelectPermissionMode {
+            mode: "plan".to_string(),
+        },
+        GuiCommand::ReplayChatTool {
+            tool_call_id: "call-8".to_string(),
         },
         GuiCommand::SelectChatMessage { index: 4 },
         GuiCommand::ManageQueuedChatInput {
@@ -995,7 +496,8 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
             action: "cancel".to_string(),
         },
         GuiCommand::AiPolicy {
-            action: "yolo".to_string(),
+            action: "allow".to_string(),
+            target: Some("bash".to_string()),
         },
         GuiCommand::EditorCommand {
             command: "set number".to_string(),
@@ -1013,12 +515,25 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
             name: "pasted-image.png".to_string(),
             data: vec![137, 80, 78, 71],
         },
+        GuiCommand::PositionWalkthrough {
+            current: 3,
+            rows: 12,
+        },
         GuiCommand::SetCursor {
             pane: 1,
             line: 42,
             display_column: 8,
         },
+        GuiCommand::Mouse {
+            pane: 2,
+            line: 5,
+            display_column: 14,
+            kind: GuiMouseKind::Drag,
+            click_count: 2,
+            shift: true,
+        },
         GuiCommand::SelectTab { index: 3 },
+        GuiCommand::Scroll { pane: 1, lines: -7 },
         GuiCommand::FocusPane { index: 2 },
         GuiCommand::SelectPicker { index: 6 },
         GuiCommand::SelectCompletion {
@@ -1038,6 +553,16 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
             index: 9,
             activate: false,
         },
+        GuiCommand::SearchReplaceRow {
+            index: 8,
+            action: "toggle".to_string(),
+        },
+        GuiCommand::DebugPanelRow {
+            index: 13,
+            action: "expand".to_string(),
+        },
+        GuiCommand::ToggleBreakpoint { line: 21 },
+        GuiCommand::ToggleFold { line: 30 },
         GuiCommand::SelectDebugFrame { index: 2 },
         GuiCommand::ReadClipboard,
         GuiCommand::WriteClipboard {
@@ -1048,21 +573,26 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
     ]
 }
 
+/// The number of [`GuiCommand`] variants, which `sample_commands` must cover.
+#[cfg(test)]
+pub(super) const COMMAND_VARIANTS: usize = 45;
+
 #[cfg(test)]
 mod tests {
+    use super::super::{GuiCodeExplanationDiscussion, GuiCodeExplanationPage};
     use super::*;
     use std::collections::HashSet;
     use std::mem::discriminant;
 
     #[test]
     fn the_command_sample_covers_every_variant_exactly_once() {
-        // `GuiRequest` has 34 variants and `GuiCommand` mirrors it one for
-        // one, so this count is what stops a new variant from being added
-        // without round-trip coverage. The trailing duplicate in the sample is
-        // a second `Key` with different modifiers, which is deliberate.
+        // `GuiCommand` mirrors `GuiRequest` one for one, so this count is what
+        // stops a new variant from being added without round-trip coverage.
+        // The trailing duplicate in the sample is a second `Key` with
+        // different modifiers, which is deliberate.
         let commands = sample_commands();
         let distinct: HashSet<_> = commands.iter().map(discriminant).collect();
-        assert_eq!(distinct.len(), 34);
+        assert_eq!(distinct.len(), COMMAND_VARIANTS);
     }
 
     #[test]
@@ -1108,8 +638,7 @@ mod tests {
             let reads_only = matches!(
                 command.reply_kind(),
                 GuiReplyKind::VectorSource
-                    | GuiReplyKind::DiffReview
-                    | GuiReplyKind::DiffPatch
+                    | GuiReplyKind::WorkspaceDirectory
                     | GuiReplyKind::Clipboard
             );
             assert_eq!(command.must_keep_its_place(), !reads_only, "{command:?}");
@@ -1126,10 +655,14 @@ mod tests {
                 file_name: "close.strok".to_string(),
             })),
             GuiReply::VectorSource(Err("not a vector buffer".to_string())),
-            GuiReply::DiffReview(Ok(sample_diff_review())),
-            GuiReply::DiffReview(Err("no workspace".to_string())),
-            GuiReply::DiffPatch(Ok("@@ -1 +1 @@\n-old\n+new\n".to_string())),
-            GuiReply::DiffPatch(Err("no workspace".to_string())),
+            GuiReply::WorkspaceDirectory(Ok(PathBuf::from("/srv/project"))),
+            GuiReply::WorkspaceDirectory(Err("no workspace".to_string())),
+            GuiReply::ChatInputState(Ok(GuiChatInputState {
+                input: "draft".to_string(),
+                cursor: 3,
+                revision: 12,
+            })),
+            GuiReply::ChatInputState(Err("chat is closed".to_string())),
             GuiReply::Snapshot(Box::new(Err("the editor stopped".to_string()))),
             GuiReply::Clipboard(Ok(GuiClipboardText {
                 generation: 7,
@@ -1150,8 +683,10 @@ mod tests {
                 GuiReplyKind::Unit => GuiReply::Unit(Ok(())),
                 GuiReplyKind::Snapshot => GuiReply::Snapshot(Box::new(Err("unused".to_string()))),
                 GuiReplyKind::VectorSource => GuiReply::VectorSource(Err("unused".to_string())),
-                GuiReplyKind::DiffReview => GuiReply::DiffReview(Err("unused".to_string())),
-                GuiReplyKind::DiffPatch => GuiReply::DiffPatch(Err("unused".to_string())),
+                GuiReplyKind::WorkspaceDirectory => {
+                    GuiReply::WorkspaceDirectory(Err("unused".to_string()))
+                }
+                GuiReplyKind::ChatInputState => GuiReply::ChatInputState(Err("unused".to_string())),
                 GuiReplyKind::Clipboard => GuiReply::Clipboard(Err("unused".to_string())),
             };
             assert_eq!(reply.kind(), kind, "{command:?}");
@@ -1175,6 +710,12 @@ mod tests {
                 end_line: 24,
                 comment: "The rope lives here.".to_string(),
             },
+            GuiCodeExplanationPage::Diff {
+                title: "Rename".to_string(),
+                old_path: Some("src/lib.rs".to_string()),
+                new_path: None,
+                comment: "Moved.".to_string(),
+            },
         ] {
             assert_eq!(round_trip(&page), page);
         }
@@ -1182,6 +723,7 @@ mod tests {
         for discussion in [
             GuiCodeExplanationDiscussion::Navigating {
                 question_count: 2,
+                exchange_total: 5,
                 latest_question: Some("Why a rope?".to_string()),
                 latest_answer: Some("Cheap edits.".to_string()),
                 latest_failed: true,

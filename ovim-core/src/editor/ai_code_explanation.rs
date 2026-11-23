@@ -1,5 +1,6 @@
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::ToolResult;
+use crate::native_diff::ChangeRef;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -7,7 +8,7 @@ use std::sync::Arc;
 
 use super::ai_chat_state::{
     CodeExplanationContinuation, CodeExplanationExchange, CodeExplanationInteraction,
-    PendingCodeExplanation, QueuedChatInputKind,
+    PendingCodeExplanation, PendingWalkthroughCall, QueuedChatInputKind,
 };
 use super::code_explanation::{
     comment_rows_for_viewport, concept_body_row_limit, concept_body_rows_for_viewport,
@@ -71,7 +72,7 @@ impl Editor {
                 }
             }
             CodeExplanationInteraction::Answering { step, exchange }
-                if *step == pending.current =>
+                if *step == pending.current && pending.visible_exchange == Some(*exchange) =>
             {
                 let exchange = pending.threads.get(*step)?.get(*exchange)?;
                 CodeExplanationDiscussionView::Answering {
@@ -81,9 +82,14 @@ impl Editor {
                 }
             }
             _ => {
-                let latest = exchanges.last();
+                let latest = pending
+                    .visible_exchange
+                    .and_then(|index| exchanges.get(index));
                 CodeExplanationDiscussionView::Navigating {
-                    question_count: exchanges.len(),
+                    question_count: pending
+                        .visible_exchange
+                        .map_or(exchanges.len(), |index| index + 1),
+                    exchange_total: exchanges.len(),
                     latest_question: latest.map(|exchange| exchange.question.clone()),
                     latest_answer: latest.map(|exchange| exchange.answer.clone()),
                     latest_failed: latest.is_some_and(|exchange| exchange.failed),
@@ -105,6 +111,18 @@ impl Editor {
                 path: path.clone(),
                 start_line: *start_line,
                 end_line: *end_line,
+                comment: comment.clone(),
+            },
+            CodeExplanationStep::Diff {
+                title,
+                old_path,
+                new_path,
+                comment,
+                ..
+            } => CodeExplanationPageView::Diff {
+                title: title.clone(),
+                old_path: old_path.clone(),
+                new_path: new_path.clone(),
                 comment: comment.clone(),
             },
         };
@@ -165,6 +183,7 @@ impl Editor {
                     snapshot: Some(snapshot),
                     ..
                 } if seen.insert(absolute_path.clone()) => Some(snapshot.len()),
+                CodeExplanationStep::Diff { patch, .. } => Some(patch.len()),
                 _ => None,
             })
             .sum::<usize>();
@@ -222,7 +241,7 @@ impl Editor {
             return false;
         };
 
-        match self.begin_code_explanation(tool_call, CodeExplanationContinuation::Replay) {
+        match self.begin_code_explanation(tool_call, None) {
             Ok(()) => true,
             Err((error, _)) => {
                 let message = match error {
@@ -234,12 +253,15 @@ impl Editor {
         }
     }
 
+    /// Open a walkthrough for `tool_call`. `continuation` is the blocked
+    /// call to resume when the user finishes; `None` is a local replay.
     pub(super) fn begin_code_explanation(
         &mut self,
         tool_call: ToolCallInfo,
-        continuation: CodeExplanationContinuation,
-    ) -> Result<(), (ToolResult, Box<CodeExplanationContinuation>)> {
-        let cached_steps = matches!(continuation, CodeExplanationContinuation::Replay)
+        continuation: Option<CodeExplanationContinuation>,
+    ) -> Result<(), (ToolResult, Option<Box<CodeExplanationContinuation>>)> {
+        let replay = continuation.is_none();
+        let cached_steps = replay
             .then(|| self.cached_code_explanation_steps(&tool_call.id))
             .flatten();
         let steps = if let Some(steps) = cached_steps {
@@ -247,67 +269,71 @@ impl Editor {
         } else {
             match self.parse_code_explanation_steps(&tool_call.arguments) {
                 Ok(steps) => steps,
-                Err(error) => return Err((error, Box::new(continuation))),
+                Err(error) => return Err((error, continuation.map(Box::new))),
             }
         };
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            return Err((
+                ToolResult::Error("AI chat is not open".to_string()),
+                continuation.map(Box::new),
+            ));
+        };
+        // One walkthrough at a time, and its call is the turn's only park.
+        if chat.pending_code_explanation.is_some()
+            || (continuation.is_some() && chat.parked().is_some())
+        {
+            return Err((
+                ToolResult::Error(
+                    "Finish or dismiss the current walkthrough before starting another".into(),
+                ),
+                continuation.map(Box::new),
+            ));
+        }
         self.retain_code_explanation_steps(&tool_call.id, &steps);
-        let original_active_buffer_id = self
-            .ai_state
-            .chat
-            .as_ref()
-            .map(|chat| chat.active_buffer_id);
-        let Some(original_active_buffer_id) = original_active_buffer_id else {
-            return Err((
-                ToolResult::Error("AI chat is not open".to_string()),
-                Box::new(continuation),
-            ));
-        };
-
         let Some(chat) = self.ai_state.chat.as_mut() else {
-            return Err((
-                ToolResult::Error("AI chat is not open".to_string()),
-                Box::new(continuation),
-            ));
+            unreachable!("chat checked above");
         };
+        let original_active_buffer_id = chat.active_buffer_id;
+        if let Some(continuation) = continuation {
+            let blocked = PendingWalkthroughCall {
+                tool_call: tool_call.clone(),
+                continuation,
+            };
+            if chat.park(blocked).is_err() {
+                unreachable!("walkthrough parking was checked above");
+            }
+        }
         chat.pending_code_explanation = Some(PendingCodeExplanation {
             tool_call,
             threads: vec![Vec::new(); steps.len()],
             steps,
             current: 0,
             answer_scroll: 0,
+            visible_exchange: None,
             interaction: CodeExplanationInteraction::Navigating,
             original_active_buffer_id,
             presentation_buffer_id: None,
-            continuation: Some(continuation),
+            replay,
         });
         chat.waiting = false;
 
         if let Err(error) = self.show_current_code_explanation_step() {
-            if let Some(pending) = self
+            let chat = self
                 .ai_state
                 .chat
                 .as_mut()
-                .and_then(|chat| chat.pending_code_explanation.take())
-            {
-                self.discard_code_explanation_presentation_buffer(
-                    pending.presentation_buffer_id,
-                    pending.original_active_buffer_id,
-                );
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.active_buffer_id = original_active_buffer_id;
-                }
-                return Err((
-                    error,
-                    Box::new(
-                        pending
-                            .continuation
-                            .expect("new walkthrough must retain its continuation"),
-                    ),
-                ));
-            } else if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.active_buffer_id = original_active_buffer_id;
-            }
-            unreachable!("installed walkthrough disappeared before activation");
+                .expect("installed walkthrough keeps its chat");
+            let pending = chat
+                .pending_code_explanation
+                .take()
+                .expect("installed walkthrough disappeared before activation");
+            let blocked = chat.take_parked_as::<PendingWalkthroughCall>();
+            chat.active_buffer_id = original_active_buffer_id;
+            self.discard_code_explanation_presentation_buffer(
+                pending.presentation_buffer_id,
+                pending.original_active_buffer_id,
+            );
+            return Err((error, blocked.map(|blocked| Box::new(blocked.continuation))));
         }
 
         self.ai_state.ai_attention_generation =
@@ -337,6 +363,7 @@ impl Editor {
                 false
             } else {
                 pending.current = next;
+                pending.visible_exchange = None;
                 pending.answer_scroll = 0;
                 true
             }
@@ -347,6 +374,65 @@ impl Editor {
             }
         }
         changed
+    }
+
+    /// Return to the step without discarding its discussion or interrupting inference.
+    pub fn hide_code_explanation_thread(&mut self) -> bool {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return false;
+        };
+        if pending.visible_exchange.take().is_none() {
+            return false;
+        }
+        pending.answer_scroll = 0;
+        self.render_cache.code_explanation_answer_max_scroll = 0;
+        self.set_status_message("Back to walkthrough step — t reopens its thread");
+        true
+    }
+
+    pub fn open_code_explanation_thread(&mut self) -> bool {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return false;
+        };
+        let Some(last) = pending.threads[pending.current].len().checked_sub(1) else {
+            self.set_status_message("No questions on this step yet — Space asks");
+            return false;
+        };
+        pending.visible_exchange = Some(last);
+        pending.answer_scroll = 0;
+        true
+    }
+
+    pub fn move_code_explanation_exchange(&mut self, forward: bool) -> bool {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return false;
+        };
+        let Some(current) = pending.visible_exchange else {
+            return false;
+        };
+        let next = if forward {
+            (current + 1).min(pending.threads[pending.current].len().saturating_sub(1))
+        } else {
+            current.saturating_sub(1)
+        };
+        pending.visible_exchange = Some(next);
+        pending.answer_scroll = 0;
+        next != current
     }
 
     pub fn begin_code_explanation_question(&mut self) -> bool {
@@ -388,6 +474,7 @@ impl Editor {
             return false;
         }
         pending.interaction = CodeExplanationInteraction::Navigating;
+        pending.visible_exchange = None;
         self.set_status_message("Cancelled walkthrough question");
         true
     }
@@ -404,6 +491,76 @@ impl Editor {
         };
         input.insert(*cursor, character);
         *cursor += character.len_utf8();
+        true
+    }
+
+    /// Whether a walkthrough question is currently being composed.
+    pub fn has_code_explanation_question_draft(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_code_explanation.as_ref())
+            .is_some_and(|pending| {
+                matches!(
+                    pending.interaction,
+                    CodeExplanationInteraction::Composing { .. }
+                )
+            })
+    }
+
+    /// Inserts pasted text into the walkthrough question at its cursor.
+    /// Returns `false` when no walkthrough question is being composed.
+    pub fn insert_code_explanation_question_text(&mut self, text: &str) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        input.insert_str(*cursor, text);
+        *cursor += text.len();
+        true
+    }
+
+    /// Deletes the character after the cursor of the walkthrough question.
+    pub fn delete_code_explanation_question_forward(&mut self) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        if let Some(next) = input[*cursor..].chars().next() {
+            input.drain(*cursor..*cursor + next.len_utf8());
+        }
+        true
+    }
+
+    /// Moves the walkthrough question cursor to the start (`Home`) or end
+    /// (`End`) of the line it is on.
+    pub fn move_code_explanation_question_cursor_to_line_edge(&mut self, end: bool) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        *cursor = if end {
+            input[*cursor..]
+                .find('\n')
+                .map_or(input.len(), |offset| *cursor + offset)
+        } else {
+            input[..*cursor].rfind('\n').map_or(0, |index| index + 1)
+        };
         true
     }
 
@@ -458,13 +615,11 @@ impl Editor {
     }
 
     pub fn submit_code_explanation_question(&mut self) -> Result<bool, String> {
-        let (step_index, step, question, tool_call, continuation) = {
-            let Some(pending) = self
-                .ai_state
-                .chat
-                .as_mut()
-                .and_then(|chat| chat.pending_code_explanation.as_mut())
-            else {
+        let (step_index, step, question, blocked) = {
+            let Some(chat) = self.ai_state.chat.as_mut() else {
+                return Ok(false);
+            };
+            let Some(pending) = chat.pending_code_explanation.as_mut() else {
                 return Ok(false);
             };
             let CodeExplanationInteraction::Composing { input, .. } = &pending.interaction else {
@@ -490,13 +645,15 @@ impl Editor {
                 step: step_index,
                 exchange,
             };
+            pending.visible_exchange = Some(exchange);
             pending.answer_scroll = FOLLOW_LATEST_ANSWER;
+            // Asking turns a replay into a live discussion.
+            pending.replay = false;
             (
                 step_index,
                 step,
                 question,
-                pending.tool_call.clone(),
-                pending.continuation.take(),
+                chat.take_parked_as::<PendingWalkthroughCall>(),
             )
         };
 
@@ -507,8 +664,19 @@ impl Editor {
             question
         ));
 
-        match continuation {
-            Some(CodeExplanationContinuation::Replay) | None => {
+        match blocked {
+            Some(
+                blocked @ PendingWalkthroughCall {
+                    continuation: CodeExplanationContinuation::EditorMcp { .. },
+                    ..
+                },
+            ) => {
+                // The question travels in the MCP result to the running Claude
+                // turn. Queueing another turn as well would ask it twice.
+                self.clear_ai_chat_input();
+                self.resolve_code_explanation_call(blocked, outcome);
+            }
+            None => {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.input = prompt;
                     chat.input_cursor = chat.input.len();
@@ -516,21 +684,20 @@ impl Editor {
                 self.submit_ai_chat_message()
                     .map_err(|error| error.to_string())?;
             }
-            Some(continuation) => {
+            Some(blocked) => {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.input = prompt;
                     chat.input_cursor = chat.input.len();
                 }
-                // `continuation` has already been taken out of `pending`, so it
-                // must reach resolve_* on every path out of here — a dropped
-                // Batch never emits a tool_result for the explain_with_codebase
-                // tool_use (malforming the next request) and a dropped Dynamic
-                // loses its oneshot sender, with no way back: finish_code_
-                // explanation would see `continuation == None`. Queueing is
-                // infallible, so that is guaranteed by construction rather than
-                // by error handling.
+                // `blocked` has already been unparked, so it must reach
+                // resolve_* on every path out of here — a dropped Batch never
+                // emits a tool_result for the explain_with_codebase tool_use
+                // (malforming the next request) and a dropped Dynamic loses its
+                // oneshot sender, with no way back: finish_code_explanation
+                // would find nothing parked. Queueing is infallible, so that is
+                // guaranteed by construction rather than by error handling.
                 self.queue_current_ai_chat_input(QueuedChatInputKind::Steer);
-                self.resolve_code_explanation_continuation(&tool_call, continuation, outcome);
+                self.resolve_code_explanation_call(blocked, outcome);
             }
         }
         self.set_status_message(format!(
@@ -590,11 +757,11 @@ impl Editor {
         }
         pending.interaction = CodeExplanationInteraction::Navigating;
         self.set_status_message(
-            "Walkthrough answer ready — Up/Down reads the reply; Enter continues",
+            "Walkthrough answer ready — t opens thread; Esc returns to step; Enter continues",
         );
     }
 
-    pub(crate) fn ai_code_explanation_answering(&self) -> bool {
+    pub fn ai_code_explanation_answering(&self) -> bool {
         self.ai_state.chat.as_ref().is_some_and(|chat| {
             chat.pending_code_explanation
                 .as_ref()
@@ -647,14 +814,13 @@ impl Editor {
     }
 
     pub fn finish_code_explanation(&mut self, dismissed: bool) -> bool {
-        let Some(pending) = self
-            .ai_state
-            .chat
-            .as_mut()
-            .and_then(|chat| chat.pending_code_explanation.take())
-        else {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };
+        let Some(pending) = chat.pending_code_explanation.take() else {
+            return false;
+        };
+        let blocked = chat.take_parked_as::<PendingWalkthroughCall>();
 
         self.discard_code_explanation_presentation_buffer(
             pending.presentation_buffer_id,
@@ -665,10 +831,7 @@ impl Editor {
         }
         self.ai_state.active_selection = None;
 
-        let is_replay = matches!(
-            pending.continuation.as_ref(),
-            Some(CodeExplanationContinuation::Replay)
-        );
+        let is_replay = pending.replay;
         let question_count = pending.threads.iter().map(Vec::len).sum::<usize>();
         let outcome = if is_replay && dismissed {
             format!(
@@ -681,14 +844,14 @@ impl Editor {
                 "Completed walkthrough replay ({} pages).",
                 pending.steps.len()
             )
-        } else if pending.continuation.is_none() && dismissed {
+        } else if blocked.is_none() && dismissed {
             format!(
                 "Dismissed walkthrough at page {} of {} after {} question(s).",
                 pending.current + 1,
                 pending.steps.len(),
                 question_count
             )
-        } else if pending.continuation.is_none() {
+        } else if blocked.is_none() {
             format!(
                 "Completed walkthrough ({} pages, {} question(s)).",
                 pending.steps.len(),
@@ -708,58 +871,42 @@ impl Editor {
         };
         let result = ToolResult::Success(outcome.clone());
 
-        if let Some(continuation) = pending.continuation {
-            self.resolve_code_explanation_continuation(&pending.tool_call, continuation, result);
+        if let Some(blocked) = blocked {
+            self.resolve_code_explanation_call(blocked, result);
         }
 
         self.set_status_message(outcome);
         true
     }
 
-    fn resolve_code_explanation_continuation(
+    fn resolve_code_explanation_call(
         &mut self,
-        tool_call: &ToolCallInfo,
-        continuation: CodeExplanationContinuation,
+        blocked: PendingWalkthroughCall,
         result: ToolResult,
     ) {
-        match continuation {
-            CodeExplanationContinuation::Dynamic {
-                runtime_tool,
-                runtime_turn,
+        match blocked.continuation {
+            CodeExplanationContinuation::EditorMcp {
+                request_id,
+                rpc_id,
                 response,
             } => {
-                self.finish_dynamic_tool(&runtime_turn, &runtime_tool, tool_call, response, result);
+                let _ = response.send(super::ai_editor_mcp::walkthrough_reply(
+                    rpc_id,
+                    &request_id,
+                    result,
+                ));
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.waiting = true;
                 }
             }
-            CodeExplanationContinuation::Batch {
-                runtime_tool,
-                runtime_turn,
-                remaining_tool_calls,
-                model_name,
-            } => {
-                if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref()) {
-                    if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result) {
-                        self.ai_runtime_fail_turn(format!(
-                            "failed to record walkthrough result: {error}"
-                        ));
-                        self.clear_streaming_state();
-                        return;
-                    }
-                }
-                self.record_tool_event_summary(tool_call, &result);
-                let result_content = self.format_tool_result_with_target(tool_call, &result);
-                if let Some(conversation) = self.conversation_mut() {
-                    conversation.append_tool_result(tool_call.id.clone(), result_content);
-                }
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.tool_call_count = chat.tool_call_count.saturating_add(1);
-                    chat.waiting = true;
-                }
-                self.execute_tool_call_batch(remaining_tool_calls, model_name);
+            CodeExplanationContinuation::Tool(continuation) => {
+                self.resume_tool_continuation(
+                    blocked.tool_call,
+                    continuation,
+                    result,
+                    "walkthrough",
+                );
             }
-            CodeExplanationContinuation::Replay => {}
         }
     }
 
@@ -783,8 +930,16 @@ impl Editor {
             )));
         }
 
+        // Provider-owned turns already bind a canonical workspace, including
+        // ordinary folders without Git metadata. Keep walkthrough navigation
+        // on that same authority even if the visible file changes.
         let root = self
-            .ai_effective_project_root()
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.external_agent.as_ref())
+            .map(|state| state.root.clone())
+            .or_else(|| self.ai_effective_project_root())
             .map(|root| root.canonicalize().unwrap_or(root));
         let safe_range = self.ai_code_explanation_safe_range_lines();
         let presentation_width = self.ai_code_explanation_presentation_width();
@@ -839,28 +994,88 @@ impl Editor {
                 steps.push(CodeExplanationStep::Concept { title, body });
                 continue;
             }
+            if page_type == "diff" {
+                let title = required_step_string(raw, "title", step_number)?;
+                if title.contains(['\n', '\r'])
+                    || title.chars().count() > MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS
+                {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} diff title must be a single line of at most {MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS} characters"
+                    )));
+                }
+                let comment = required_step_string(raw, "comment", step_number)?;
+                self.validate_code_explanation_comment(&comment, step_number, presentation_width)?;
+                let snapshot_id = required_step_string(raw, "snapshot_id", step_number)?;
+                let old = raw
+                    .get("old")
+                    .map(|reference| {
+                        serde_json::from_value::<ChangeRef>(reference.clone()).map_err(|error| {
+                            ToolResult::Error(format!(
+                                "step {step_number} invalid old diff reference: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()?;
+                let new = raw
+                    .get("new")
+                    .map(|reference| {
+                        serde_json::from_value::<ChangeRef>(reference.clone()).map_err(|error| {
+                            ToolResult::Error(format!(
+                                "step {step_number} invalid new diff reference: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()?;
+                let wrap_width =
+                    (self.options.wrap && self.render_cache.last_text_width > 0).then(|| {
+                        self.render_cache.last_text_width.saturating_add(
+                            self.render_cache
+                                .last_chat_area
+                                .map_or(0, |area| area.width as usize),
+                        )
+                    });
+                let presentation = self
+                    .load_walkthrough_diff_section(&snapshot_id, old, new, |patch| {
+                        let line_count = patch.lines().count();
+                        line_count <= safe_range
+                            && self
+                                .code_explanation_source_metrics(patch, 1, line_count, wrap_width)
+                                .visual_rows
+                                .is_none_or(|rows| rows <= safe_range)
+                    })
+                    .map_err(|error| ToolResult::Error(format!("step {step_number}: {error}")))?;
+                let patch = presentation.patch;
+                let line_count = patch.lines().count();
+                if line_count > safe_range {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} diff occupies {line_count} lines (maximum {safe_range}); use smaller old/new offset and count slices"
+                    )));
+                }
+                let metrics =
+                    self.code_explanation_source_metrics(&patch, 1, line_count, wrap_width);
+                if let Some(rows) = metrics.visual_rows.filter(|rows| *rows > safe_range) {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} diff occupies {rows} visual rows after soft wrapping (maximum {safe_range}); use smaller old/new offset and count slices"
+                    )));
+                }
+                steps.push(CodeExplanationStep::Diff {
+                    title,
+                    old_path: presentation.old_path,
+                    new_path: presentation.new_path,
+                    patch: Arc::from(patch),
+                    focus: presentation.focus,
+                    comment,
+                });
+                continue;
+            }
             if page_type != "code" {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} has unsupported type {page_type:?}; expected 'concept' or 'code'"
+                    "step {step_number} has unsupported type {page_type:?}; expected 'concept', 'code', or 'diff'"
                 )));
             }
             let path = required_step_string(raw, "path", step_number)?;
             let comment = required_step_string(raw, "comment", step_number)?;
-            if comment.len() > MAX_WALKTHROUGH_COMMENT_BYTES {
-                return Err(ToolResult::Error(format!(
-                    "step {step_number} comment exceeds {MAX_WALKTHROUGH_COMMENT_BYTES} bytes"
-                )));
-            }
-            let comment_rows = comment_rows_for_viewport(
-                presentation_width,
-                &comment,
-                self.indent_options().tab_width,
-            );
-            if comment_rows > MAX_WALKTHROUGH_COMMENT_ROWS {
-                return Err(ToolResult::Error(format!(
-                    "step {step_number} comment wraps to {comment_rows} rows; keep it within {MAX_WALKTHROUGH_COMMENT_ROWS} rows or split the explanation into focused steps"
-                )));
-            }
+            self.validate_code_explanation_comment(&comment, step_number, presentation_width)?;
             let start_line = required_step_line(raw, "start_line", step_number)?;
             let end_line = raw
                 .get("end_line")
@@ -965,6 +1180,11 @@ impl Editor {
                 }
             }
 
+            let path = absolute_path
+                .strip_prefix(root)
+                .unwrap_or(&absolute_path)
+                .to_string_lossy()
+                .into_owned();
             steps.push(CodeExplanationStep::Code {
                 path,
                 absolute_path,
@@ -975,6 +1195,27 @@ impl Editor {
             });
         }
         Ok(steps)
+    }
+
+    fn validate_code_explanation_comment(
+        &self,
+        comment: &str,
+        step_number: usize,
+        presentation_width: Option<u16>,
+    ) -> Result<(), ToolResult> {
+        if comment.len() > MAX_WALKTHROUGH_COMMENT_BYTES {
+            return Err(ToolResult::Error(format!(
+                "step {step_number} comment exceeds {MAX_WALKTHROUGH_COMMENT_BYTES} bytes"
+            )));
+        }
+        let rows =
+            comment_rows_for_viewport(presentation_width, comment, self.indent_options().tab_width);
+        if rows > MAX_WALKTHROUGH_COMMENT_ROWS {
+            return Err(ToolResult::Error(format!(
+                "step {step_number} comment wraps to {rows} rows; keep it within {MAX_WALKTHROUGH_COMMENT_ROWS} rows or split the explanation into focused steps"
+            )));
+        }
+        Ok(())
     }
 
     fn ai_code_explanation_presentation_width(&self) -> Option<u16> {
@@ -1077,39 +1318,57 @@ impl Editor {
             pending.presentation_buffer_id = None;
         }
 
-        let CodeExplanationStep::Code {
-            absolute_path,
-            snapshot,
-            start_line,
-            end_line,
-            ..
-        } = step
-        else {
-            self.ai_state.active_selection = None;
-            return Ok(());
-        };
-
-        let source = match snapshot {
-            Some(snapshot) => snapshot,
-            None => Arc::from(
-                self.capture_code_explanation_source(&absolute_path)
-                    .map_err(|error| {
-                        ToolResult::Error(format!(
-                            "cannot read uncached walkthrough source '{}': {error}",
-                            absolute_path.display()
-                        ))
-                    })?,
+        let highlight = matches!(&step, CodeExplanationStep::Code { .. });
+        let (source, syntax_path, display_name, (start_line, end_line)) = match step {
+            CodeExplanationStep::Code {
+                absolute_path,
+                snapshot,
+                start_line,
+                end_line,
+                ..
+            } => {
+                let source = match snapshot {
+                    Some(snapshot) => snapshot,
+                    None => Arc::from(
+                        self.capture_code_explanation_source(&absolute_path)
+                            .map_err(|error| {
+                                ToolResult::Error(format!(
+                                    "cannot read uncached walkthrough source '{}': {error}",
+                                    absolute_path.display()
+                                ))
+                            })?,
+                    ),
+                };
+                let display_name = absolute_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Code")
+                    .to_string();
+                (
+                    source,
+                    absolute_path.to_string_lossy().into_owned(),
+                    display_name,
+                    (start_line, end_line),
+                )
+            }
+            CodeExplanationStep::Diff { patch, focus, .. } => (
+                patch,
+                "walkthrough.diff".to_string(),
+                "Selected diff".to_string(),
+                focus,
             ),
+            CodeExplanationStep::Concept { .. } => {
+                self.ai_state.active_selection = None;
+                return Ok(());
+            }
         };
         let mut buffer = crate::buffer::Buffer::new_from_str(&source);
         buffer.set_read_only(true);
-        buffer.enable_syntax_highlighting_for_path(&absolute_path.to_string_lossy());
+        buffer.enable_syntax_highlighting_for_path(&syntax_path);
         // Label the snapshot with the source file's name so the tab bar and
         // status line don't show "[No Name]" — without giving it a file path,
         // which would make it an LSP document and a save target.
-        if let Some(name) = absolute_path.file_name().and_then(|n| n.to_str()) {
-            buffer.set_display_name(name);
-        }
+        buffer.set_display_name(display_name);
         let presentation_buffer_id = buffer.id();
         self.add_buffer(buffer);
         // The virtual snapshot is intentionally not an LSP document or a save target.
@@ -1123,13 +1382,18 @@ impl Editor {
             pending.presentation_buffer_id = Some(presentation_buffer_id);
         }
 
-        let selected = self.execute_navigation_tool(
-            "select_text",
-            &json!({
-                "start_line": start_line,
-                "end_line": end_line,
-            }),
-        );
+        let selected = if highlight {
+            self.execute_navigation_tool(
+                "select_text",
+                &json!({
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }),
+            )
+        } else {
+            self.ai_state.active_selection = None;
+            ToolResult::Success(String::new())
+        };
         if let ToolResult::Error(error) = selected {
             self.discard_code_explanation_presentation_buffer(
                 Some(presentation_buffer_id),
@@ -1137,16 +1401,73 @@ impl Editor {
             );
             return Err(ToolResult::Error(error));
         }
-        // `select_text` centers the midpoint for general navigation. A
-        // walkthrough instead owns the bottom rows with its card, so pin the
-        // range's first line to the top and let the validated visual-row budget
-        // flow downward without being obscured.
-        self.buffer_mut().cursor_mut().set_position(
-            start_line.saturating_sub(1),
-            crate::unicode::GraphemeCol::ZERO,
-        );
-        self.move_cursor_line_to_top_with_offset(0);
+        self.position_code_explanation(self.ai_code_explanation_safe_range_lines());
         Ok(())
+    }
+
+    /// Center the focused code or change in the unobscured area. Diff excerpts
+    /// keep their headers and surrounding source visible whenever the full
+    /// excerpt fits. Frontends may supply measured rows above their card.
+    pub fn position_code_explanation(&mut self, visible_rows: usize) {
+        let Some(step) = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_code_explanation.as_ref())
+            .and_then(|pending| pending.steps.get(pending.current))
+        else {
+            return;
+        };
+        let (start_line, end_line) = match step {
+            CodeExplanationStep::Code {
+                start_line,
+                end_line,
+                ..
+            } => (*start_line, *end_line),
+            CodeExplanationStep::Diff { focus, .. } => *focus,
+            CodeExplanationStep::Concept { .. } => return,
+        };
+        let diff = matches!(step, CodeExplanationStep::Diff { .. });
+        let start = start_line.saturating_sub(1);
+        let width = self.render_cache.last_text_width;
+        if self.options.wrap && width > 0 {
+            self.ensure_wrap_map(width);
+        }
+        let visible_rows = visible_rows.max(1).min(self.viewport_height().max(1));
+        let (offset, subrow) = if let Some(map) = self.wrap_map().filter(|_| self.options.wrap) {
+            let first = map.logical_to_visual(start);
+            let height = map.logical_to_visual(end_line).saturating_sub(first);
+            let mut top = first.saturating_sub(visible_rows.saturating_sub(height) / 2);
+            if diff {
+                let total = map.logical_to_visual(self.buffer().line_count());
+                top = top.min(total.saturating_sub(visible_rows));
+            }
+            map.visual_to_logical(top)
+        } else {
+            let height = end_line.saturating_sub(start);
+            let mut top = start.saturating_sub(visible_rows.saturating_sub(height) / 2);
+            if diff {
+                top = top.min(self.buffer().line_count().saturating_sub(visible_rows));
+            }
+            (top, 0)
+        };
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(start, crate::unicode::GraphemeCol::ZERO);
+        self.viewport.scroll_offset = offset;
+        self.viewport.scroll_subrow = subrow;
+        if let Some(window) = self
+            .window_manager
+            .as_mut()
+            .and_then(|wm| wm.focused_window_mut())
+        {
+            window
+                .cursor_mut()
+                .set_position(start, crate::unicode::GraphemeCol::ZERO);
+            window.set_scroll_position(offset, subrow);
+        }
+        self.preserve_viewport_after_input();
+        self.mark_dirty();
     }
 
     pub(super) fn discard_code_explanation_presentation_buffer(
@@ -1231,6 +1552,34 @@ fn walkthrough_question_prompt(
             };
             (range, comment.as_str())
         }
+        CodeExplanationStep::Diff {
+            title,
+            old_path,
+            new_path,
+            comment,
+            patch,
+            ..
+        } => {
+            let paths = format!(
+                "{} → {}",
+                old_path.as_deref().unwrap_or("/dev/null"),
+                new_path.as_deref().unwrap_or("/dev/null"),
+            );
+            let quoted_comment = comment
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let quoted_patch = patch
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return format!(
+                "> Walkthrough page {} · Diff: {title} ({paths})\n{quoted_comment}\n{quoted_patch}\n\n{question}\n\nAnswer this question in the context of our existing conversation and the frozen diff section. Do not modify files or perform external actions; use read-only investigation only if needed.",
+                step_index + 1,
+            );
+        }
     };
     let quoted_comment = teaching_text
         .lines()
@@ -1267,6 +1616,27 @@ fn required_step_line(
         .filter(|line| *line > 0)
         .map(|line| line as usize)
         .ok_or_else(|| ToolResult::Error(format!("step {step} requires '{field}' >= 1")))
+}
+
+#[cfg(test)]
+mod diff_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn diff_question_quotes_frozen_patch_and_paths() {
+        let step = CodeExplanationStep::Diff {
+            title: "Guard".into(),
+            old_path: Some("before.rs".into()),
+            new_path: Some("after.rs".into()),
+            patch: Arc::from("--- before.rs\n+++ after.rs\n@@ -3,1 +7,1 @@\n-old\n+new\n"),
+            focus: (4, 5),
+            comment: "The new guard rejects empty input.".into(),
+        };
+        let prompt = walkthrough_question_prompt(1, &step, "What changed?");
+        assert!(prompt.contains("before.rs → after.rs"));
+        assert!(prompt.contains("> -old\n> +new"));
+        assert!(prompt.contains("What changed?"));
+    }
 }
 
 #[cfg(test)]
@@ -1324,13 +1694,95 @@ mod tests {
         }
     }
 
-    fn batch_continuation() -> CodeExplanationContinuation {
-        CodeExplanationContinuation::Batch {
-            runtime_tool: None,
-            runtime_turn: None,
-            remaining_tool_calls: Vec::new(),
-            model_name: "test".into(),
+    fn batch_continuation() -> Option<CodeExplanationContinuation> {
+        Some(CodeExplanationContinuation::Tool(
+            crate::editor::ai_chat_state::ToolExecutionContinuation::Batch {
+                runtime_tool: None,
+                runtime_turn: None,
+                remaining_tool_calls: Vec::new(),
+                model_name: "test".into(),
+            },
+        ))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_centers_full_ranges_and_gui_scroll_chords_preserve_selection() {
+        let (_dir, mut editor, first, _second) = setup_editor();
+        std::fs::write(
+            &first,
+            (1..=100)
+                .map(|i| format!("// row {i}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        // The invocation snapshot prefers the open buffer, so reload its contents.
+        editor.buffer_mut().replace_content(
+            &(1..=100)
+                .map(|i| format!("// row {i}\n"))
+                .collect::<String>(),
+        );
+        let result = editor.begin_code_explanation(
+            call(json!([{
+                "path": first.to_string_lossy(), "start_line": 40, "end_line": 43,
+                "comment": "A complete range."
+            }])),
+            batch_continuation(),
+        );
+        if let Err((error, _)) = result {
+            panic!("{error:?}");
         }
+        let view = editor.ai_code_explanation_view().unwrap();
+        assert!(
+            matches!(view.page, CodeExplanationPageView::Code { ref path, .. } if path == "first.rs")
+        );
+        editor.position_code_explanation(14);
+        assert_eq!(editor.scroll_offset(), 34);
+        editor.position_code_explanation(3);
+        assert_eq!(editor.scroll_offset(), 39);
+        let selection = editor.ai_state.active_selection.clone().unwrap();
+        for (key, expected) in [('e', 40), ('y', 39)] {
+            crate::editor::input::InputHandler::handle_key_event(
+                &mut editor,
+                crate::KeyEvent::new(crate::KeyCode::Char(key), crate::Modifiers::CONTROL),
+            )
+            .unwrap();
+            assert_eq!(editor.scroll_offset(), expected);
+            let active = editor.ai_state.active_selection.as_ref().unwrap();
+            assert_eq!(
+                (active.start_line, active.end_line),
+                (selection.start_line, selection.end_line)
+            );
+            assert!(editor.ai_chat_has_pending_code_explanation());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_position_counts_wrapped_rows_and_preserves_eof_visibility() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let source = (0..50)
+            .map(|_| "abcdefghijklmnopqrst\n")
+            .collect::<String>();
+        editor.buffer_mut().replace_content(&source);
+        if let Err((error, _)) = editor.begin_code_explanation(
+            call(json!([{
+                "path": "first.rs", "start_line": 48, "end_line": 50, "comment": "End of file."
+            }])),
+            batch_continuation(),
+        ) {
+            panic!("{error:?}");
+        }
+        editor.options.wrap = true;
+        editor.render_cache.last_text_width = 10;
+        editor.position_code_explanation(12);
+        let map = editor.wrap_map().unwrap();
+        let start = map.logical_to_visual(47);
+        let end = map.logical_to_visual(50);
+        let top = map.viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
+        assert_eq!(start - top, (12 - (end - start)) / 2);
+        assert!(end - top <= 12);
+        editor.position_code_explanation(2);
+        assert_eq!(editor.scroll_offset(), 47);
+        assert_eq!(editor.scroll_subrow(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -1381,6 +1833,98 @@ mod tests {
         assert!(message.contains("Use read_file_at_path or list_files"));
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn escape_returns_to_step_and_thread_can_be_reopened_during_and_after_streaming() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([
+            {"path": "first.rs", "start_line": 2, "comment": "First step."},
+            {"path": "second.rs", "start_line": 2, "comment": "Second step."}
+        ]));
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("{error:?}");
+        }
+        // Seed a prior exchange and an active stream; stream events still go
+        // through the same append/finish methods as a provider response.
+        let pending = editor
+            .ai_state
+            .chat
+            .as_mut()
+            .unwrap()
+            .pending_code_explanation
+            .as_mut()
+            .unwrap();
+        pending.threads[0] = vec![
+            CodeExplanationExchange {
+                question: "Earlier?".into(),
+                answer: "Earlier answer".into(),
+                failed: false,
+            },
+            CodeExplanationExchange {
+                question: "More?".into(),
+                answer: "Part one".into(),
+                failed: false,
+            },
+        ];
+        pending.visible_exchange = Some(1);
+        pending.interaction = CodeExplanationInteraction::Answering {
+            step: 0,
+            exchange: 1,
+        };
+        let key = |editor: &mut Editor, code| {
+            crate::editor::input::InputHandler::handle_key_event(
+                editor,
+                crate::KeyEvent::new(code, crate::Modifiers::NONE),
+            )
+            .unwrap();
+        };
+        key(&mut editor, crate::KeyCode::Esc);
+        let view = editor.ai_code_explanation_view().unwrap();
+        assert_eq!(view.current, 1);
+        assert!(matches!(
+            view.discussion,
+            CodeExplanationDiscussionView::Navigating {
+                latest_answer: None,
+                ..
+            }
+        ));
+        assert!(editor.ai_code_explanation_answering());
+        editor.append_code_explanation_answer(" and two");
+        editor.finish_code_explanation_answer(None);
+        assert!(matches!(
+            editor.ai_code_explanation_view().unwrap().discussion,
+            CodeExplanationDiscussionView::Navigating {
+                latest_answer: None,
+                ..
+            }
+        ));
+        key(&mut editor, crate::KeyCode::Char('t'));
+        assert!(
+            matches!(editor.ai_code_explanation_view().unwrap().discussion,
+            CodeExplanationDiscussionView::Navigating { latest_answer: Some(ref answer), .. } if answer == "Part one and two")
+        );
+        key(&mut editor, crate::KeyCode::Char('['));
+        assert!(
+            matches!(editor.ai_code_explanation_view().unwrap().discussion,
+            CodeExplanationDiscussionView::Navigating { latest_question: Some(ref question), question_count: 1, exchange_total: 2, .. } if question == "Earlier?")
+        );
+        key(&mut editor, crate::KeyCode::Char(']'));
+        key(&mut editor, crate::KeyCode::Right);
+        key(&mut editor, crate::KeyCode::Char('t'));
+        assert!(matches!(
+            editor.ai_code_explanation_view().unwrap().discussion,
+            CodeExplanationDiscussionView::Navigating {
+                latest_answer: None,
+                ..
+            }
+        ));
+        key(&mut editor, crate::KeyCode::Left);
+        key(&mut editor, crate::KeyCode::Char('t'));
+        key(&mut editor, crate::KeyCode::Esc);
+        assert_eq!(editor.ai_code_explanation_view().unwrap().current, 1);
+        key(&mut editor, crate::KeyCode::Esc);
+        assert!(!editor.ai_chat_has_pending_code_explanation());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn walkthrough_question_resumes_root_turn_and_remains_in_conversation() {
         let (_dir, mut editor, _first, _second) = setup_editor();
@@ -1414,11 +1958,13 @@ mod tests {
         });
         if let Err((error, _)) = editor.begin_code_explanation(
             tool_call,
-            CodeExplanationContinuation::Dynamic {
-                runtime_tool,
-                runtime_turn: turn,
-                response: response_tx,
-            },
+            Some(CodeExplanationContinuation::Tool(
+                crate::editor::ai_chat_state::ToolExecutionContinuation::Dynamic {
+                    runtime_tool,
+                    runtime_turn: turn,
+                    response: response_tx,
+                },
+            )),
         ) {
             panic!("could not start walkthrough: {error:?}");
         }
@@ -1510,6 +2056,7 @@ mod tests {
             view.discussion,
             CodeExplanationDiscussionView::Navigating {
                 question_count: 1,
+                exchange_total: 1,
                 latest_question: Some(ref question),
                 latest_answer: Some(ref answer),
                 latest_failed: false,
@@ -1522,7 +2069,7 @@ mod tests {
         );
         assert_eq!(
             editor.status_message(),
-            "Walkthrough answer ready — Up/Down reads the reply; Enter continues"
+            "Walkthrough answer ready — t opens thread; Esc returns to step; Enter continues"
         );
         let messages = editor.ai_chat_messages();
         assert!(messages.iter().any(|message| message.role
@@ -1563,9 +2110,9 @@ mod tests {
             chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
                 receiver: rx,
                 task,
-                profile_name: previous.profile_name,
-                model_name: previous.model_name,
-                turn: previous.turn,
+                profile_name: previous.profile_name.clone(),
+                model_name: previous.model_name.clone(),
+                turn: previous.turn.clone(),
                 branch_generation: previous.branch_generation,
                 steer_tx: None,
             });
@@ -1582,6 +2129,7 @@ mod tests {
             editor.ai_code_explanation_view().unwrap().discussion,
             CodeExplanationDiscussionView::Navigating {
                 question_count: 2,
+                exchange_total: 2,
                 latest_question: Some(ref question),
                 latest_answer: Some(ref answer),
                 latest_failed: false,
@@ -1696,7 +2244,7 @@ mod tests {
         assert_eq!(editor.ai_code_explanation_view().unwrap().current, 1);
         let selection = editor.ai_state.active_selection.as_ref().unwrap();
         assert_eq!((selection.start_line, selection.end_line), (1, 3));
-        assert_eq!(editor.scroll_offset(), 1);
+        assert_eq!(editor.scroll_offset(), 0);
 
         assert!(editor.move_code_explanation(true));
         assert!(editor.buffer().file_path().is_none());
@@ -1988,7 +2536,7 @@ mod tests {
         )
         .unwrap();
         let pinned_offset = editor.scroll_offset();
-        assert_eq!(pinned_offset, 6);
+        assert_eq!(pinned_offset, 0);
 
         // Repeating an ignored key used to consume the initial viewport pin and
         // then let the shared scrolloff pass pull the selection toward center.

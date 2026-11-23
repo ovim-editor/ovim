@@ -65,6 +65,42 @@ impl Editor {
             .is_some_and(|chat| chat.expanded_tool_events.contains(tool_call_id))
     }
 
+    pub fn ai_chat_tool_replay_label(&self, tool_call_id: &str) -> Option<&'static str> {
+        if self
+            .ai_chat_tool_event_summary(tool_call_id)
+            .is_some_and(|summary| summary.kind == ToolSummaryKind::Error)
+        {
+            return None;
+        }
+        match self.ai_chat_tool_event_call(tool_call_id)?.name.as_str() {
+            "explain_with_codebase" => Some("Replay walkthrough"),
+            "show_custom_diff" => {
+                let completed = self.ai_chat_tool_event_summary(tool_call_id).is_some()
+                    || self.ai_chat_messages().iter().any(|message| {
+                        message.tool_call_id.as_deref() == Some(tool_call_id)
+                            && super::ai_custom_diff::custom_diff_replay_id(&message.content)
+                                .is_some()
+                    });
+                completed.then_some("Open diff")
+            }
+            _ => None,
+        }
+    }
+
+    pub fn replay_ai_chat_tool(&mut self, tool_call_id: &str) -> bool {
+        match self
+            .ai_chat_tool_event_call(tool_call_id)
+            .map(|call| call.name.as_str())
+        {
+            Some("explain_with_codebase") => self.replay_code_explanation(tool_call_id),
+            Some("show_custom_diff") => self.replay_custom_diff(tool_call_id),
+            _ => {
+                self.set_status_message("This tool result has no saved review");
+                false
+            }
+        }
+    }
+
     pub fn toggle_ai_chat_tool_event(&mut self, tool_call_id: &str) {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             if !chat.expanded_tool_events.remove(tool_call_id) {

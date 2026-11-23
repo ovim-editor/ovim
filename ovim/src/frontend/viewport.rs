@@ -1,41 +1,36 @@
+use super::layout::{effective_textwidth, FrameLayout, GutterWidths};
 use crate::editor::Editor;
+use ovim_core::Rect;
 
 /// Recomputes viewport geometry from raw grid cells: `width`/`height` are the
-/// full window in character cells (not the content area — this function
-/// subtracts chrome itself: tab bar, file tree, LSP progress line, and the
-/// status+command lines). Keeps viewport height, window manager dimensions,
-/// the wrap map, and the scroll offset in sync with the new size.
+/// full window in character cells (not the content area — [`FrameLayout`]
+/// subtracts the chrome: tab bar, file tree and other side panels, the run
+/// console, LSP progress line, and the status+command lines). Keeps viewport
+/// height, window manager dimensions, the wrap map, and the scroll offset in
+/// sync with the new size.
 ///
 /// Call this whenever the grid geometry changes (terminal resize, window
 /// resize, split/pane changes) — see the frontend contract in
 /// [`crate::frontend`].
 pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
-    // Recompute the buffer chunk dimensions using the same high-level rules as the renderer.
-    // This is intentionally approximate (position doesn't matter here) — it just needs to
-    // keep viewport height and wrap width correct for scroll calculations.
-    let mut content_width = width;
-    let mut content_height = height;
-
-    // Tab bar consumes one row when multiple tabs are present.
-    if editor.tab_count() > 1 {
-        content_height = content_height.saturating_sub(1);
-    }
-
-    // File tree consumes fixed width when visible.
-    if editor.file_tree().is_visible() {
-        content_width = content_width.saturating_sub(50);
-    }
-
-    // Progress line consumes one row when present.
-    if editor.lsp_progress_message().is_some() {
-        content_height = content_height.saturating_sub(1);
-    }
-
-    // Status line + command/message line.
-    content_height = content_height.saturating_sub(2);
+    // Ask the layout the renderer will use where the editor's windows end up,
+    // so the wrap map is built for the width the next frame draws at.
+    let (mut content_width, content_height) = match FrameLayout::compute(
+        editor,
+        Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+    ) {
+        Some(layout) => (layout.buffer.width, layout.buffer.height),
+        // The dashboard has no windows; keep the status and command lines.
+        None => (width, height.saturating_sub(2)),
+    };
 
     // Apply textwidth centering: narrowing changes wrap width, but not viewport height.
-    if let Some(textwidth) = editor.options.textwidth {
+    if let Some(textwidth) = effective_textwidth(editor) {
         let max_width = textwidth as u16;
         if content_width > max_width {
             content_width = max_width;
@@ -55,8 +50,35 @@ pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
     // Keep the wrap map in sync with the new width so vertical scrolling stays accurate
     // in wrap mode.
     if editor.options.wrap {
-        let text_width = compute_text_width(editor, content_width);
-        editor.ensure_wrap_map(text_width);
+        // Split panes have distinct widths and heights. Build their final
+        // geometry before consuming a split's pending cursor-row anchor.
+        let panes: Vec<_> = editor
+            .window_manager()
+            .map(|manager| {
+                (0..manager.window_count())
+                    .filter_map(|index| {
+                        manager
+                            .get_window(index)
+                            .map(|window| (index, window.width(), window.height() as usize))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (index, pane_width, pane_height) in panes {
+            let text_width = compute_text_width(editor, pane_width);
+            editor.ensure_wrap_map_for_window(index, text_width);
+            editor.repair_pending_split_wrap_viewport(index, pane_height);
+        }
+    }
+
+    // The focused pane's text width, as a frame would record it, so scrolling
+    // the cursor into view counts the columns the text really has.
+    let focused_width = editor
+        .window_manager()
+        .and_then(|manager| manager.focused_window())
+        .map(|window| window.width());
+    if let Some(window_width) = focused_width {
+        editor.render_cache.last_text_width = compute_text_width(editor, window_width);
     }
 
     // Re-run scroll update so the cursor remains visible in the resized viewport.
@@ -64,37 +86,14 @@ pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
 }
 
 /// Computes the wrap width (content width minus gutter) for a given content
-/// area width. Kept in sync by hand with
-/// `ovim::ui::renderer::layout::BufferLayout::compute`, which is the
-/// authority for gutter/layout sizing; this function must not drift from it.
+/// area width. The gutter comes from [`GutterWidths`], the same source
+/// `BufferLayout::compute` uses, so the two cannot drift apart.
 pub fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
-    const SIGN_WIDTH: usize = 2;
-    const GUTTER_SPACING: usize = 1;
-
-    let show_numbers = editor.options.number || editor.options.relative_number;
-    let line_count = editor.buffer().line_count();
-    let line_num_width = if show_numbers {
-        line_count.to_string().len().max(3)
-    } else {
-        0
-    };
-
-    let blame_width = if editor.options.blame {
-        if let Some(blame) = editor.buffer().git_blame() {
-            let author_len = blame.max_author_len().min(15);
-            1 + 1 + 5 + 1 + author_len.max(3) + 1
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let gutter_width = blame_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
+    let gutter_width = GutterWidths::of(editor).total;
 
     // Apply textwidth narrowing (OV-00019: must match renderer's BufferLayout
     // which narrows buffer_area to textwidth before computing text_width).
-    let effective_width = if let Some(textwidth) = editor.options.textwidth {
+    let effective_width = if let Some(textwidth) = effective_textwidth(editor) {
         let max = textwidth as u16;
         if content_width > max {
             max
@@ -105,7 +104,8 @@ pub fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
         content_width
     };
 
-    (effective_width as usize).saturating_sub(gutter_width)
+    (effective_width as usize)
+        .saturating_sub(gutter_width + usize::from(editor.is_diff_buffer() && effective_width > 1))
 }
 
 #[cfg(test)]

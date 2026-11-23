@@ -10,14 +10,102 @@ use crate::unicode::{char_to_grapheme_col, grapheme_count, GraphemeCol};
 
 use super::code_explanation_mode;
 
+impl Editor {
+    /// Moves the cursor to a clicked buffer position (`col` is a grapheme column).
+    ///
+    /// In Insert mode the click keeps Insert mode, but like any cursor movement
+    /// there (vim's `start_arrow`) it ends the current insert session: the typed
+    /// text becomes its own undo step and dot-repeat unit, a new one starts at
+    /// the new position, and the completion/signature popups are dismissed.
+    pub fn place_cursor_from_pointer(&mut self, line: usize, col: usize) {
+        let was_insert = self.mode() == Mode::Insert;
+        if was_insert {
+            self.dismiss_completion();
+            // Same finalization as Ctrl-O: no cursor step-back, no `count` repeat.
+            super::insert_mode::finish_insert_mode(self, true);
+        }
+        let line = line.min(self.buffer().line_count().saturating_sub(1));
+        let len = self.buffer().line_grapheme_count(line);
+        // Insert mode may sit just past the last character, Normal mode may not.
+        let max_col = if was_insert {
+            len
+        } else {
+            len.saturating_sub(1)
+        };
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(col.min(max_col)));
+        if was_insert {
+            self.start_change_building(self.cursor_position());
+            self.set_mode(Mode::Insert);
+        }
+    }
+}
+
 /// Top-level mouse event dispatcher.
 /// Returns `Ok(Some(url))` when a concealed markdown link was clicked and should be opened.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Option<String>> {
+    if editor.is_pseudocode_buffer()
+        && matches!(
+            event.kind,
+            MouseEventKind::Drag(_) | MouseEventKind::Down(MouseButton::Middle)
+        )
+    {
+        return Ok(None);
+    }
     if code_explanation_mode::blocks_pointer_event(editor, &event.kind) {
         return Ok(None);
     }
 
+    let lens_target = if matches!(editor.mode(), Mode::Normal | Mode::Insert) {
+        editor
+            .render_cache
+            .code_lens_targets
+            .borrow()
+            .iter()
+            .find(|target| target.area.contains(event.column, event.row))
+            .cloned()
+    } else {
+        None
+    };
+    if event.kind == MouseEventKind::Moved {
+        let hovered = lens_target.as_ref().map(|target| target.area);
+        if editor.render_cache.hovered_code_lens != hovered {
+            editor.render_cache.hovered_code_lens = hovered;
+            editor.mark_dirty();
+        }
+        if hovered.is_some() {
+            editor.dismiss_blame_mouse_hover();
+            return Ok(None);
+        }
+    } else if event.kind == MouseEventKind::Down(MouseButton::Left) {
+        if let Some(target) = lens_target {
+            if let Err(error) = editor.activate_code_lens(
+                &target.file_path,
+                target.version,
+                target.index,
+                target.generation,
+                target.mode,
+            ) {
+                editor.set_status_message(error.to_string());
+            }
+            return Ok(None);
+        }
+    }
+
+    if event.kind != MouseEventKind::Moved {
+        editor.dismiss_blame_mouse_hover();
+    }
     match event.kind {
+        MouseEventKind::Moved => {
+            if editor.options.blame {
+                if let Some(line) = is_blame_click(editor, event.column, event.row) {
+                    editor.hover_blame_line(line);
+                    return Ok(None);
+                }
+            }
+            editor.dismiss_blame_mouse_hover();
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             return handle_left_click(editor, event.column, event.row);
         }
@@ -25,7 +113,7 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Opti
             handle_left_drag(editor, event.column, event.row)?;
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            handle_left_release(editor)?;
+            return handle_left_release(editor, event.column, event.row);
         }
         MouseEventKind::ScrollUp => {
             handle_scroll(editor, true, event.column, event.row)?;
@@ -118,13 +206,15 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
             let col = row_start + display_col_in_row;
             (line, col)
         } else {
-            let line = (rel_row + editor.scroll_offset())
+            let line = editor
+                .line_for_screen_row(rel_row)
                 .min(editor.buffer().line_count().saturating_sub(1));
             (line, display_col_in_row + editor.horizontal_offset())
         }
     } else {
-        let line =
-            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+        let line = editor
+            .line_for_screen_row(rel_row)
+            .min(editor.buffer().line_count().saturating_sub(1));
         (line, display_col_in_row + editor.horizontal_offset())
     };
 
@@ -205,10 +295,14 @@ fn check_concealed_link_click(editor: &Editor, screen_col: u16, screen_row: u16)
             let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             logical_line.min(editor.buffer().line_count().saturating_sub(1))
         } else {
-            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+            editor
+                .line_for_screen_row(rel_row)
+                .min(editor.buffer().line_count().saturating_sub(1))
         }
     } else {
-        (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+        editor
+            .line_for_screen_row(rel_row)
+            .min(editor.buffer().line_count().saturating_sub(1))
     };
 
     // Don't check cursor line (concealment is disabled there)
@@ -256,7 +350,7 @@ fn is_blame_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<u
     let area = editor.render_cache.last_buffer_area?;
     let blame_width = editor.render_cache.last_blame_width;
 
-    if blame_width == 0 {
+    if !editor.options.blame || blame_width == 0 {
         return None;
     }
 
@@ -277,16 +371,22 @@ fn is_blame_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<u
                 let viewport_visual_row = wrap_map
                     .viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
                 let absolute_visual_row = rel_row + viewport_visual_row;
+                if absolute_visual_row >= wrap_map.total_visual_lines() {
+                    return None;
+                }
                 let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
-                logical_line.min(editor.buffer().line_count().saturating_sub(1))
+                logical_line
             } else {
-                (rel_row + editor.scroll_offset())
-                    .min(editor.buffer().line_count().saturating_sub(1))
+                editor.line_for_screen_row(rel_row)
             }
         } else {
-            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+            editor.line_for_screen_row(rel_row)
         };
-        Some(buffer_line)
+        editor
+            .buffer()
+            .git_blame()?
+            .get(buffer_line)
+            .map(|_| buffer_line)
     } else {
         None
     }
@@ -294,9 +394,31 @@ fn is_blame_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<u
 
 /// Returns the buffer line if the click lands in the sign column (first 2 chars of gutter).
 fn is_sign_column_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
+    let start = editor.render_cache.last_blame_width + editor.fold_column_width();
+    gutter_segment_click(editor, screen_col, screen_row, start, start + 2)
+}
+
+/// Returns the buffer line if the click lands in the fold marker column.
+fn is_fold_column_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
+    let start = editor.render_cache.last_blame_width;
+    let width = editor.fold_column_width();
+    if width == 0 {
+        return None;
+    }
+    gutter_segment_click(editor, screen_col, screen_row, start, start + width)
+}
+
+/// The buffer line under a click inside the gutter columns `start..end`
+/// (relative to the buffer area's left edge).
+fn gutter_segment_click(
+    editor: &Editor,
+    screen_col: u16,
+    screen_row: u16,
+    start: usize,
+    end: usize,
+) -> Option<usize> {
     let area = editor.render_cache.last_buffer_area?;
     let gutter_width = editor.render_cache.last_gutter_width;
-    let blame_width = editor.render_cache.last_blame_width;
 
     if gutter_width == 0 {
         return None;
@@ -311,12 +433,7 @@ fn is_sign_column_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Op
     }
 
     let rel_col = (screen_col - area.x) as usize;
-
-    // Sign column starts after blame, spans 2 columns (SIGN_WIDTH)
-    let sign_start = blame_width;
-    let sign_end = blame_width + 2; // SIGN_WIDTH
-
-    if rel_col < sign_start || rel_col >= sign_end {
+    if rel_col < start || rel_col >= end {
         return None;
     }
 
@@ -329,10 +446,14 @@ fn is_sign_column_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Op
             let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             logical_line.min(editor.buffer().line_count().saturating_sub(1))
         } else {
-            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+            editor
+                .line_for_screen_row(rel_row)
+                .min(editor.buffer().line_count().saturating_sub(1))
         }
     } else {
-        (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+        editor
+            .line_for_screen_row(rel_row)
+            .min(editor.buffer().line_count().saturating_sub(1))
     };
     Some(buffer_line)
 }
@@ -366,11 +487,14 @@ fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<
                 let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
                 logical_line.min(editor.buffer().line_count().saturating_sub(1))
             } else {
-                (rel_row + editor.scroll_offset())
+                editor
+                    .line_for_screen_row(rel_row)
                     .min(editor.buffer().line_count().saturating_sub(1))
             }
         } else {
-            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+            editor
+                .line_for_screen_row(rel_row)
+                .min(editor.buffer().line_count().saturating_sub(1))
         };
         Some(buffer_line)
     } else {
@@ -415,7 +539,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             .find(|(area, _)| area.contains(col, row))
             .map(|(_, profile)| profile.clone())
         {
-            editor.ai_set_profile(&profile);
+            editor.ai_select_chat_model(&profile.id, &profile.model);
             return Ok(None);
         }
         if let Some(effort) = editor
@@ -429,6 +553,17 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.set_ai_chat_reasoning_effort(&effort);
             return Ok(None);
         }
+        if let Some(mode) = editor
+            .render_cache
+            .ai_chat_interactions
+            .permission_picker_options
+            .iter()
+            .find(|(area, _)| area.contains(col, row))
+            .map(|(_, mode)| mode.clone())
+        {
+            editor.set_ai_chat_permission_mode(&mode);
+            return Ok(None);
+        }
         if editor
             .render_cache
             .ai_chat_interactions
@@ -436,6 +571,15 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             .is_some_and(|area| area.contains(col, row))
         {
             editor.open_ai_chat_model_picker(crate::editor::ChatModelPickerSection::Model);
+            return Ok(None);
+        }
+        if editor
+            .render_cache
+            .ai_chat_interactions
+            .permission_picker_trigger
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.open_ai_chat_model_picker(crate::editor::ChatModelPickerSection::Permission);
             return Ok(None);
         }
         if editor
@@ -518,7 +662,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         if let Some(tool_call_id) = editor
             .render_cache
             .ai_chat_interactions
-            .walkthrough_replays
+            .tool_replays
             .iter()
             .find(|(area, _)| area.contains(col, row))
             .map(|(_, tool_call_id)| tool_call_id.clone())
@@ -526,7 +670,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.render_cache.ai_chat_text_selection = None;
             editor.render_cache.ai_chat_text_selecting = false;
             editor.clear_ai_chat_text_selection_autoscroll();
-            editor.replay_code_explanation(&tool_call_id);
+            editor.replay_ai_chat_tool(&tool_call_id);
             return Ok(None);
         }
         if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
@@ -568,6 +712,16 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         return Ok(None);
     }
 
+    if editor.is_test_panel_open()
+        && editor
+            .render_cache
+            .test_panel_area
+            .is_some_and(|area| col == area.x && area.contains(col, row))
+    {
+        editor.render_cache.test_panel_drag = Some((col, editor.test_panel().width_delta));
+        return Ok(None);
+    }
+
     // Exit visual mode if active
     if matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
         editor.set_mode(Mode::Normal);
@@ -578,14 +732,17 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         return Ok(Some(url));
     }
 
-    // Check blame column click → show blame popup
+    // Hover shows metadata; clicking an annotation opens the full commit patch.
     if let Some(line) = is_blame_click(editor, col, row) {
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line, GraphemeCol::ZERO);
-        editor.show_blame_info();
+        editor.show_blame_diff_at(line);
         return Ok(None);
+    }
+
+    // Fold column click → toggle the fold that starts on that line
+    if let Some(line) = is_fold_column_click(editor, col, row) {
+        if editor.toggle_fold_at_gutter(line) {
+            return Ok(None);
+        }
     }
 
     // Check sign column click → toggle breakpoint
@@ -616,12 +773,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         if editor.diff_review_click(line, char_col) {
             return Ok(None);
         }
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line, GraphemeCol(char_col));
-        editor.render_cache.mouse_state.is_dragging = true;
-        editor.render_cache.mouse_state.drag_origin = Some((line, char_col));
+        editor.pointer_press(line, char_col, 1, false);
     }
 
     Ok(None)
@@ -668,6 +820,13 @@ fn handle_ai_chat_input_click(editor: &mut Editor, col: u16, row: u16) -> bool {
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
+    if let Some((start, delta)) = editor.render_cache.test_panel_drag {
+        if editor.is_test_panel_open() {
+            let width = i32::from(delta) + i32::from(start) - i32::from(col);
+            editor.set_test_panel_width_delta(width);
+        }
+        return Ok(());
+    }
     if editor.render_cache.ai_chat_separator_dragging {
         if let Some(split_area) = editor.render_cache.ai_chat_split_area {
             editor.resize_ai_chat_panel(col, split_area);
@@ -710,37 +869,49 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     }
 
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
-        // Enter visual mode on first drag movement (if not already visual)
-        if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
-            if let Some((origin_line, origin_col)) = editor.render_cache.mouse_state.drag_origin {
-                editor.set_visual_start(origin_line, origin_col);
-            }
-            // If we started from a gutter click, stay in VisualLine
-            if editor.mode() != Mode::VisualLine {
-                editor.set_mode(Mode::Visual);
-            }
-        }
-
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line, GraphemeCol(char_col));
+        editor.pointer_drag(line, char_col);
     }
 
     Ok(())
 }
 
-fn handle_left_release(editor: &mut Editor) -> Result<()> {
+fn handle_left_release(editor: &mut Editor, col: u16, row: u16) -> Result<Option<String>> {
+    if editor.render_cache.test_panel_drag.take().is_some() {
+        return Ok(None);
+    }
     if editor.render_cache.ai_chat_separator_dragging {
         editor.render_cache.ai_chat_separator_dragging = false;
-        return Ok(());
+        return Ok(None);
     }
     if editor.render_cache.ai_chat_text_selecting {
+        let destination = editor
+            .render_cache
+            .ai_chat_text_selection
+            .filter(|selection| !selection.moved)
+            .and_then(|selection| {
+                let (row, column) = ai_chat_screen_position(editor, col, row)?;
+                let point = crate::editor::render_cache::ChatTextPoint { row, column };
+                if selection.anchor != point {
+                    return None;
+                }
+                editor
+                    .render_cache
+                    .ai_chat_interactions
+                    .links
+                    .iter()
+                    .find(|link| link.row == row && link.columns.contains(&column))
+                    .map(|link| link.destination.clone())
+            });
         editor.finish_ai_chat_text_selection();
-        return Ok(());
+        if editor.mode() == Mode::AiChat {
+            if let Some(destination) = destination {
+                return Ok(editor.open_ai_chat_link(&destination));
+            }
+        }
+        return Ok(None);
     }
-    editor.render_cache.mouse_state.is_dragging = false;
-    Ok(())
+    editor.pointer_release();
+    Ok(None)
 }
 
 fn ai_chat_screen_position(editor: &Editor, col: u16, row: u16) -> Option<(usize, usize)> {
@@ -922,6 +1093,31 @@ mod tests {
         });
         editor.render_cache.ai_chat_last_total_rows = 100;
         editor
+    }
+
+    #[test]
+    fn dragging_test_separator_resizes_without_selecting_buffer_text() {
+        let mut editor = Editor::with_content("hello");
+        editor.toggle_test_panel();
+        editor.render_cache.test_panel_area = Some(crate::Rect {
+            x: 70,
+            y: 0,
+            width: 30,
+            height: 20,
+        });
+        handle_left_click(&mut editor, 70, 5).unwrap();
+        handle_left_drag(&mut editor, 55, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, 15);
+        assert!(!editor.render_cache.mouse_state.is_dragging);
+        assert_eq!(editor.mode(), Mode::Normal);
+        handle_left_drag(&mut editor, 0, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, 70);
+        handle_left_drag(&mut editor, 200, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, -20);
+        handle_left_release(&mut editor, 200, 5).unwrap();
+        assert!(editor.render_cache.test_panel_drag.is_none());
+        handle_left_drag(&mut editor, 60, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, -20);
     }
 
     #[test]
@@ -1400,7 +1596,7 @@ mod tests {
     #[test]
     fn clicking_walkthrough_replay_takes_priority_over_text_selection() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_interactions.walkthrough_replays = vec![(
+        editor.render_cache.ai_chat_interactions.tool_replays = vec![(
             crate::Rect {
                 x: 68,
                 y: 4,

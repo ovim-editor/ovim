@@ -1066,7 +1066,7 @@ mod tests {
             task_name: "inspect_child_effect".into(),
             ancestry: vec![AgentId::parse(format!("agt_{parent}")).unwrap()],
             role: "implementer".into(),
-            model: "gpt-5.3-codex".into(),
+            model: "gpt-6.1-sol".into(),
             reasoning_effort: "high".into(),
             workspace,
         }
@@ -1211,7 +1211,7 @@ mod tests {
         assert_eq!(broker.attention_generation(), 2);
         assert_eq!(pending[0].request.ancestry[0].as_str(), "agt_root");
         assert_eq!(pending[0].request.role, "implementer");
-        assert_eq!(pending[0].request.model, "gpt-5.3-codex");
+        assert_eq!(pending[0].request.model, "gpt-6.1-sol");
         assert_eq!(pending[0].request.reasoning_effort, "high");
         assert_eq!(pending[0].request.tool_name, "write_file");
         assert_eq!(
@@ -1441,7 +1441,7 @@ mod tests {
                     task_name: "abandoned".into(),
                     ancestry: context.ancestry,
                     role: "implementer".into(),
-                    model: "gpt-5.3-codex".into(),
+                    model: "gpt-6.1-sol".into(),
                     reasoning_effort: "high".into(),
                     tool_name: "write_file".into(),
                     normalized_effect: ToolSideEffect::Mutation,

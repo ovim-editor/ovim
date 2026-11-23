@@ -14,3 +14,13 @@ too_many_arguments = "allow"
 # Its auto-fix moves conditions into match guards, changing arm fall-through
 # (a key swallowed by an empty arm would instead reach later arms).
 collapsible_match = "allow"
+
+# ~170 integration-test binaries each statically link the whole dependency
+# graph. With full DWARF they exhaust the CI runner's disk while linking
+# (lld dies with SIGBUS). Line tables keep file:line in backtraces at a
+# fraction of the size; dependencies need no debug info at all.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

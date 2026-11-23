@@ -1,6 +1,10 @@
 use crate::buffer::Buffer;
 use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col, CharCol, GraphemeCol};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, Weak};
+
+type CachedLineMatches = (Weak<crate::text_index::LineIndex>, Arc<Vec<(usize, usize)>>);
 
 /// Represents a search query with its direction
 #[derive(Clone, Debug)]
@@ -13,18 +17,14 @@ pub struct Search {
     forward: bool,
     /// Last match position (line, col)
     last_match: Option<(usize, usize)>,
+    /// Share exact regex results across frontend projections of immutable lines.
+    line_matches: Arc<Mutex<VecDeque<CachedLineMatches>>>,
 }
 
 impl Search {
     /// Creates a new search with a pattern
     pub fn new(pattern: String, forward: bool) -> Self {
-        let regex = Regex::new(&pattern).ok();
-        Self {
-            pattern,
-            regex,
-            forward,
-            last_match: None,
-        }
+        Self::new_with_options(pattern, forward, false, false)
     }
 
     /// Creates a new search with case sensitivity options
@@ -34,24 +34,19 @@ impl Search {
         ignorecase: bool,
         smartcase: bool,
     ) -> Self {
-        // Determine if we should be case-insensitive
-        let case_insensitive = if ignorecase {
-            // If smartcase is on and pattern has uppercase, be case-sensitive
-            !(smartcase && pattern.chars().any(|c| c.is_uppercase()))
-        } else {
-            false
-        };
-
-        let regex = RegexBuilder::new(&pattern)
-            .case_insensitive(case_insensitive)
-            .build()
-            .ok();
+        let regex = crate::search_pattern::compile(
+            &pattern,
+            crate::search_pattern::CaseOptions::new(ignorecase, smartcase),
+            None,
+        )
+        .ok();
 
         Self {
             pattern,
             regex,
             forward,
             last_match: None,
+            line_matches: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -139,8 +134,9 @@ impl Search {
             }
         }
 
-        // Wrap around to beginning
-        for line_idx in 0..from_line {
+        // Wrap around to beginning, including the part of the starting line before
+        // `from_col` (any match there lies before the cursor: `find_at` found none after).
+        for line_idx in 0..=from_line.min(line_count.saturating_sub(1)) {
             if let Some(line_text) = buffer.line_text(line_idx) {
                 if let Some(mat) = regex.find(&line_text) {
                     let col = line_text[..mat.start()].chars().count();
@@ -162,12 +158,19 @@ impl Search {
         from_col: CharCol,
     ) -> Option<(usize, CharCol, String)> {
         // Search backward from current position
-        // First, search the current line up to from_col
+        // First, search the current line for the last match that starts before
+        // `from_col` (it may extend past it: the cursor can be inside a match).
         if let Some(line_text) = buffer.line_text(from_line) {
-            // Use character-based slicing to avoid UTF-8 boundary panics
-            let search_text: String = line_text.chars().take(from_col.0).collect();
-            if let Some(mat) = regex.find_iter(&search_text).last() {
-                let col = search_text[..mat.start()].chars().count();
+            let from_byte = line_text
+                .char_indices()
+                .nth(from_col.0)
+                .map_or(line_text.len(), |(byte_idx, _)| byte_idx);
+            if let Some(mat) = regex
+                .find_iter(&line_text)
+                .take_while(|mat| mat.start() < from_byte)
+                .last()
+            {
+                let col = line_text[..mat.start()].chars().count();
                 let match_text = mat.as_str().to_string();
                 return Some((from_line, CharCol(col), match_text));
             }
@@ -186,9 +189,10 @@ impl Search {
             }
         }
 
-        // Wrap around to end
+        // Wrap around to end, including the part of the starting line from
+        // `from_col` on (the part before it had no match).
         let line_count = buffer.line_count();
-        for line_idx in (from_line + 1..line_count).rev() {
+        for line_idx in (from_line..line_count).rev() {
             if let Some(line_text) = buffer.line_text(line_idx) {
                 if let Some(mat) = regex.find_iter(&line_text).last() {
                     let col = line_text[..mat.start()].chars().count();
@@ -210,15 +214,82 @@ impl Search {
     /// Returns a vector of (start_col, end_col) tuples
     pub fn find_all_in_line(&self, line_text: &str) -> Vec<(usize, usize)> {
         let mut matches = Vec::new();
-
+        let mut previous_byte = 0;
+        let mut previous_char = 0;
         if let Some(ref regex) = self.regex {
             for mat in regex.find_iter(line_text) {
-                let start_col = line_text[..mat.start()].chars().count();
-                let end_col = line_text[..mat.end()].chars().count();
+                // Matches are ordered and nonoverlapping. Convert each portion
+                // once instead of recounting the whole prefix for every match.
+                let start_col =
+                    previous_char + line_text[previous_byte..mat.start()].chars().count();
+                let end_col = start_col + line_text[mat.start()..mat.end()].chars().count();
                 matches.push((start_col, end_col));
+                previous_byte = mat.end();
+                previous_char = end_col;
             }
         }
-
         matches
+    }
+    /// Exact whole-line regex results cached by immutable text identity. This
+    /// preserves anchors and context while making repeated viewport renders cheap.
+    pub fn find_all_in_index(
+        &self,
+        index: &Arc<crate::text_index::LineIndex>,
+    ) -> Arc<Vec<(usize, usize)>> {
+        let mut cache = self
+            .line_matches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(position) = cache
+            .iter()
+            .position(|(line, _)| line.upgrade().is_some_and(|line| Arc::ptr_eq(&line, index)))
+        {
+            let entry = cache.remove(position).unwrap();
+            let result = entry.1.clone();
+            cache.push_back(entry);
+            return result;
+        }
+        let text = index.slice_chars(0..index.len_chars());
+        let matches = Arc::new(self.find_all_in_line(&text));
+        cache.retain(|(line, _)| line.strong_count() > 0);
+        // Retain enough distinct lines for a tall viewport and split panes;
+        // a cache smaller than the viewport would thrash on every frame.
+        if cache.len() == 256 {
+            cache.pop_front();
+        }
+        cache.push_back((Arc::downgrade(index), matches.clone()));
+        matches
+    }
+}
+
+#[cfg(test)]
+mod indexed_search_tests {
+    use super::*;
+    use crate::text_index::LineIndex;
+
+    #[test]
+    fn dense_unicode_matches_keep_character_offsets() {
+        let search = Search::new("é".into(), true);
+        assert_eq!(
+            search.find_all_in_line("éé x é"),
+            vec![(0, 1), (1, 2), (5, 6)]
+        );
+        let empty = Search::new("".into(), true);
+        assert_eq!(empty.find_all_in_line("éx"), vec![(0, 0), (1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn immutable_line_cache_preserves_anchors_and_reuses_results() {
+        let search = Search::new(r"^a\+$".into(), true);
+        let line = LineIndex::from_text("aaaa");
+        let first = search.find_all_in_index(&line);
+        assert_eq!(*first, vec![(0, 4)]);
+        assert!(Arc::ptr_eq(
+            &first,
+            &search.clone().find_all_in_index(&line)
+        ));
+        let edited = LineIndex::from_text("baaaa");
+        assert!(search.find_all_in_index(&edited).is_empty());
+        assert_eq!(*search.find_all_in_index(&line), vec![(0, 4)]);
     }
 }

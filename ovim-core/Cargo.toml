@@ -1,14 +1,22 @@
 [package]
 name = "ovim-core"
-version = "1.2.7"
+version = "1.8.0"
 edition = "2024"
 description = "Core library for ovim (Oxidized Vim) — buffer, syntax, LSP, session, and editor primitives."
+license = "MIT"
+repository = "https://github.com/ovim-editor/ovim"
 
 [lints]
 workspace = true
 
 [dependencies]
 bitflags = "2"
+flate2 = "1"
+# tick: open URLs the editor asks for (Codex sign-in) in the system browser
+open = "5"
+# lsp_init/auto_install (GitHub release archives)
+tar = "0.4"
+zip = "9.1.3"
 
 # mode/ - no extra deps
 # unicode/
@@ -59,8 +67,12 @@ tree-sitter-rust = "0.23"
 tree-sitter-javascript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-java = "0.23"
+# fwcd Kotlin grammar; compatible with tree-sitter 0.25 through tree-sitter-language 0.1
+tree-sitter-kotlin-sg = "0.4.1"
 tree-sitter-typescript = "0.23"
 tree-sitter-json = "0.24"
+tree-sitter-properties = "0.3"
+tree-sitter-ini = "1.4"
 tree-sitter-yaml = "0.6"
 tree-sitter-html = "0.23"
 tree-sitter-xml = "0.7"
@@ -83,6 +95,7 @@ tree-sitter-wgsl-bevy = "0.1.4"
 tree-sitter-astro-next = "0.1.1"
 streaming-iterator = "0.1.9"
 regex = "1.10"
+similar = "2.7"
 minijinja = "2.0"
 jsonschema = "0.28"
 # lua/
@@ -90,6 +103,7 @@ mlua = { version = "0.9", features = ["lua54", "vendored", "async", "serialize"]
 # editor/
 ignore = "0.4"
 globset = "0.4"
+notify = "6.1"
 arboard = { version = "3.4", features = ["wayland-data-control"] }
 nucleo = "0.5"
 grep-matcher = "0.1"

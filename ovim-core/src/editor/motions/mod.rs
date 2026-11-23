@@ -18,7 +18,7 @@ mod method;
 mod paragraph;
 mod screen;
 mod section;
-mod sentence;
+pub(crate) mod sentence;
 mod word;
 
 /// Character classification for word motions.
@@ -68,11 +68,6 @@ pub(super) fn is_cjk_ideograph(c: char) -> bool {
 pub struct Motions;
 
 impl Motions {
-    /// Checks if a character is whitespace
-    pub(super) fn is_whitespace(c: char) -> bool {
-        c.is_whitespace()
-    }
-
     /// Convert absolute character position to (line, char col).
     pub fn abs_pos_to_line_col(
         rope: &ropey::Rope,

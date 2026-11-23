@@ -30,6 +30,9 @@ impl Editor {
     }
 
     pub fn ai_chat_comprehension_policy(&self) -> ComprehensionPolicy {
+        if self.ai_chat_uses_external_agent() {
+            return ComprehensionPolicy::Off;
+        }
         self.ai_state
             .chat
             .as_ref()
@@ -38,6 +41,10 @@ impl Editor {
     }
 
     pub fn set_ai_chat_comprehension_policy(&mut self, policy: ComprehensionPolicy) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            self.set_status_message("Ovim comprehension gates are unavailable for Claude Code");
+            return false;
+        }
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };

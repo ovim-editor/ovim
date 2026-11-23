@@ -380,6 +380,46 @@ describe("BrowserPanel", () => {
         }
     });
 
+    it("replaces a focused address draft when switching sessions", async () => {
+        invoke.mockResolvedValue(undefined);
+        const [current, setCurrent] = createSignal(session());
+        const navigate = vi.fn().mockResolvedValue(undefined);
+        const result = render(() => (
+            <BrowserPanel
+                native
+                active
+                obscured={false}
+                session={current()}
+                onNavigate={navigate}
+                onToolbar={vi.fn().mockResolvedValue(undefined)}
+                onClose={vi.fn().mockResolvedValue(undefined)}
+                onVimKeysChange={vi.fn().mockResolvedValue(undefined)}
+            />
+        ));
+        try {
+            const address = screen.getByLabelText(
+                "Browser address",
+            ) as HTMLInputElement;
+            address.focus();
+            fireEvent.input(address, { target: { value: "unfinished draft" } });
+            setCurrent(session({ title: "Updated title" }));
+            expect(address.value).toBe("unfinished draft");
+            setCurrent(
+                session({ sessionId: "browser-2", url: "https://docs.rs/" }),
+            );
+            expect(address.value).toBe("https://docs.rs/");
+            fireEvent.submit(address.closest("form")!);
+            await waitFor(() =>
+                expect(navigate).toHaveBeenCalledWith(
+                    "browser-2",
+                    "https://docs.rs/",
+                ),
+            );
+        } finally {
+            result.unmount();
+        }
+    });
+
     it("does not reproject native bounds for state-only session updates", async () => {
         invoke.mockResolvedValue(undefined);
         const [current, setCurrent] = createSignal(session());

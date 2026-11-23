@@ -1,225 +1,381 @@
-; Keywords
-[
-  "abstract"
-  "actual"
-  "annotation"
-  "as"
-  "as?"
-  "break"
-  "by"
-  "catch"
-  "class"
-  "companion"
-  "const"
-  "constructor"
-  "continue"
-  "crossinline"
-  "data"
-  "delegate"
-  "do"
-  "dynamic"
-  "else"
-  "enum"
-  "expect"
-  "external"
-  "field"
-  "file"
-  "final"
-  "finally"
-  "for"
-  "fun"
-  "get"
-  "if"
-  "import"
-  "in"
-  "infix"
-  "init"
-  "inline"
-  "inner"
-  "interface"
-  "internal"
-  "is"
-  "lateinit"
-  "noinline"
-  "null"
-  "object"
-  "open"
-  "operator"
-  "out"
-  "override"
-  "package"
-  "param"
-  "private"
-  "property"
-  "protected"
-  "public"
-  "receiver"
-  "reified"
-  "return"
-  "sealed"
-  "set"
-  "setparam"
-  "super"
-  "suspend"
-  "tailrec"
-  "this"
-  "throw"
-  "try"
-  "typealias"
-  "typeof"
-  "val"
-  "var"
-  "vararg"
-  "when"
-  "where"
-  "while"
-] @keyword
+;; Highlights for tree-sitter-kotlin-sg (fwcd grammar). Derived from the crate's
+;; queries/highlights.scm (nvim-treesitter based); legacy capture names are
+;; mapped onto the ones ovim's themes know (see capture_to_highlight_group).
+;; Based on the nvim-treesitter highlighting, which is under the Apache license.
+;; See https://github.com/nvim-treesitter/nvim-treesitter/blob/f8ab59861eed4a1c168505e3433462ed800f2bae/queries/kotlin/highlights.scm
+;;
+;; The only difference in this file is that queries using #lua-match?
+;; have been removed.
 
-; Function declarations
-(function_declaration
-  (simple_identifier) @function)
+;;; Identifiers
 
-; Lambda expressions
-(lambda_literal) @function
+(simple_identifier) @variable
 
-; Function calls
-(call_expression
-  (simple_identifier) @function)
+; `it` keyword inside lambdas
+; FIXME: This will highlight the keyword outside of lambdas since tree-sitter
+;        does not allow us to check for arbitrary nestation
+((simple_identifier) @variable.builtin
+(#eq? @variable.builtin "it"))
 
-; Navigation suffixes for method calls
-(navigation_expression
-  (navigation_suffix
-    (simple_identifier) @function))
+; `field` keyword inside property getter/setter
+; FIXME: This will highlight the keyword outside of getters and setters
+;        since tree-sitter does not allow us to check for arbitrary nestation
+((simple_identifier) @variable.builtin
+(#eq? @variable.builtin "field"))
 
-; Class declarations
-(class_declaration
-  (type_identifier) @type)
+; `this` this keyword inside classes
+(this_expression) @variable.builtin
 
-; Object declarations
-(object_declaration
-  (type_identifier) @type)
+; `super` keyword inside classes
+(super_expression) @variable.builtin
 
-; Interface declarations
-(interface_declaration
-  (type_identifier) @type)
+(class_parameter
+	(simple_identifier) @property)
 
-; Type references
+(class_body
+	(property_declaration
+		(variable_declaration
+			(simple_identifier) @property)))
+
+; id_1.id_2.id_3: `id_2` and `id_3` are assumed as object properties
+(_
+	(navigation_suffix
+		(simple_identifier) @property))
+
+(enum_entry
+	(simple_identifier) @constant)
+
 (type_identifier) @type
-(user_type
-  (type_identifier) @type)
 
-; Nullable types
-(nullable_type
-  (type_identifier) @type)
+((type_identifier) @type.builtin
+	(#any-of? @type.builtin
+		"Byte"
+		"Short"
+		"Int"
+		"Long"
+		"UByte"
+		"UShort"
+		"UInt"
+		"ULong"
+		"Float"
+		"Double"
+		"Boolean"
+		"Char"
+		"String"
+		"Array"
+		"ByteArray"
+		"ShortArray"
+		"IntArray"
+		"LongArray"
+		"UByteArray"
+		"UShortArray"
+		"UIntArray"
+		"ULongArray"
+		"FloatArray"
+		"DoubleArray"
+		"BooleanArray"
+		"CharArray"
+		"Map"
+		"Set"
+		"List"
+		"EmptyMap"
+		"EmptySet"
+		"EmptyList"
+		"MutableMap"
+		"MutableSet"
+		"MutableList"
+))
 
-; Primitive types (not directly available in Kotlin, but often used)
-; Kotlin uses object types, but these are commonly used
-; If the grammar doesn't define these, remove this section
+(package_header
+	. (identifier)) @type
 
-; Parameters
+(import_header
+	"import" @keyword)
+
+
+; TODO: Seperate labeled returns/breaks/continue/super/this
+;       Must be implemented in the parser first
+(label) @label
+
+;;; Function definitions
+
+(function_declaration
+	. (simple_identifier) @function)
+
+(getter
+	("get") @function.builtin)
+(setter
+	("set") @function.builtin)
+
+(primary_constructor) @constructor
+(secondary_constructor
+	("constructor") @constructor)
+
+(constructor_invocation
+	(user_type
+		(type_identifier) @constructor))
+
+(anonymous_initializer
+	("init") @constructor)
+
 (parameter
-  (simple_identifier) @parameter)
+	(simple_identifier) @parameter)
 
-; Properties
-(property_declaration
-  (variable_declaration
-    (simple_identifier) @property))
+(parameter_with_optional_type
+	(simple_identifier) @parameter)
 
-; String literals
-(line_string_literal) @string
-(multi_line_string_literal) @string
+; lambda parameters
+(lambda_literal
+	(lambda_parameters
+		(variable_declaration
+			(simple_identifier) @parameter)))
 
-; String interpolation
-(string_content) @string
+;;; Function calls
 
-; Character literals
+; function()
+(call_expression
+	. (simple_identifier) @function)
+
+; object.function() or object.property.function()
+(call_expression
+	(navigation_expression
+		(navigation_suffix
+			(simple_identifier) @function) . ))
+
+(call_expression
+	. (simple_identifier) @function.builtin
+    (#any-of? @function.builtin
+		"arrayOf"
+		"arrayOfNulls"
+		"byteArrayOf"
+		"shortArrayOf"
+		"intArrayOf"
+		"longArrayOf"
+		"ubyteArrayOf"
+		"ushortArrayOf"
+		"uintArrayOf"
+		"ulongArrayOf"
+		"floatArrayOf"
+		"doubleArrayOf"
+		"booleanArrayOf"
+		"charArrayOf"
+		"emptyArray"
+		"mapOf"
+		"setOf"
+		"listOf"
+		"emptyMap"
+		"emptySet"
+		"emptyList"
+		"mutableMapOf"
+		"mutableSetOf"
+		"mutableListOf"
+		"print"
+		"println"
+		"error"
+		"TODO"
+		"run"
+		"runCatching"
+		"repeat"
+		"lazy"
+		"lazyOf"
+		"enumValues"
+		"enumValueOf"
+		"assert"
+		"check"
+		"checkNotNull"
+		"require"
+		"requireNotNull"
+		"with"
+		"synchronized"
+))
+
+;;; Literals
+
+[
+	(line_comment)
+	(multiline_comment)
+	(shebang_line)
+] @comment
+
+(real_literal) @number
+[
+	(integer_literal)
+	(long_literal)
+	(hex_literal)
+	(bin_literal)
+	(unsigned_literal)
+] @number
+
+[
+	(null_literal) ; should be highlighted the same as booleans
+	(boolean_literal)
+] @constant
+
 (character_literal) @string
 
-; Numbers
-(integer_literal) @number
-(hex_literal) @number
-(bin_literal) @number
-(real_literal) @number
+(string_literal) @string
 
-; Booleans
-(boolean_literal) @constant
+(character_escape_seq) @string.escape
 
-; Null
-"null" @constant
+; There are 3 ways to define a regex
+;    - "[abc]?".toRegex()
+(call_expression
+	(navigation_expression
+		((string_literal) @string.regex)
+		(navigation_suffix
+			((simple_identifier) @_function
+			(#eq? @_function "toRegex")))))
 
-; Comments
-(line_comment) @comment
-(multiline_comment) @comment
+;    - Regex("[abc]?")
+(call_expression
+	((simple_identifier) @_function
+	(#eq? @_function "Regex"))
+	(call_suffix
+		(value_arguments
+			(value_argument
+				(string_literal) @string.regex))))
 
-; Annotations
-(annotation
-  (user_type
-    (type_identifier) @decorator))
+;   - Regex.fromLiteral("[abc]?")
+(call_expression
+	(navigation_expression
+		((simple_identifier) @_class
+		(#eq? @_class "Regex"))
+		(navigation_suffix
+			((simple_identifier) @_function
+			(#eq? @_function "fromLiteral"))))
+	(call_suffix
+		(value_arguments
+			(value_argument
+				(string_literal) @string.regex))))
 
-(single_annotation
-  (user_type
-    (type_identifier) @decorator))
+;;; Keywords
 
-; This/Super
-"this" @keyword
-"super" @keyword
-
-; Operators
+(type_alias "typealias" @keyword)
 [
-  "="
-  "+"
-  "-"
-  "*"
-  "/"
-  "%"
-  "=="
-  "!="
-  "<"
-  ">"
-  "<="
-  ">="
-  "&&"
-  "||"
-  "!"
-  "&"
-  "|"
-  "^"
-  "~"
-  "<<"
-  ">>"
-  ">>>"
-  "+="
-  "-="
-  "*="
-  "/="
-  "%="
-  "++"
-  "--"
-  "?"
-  ":"
-  "?:"
-  "?."
-  "!!"
-  ".."
-  "->"
-  "=>"
-  "::"
-  "!in"
-  "!is"
-  "as"
-  "as?"
-  "in"
-  "is"
+	(class_modifier)
+	(member_modifier)
+	(function_modifier)
+	(property_modifier)
+	(platform_modifier)
+	(variance_modifier)
+	(parameter_modifier)
+	(visibility_modifier)
+	(reification_modifier)
+	(inheritance_modifier)
+]@keyword
+
+[
+	"val"
+	"var"
+	"enum"
+	"class"
+	"object"
+	"interface"
+;	"typeof" ; NOTE: It is reserved for future use
+] @keyword
+
+("fun") @keyword.function
+
+(jump_expression) @keyword.return
+
+[
+	"if"
+	"else"
+	"when"
+] @keyword
+
+[
+	"for"
+	"do"
+	"while"
+] @keyword
+
+[
+	"try"
+	"catch"
+	"throw"
+	"finally"
+] @keyword
+
+
+(annotation
+	"@" @macro (use_site_target)? @macro)
+(annotation
+	(user_type
+		(type_identifier) @macro))
+(annotation
+	(constructor_invocation
+		(user_type
+			(type_identifier) @macro)))
+
+(file_annotation
+	"@" @macro "file" @macro ":" @macro)
+(file_annotation
+	(user_type
+		(type_identifier) @macro))
+(file_annotation
+	(constructor_invocation
+		(user_type
+			(type_identifier) @macro)))
+
+;;; Operators & Punctuation
+
+[
+	"!"
+	"!="
+	"!=="
+	"="
+	"=="
+	"==="
+	">"
+	">="
+	"<"
+	"<="
+	"||"
+	"&&"
+	"+"
+	"++"
+	"+="
+	"-"
+	"--"
+	"-="
+	"*"
+	"*="
+	"/"
+	"/="
+	"%"
+	"%="
+	"?."
+	"?:"
+	"!!"
+	"is"
+	"in"
+	"as"
+	"as?"
+	".."
+	"..<"
+	"->"
 ] @operator
 
-; Punctuation
-["(" ")" "[" "]" "{" "}" "<" ">"] @punctuation
-["." "," ";" ":"] @punctuation
+[
+	"(" ")"
+	"[" "]"
+	"{" "}"
+] @punctuation.bracket
 
-; Package declarations
-(package_header
-  (identifier) @namespace)
+[
+	"."
+	","
+	";"
+	":"
+	"::"
+] @punctuation.delimiter
 
-; Import statements
-(import_header
-  (identifier) @namespace)
+; NOTE: `interpolated_identifier`s can be highlighted in any way
+(string_literal
+	(interpolation_identifier_start) @punctuation.special
+	(interpolated_identifier) @none)
+(string_literal
+	(interpolation_expression_start) @punctuation.special
+	(interpolated_expression) @none
+	(interpolation_expression_end) @punctuation.special)

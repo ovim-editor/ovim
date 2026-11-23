@@ -1,11 +1,10 @@
 ---
 source: ovim/tests/unicode_edge_cases_test.rs
-assertion_line: 523
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:0
+Cursor: 0:49
 Lines: 1
 
 Buffer:
-[😀]😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀
+😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀[😀]

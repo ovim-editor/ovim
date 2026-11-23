@@ -182,6 +182,116 @@ describe("browser workbench controller", () => {
         );
     });
 
+    it("reports whether a closing tab still owns the selection before projection", async () => {
+        let resolveClose!: (state: BrowserState) => void;
+        invoke.mockImplementation((command: string) =>
+            command === "gui_browser_close"
+                ? new Promise<BrowserState>((resolve) => {
+                      resolveClose = resolve;
+                  })
+                : Promise.resolve(),
+        );
+        let dispose!: () => void;
+        const fixture = createRoot((cleanup) => {
+            dispose = cleanup;
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "browser",
+                sessionId: "browser-1",
+            });
+            const controller = createBrowserWorkbench({
+                native: true,
+                sourceTabs: () => sourceTabs,
+                includeVector: () => false,
+                selection,
+                setSelection,
+                setError: vi.fn(),
+            });
+            controller.accept({
+                revision: 1,
+                activeSessionId: "browser-1",
+                maxSessions: 8,
+                sessions: [
+                    {
+                        sessionId: "browser-1",
+                        url: "https://example.com/",
+                        title: "Example",
+                        visible: true,
+                        loading: false,
+                        documentId: 1,
+                        vimKeysEnabled: true,
+                        keyMode: "normal",
+                    },
+                ],
+            });
+            return { controller, selection, setSelection };
+        });
+        try {
+            const closing = fixture.controller.close("browser-1");
+            expect(await fixture.controller.close("browser-1")).toBe(false);
+            fixture.setSelection({ kind: "source", tabId: 12 });
+            resolveClose({ revision: 2, sessions: [], maxSessions: 8 });
+            expect(await closing).toBe(false);
+            expect(fixture.selection()).toEqual({ kind: "source", tabId: 12 });
+        } finally {
+            dispose();
+        }
+    });
+
+    it("keeps close ownership when a stream projects the removed tab before its reply", async () => {
+        let resolveClose!: (state: BrowserState) => void;
+        invoke.mockImplementation((command: string) =>
+            command === "gui_browser_close"
+                ? new Promise<BrowserState>((resolve) => {
+                      resolveClose = resolve;
+                  })
+                : Promise.resolve(),
+        );
+        let dispose!: () => void;
+        const fixture = createRoot((cleanup) => {
+            dispose = cleanup;
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "browser",
+                sessionId: "browser-1",
+            });
+            const controller = createBrowserWorkbench({
+                native: true,
+                sourceTabs: () => sourceTabs,
+                includeVector: () => false,
+                selection,
+                setSelection,
+                setError: vi.fn(),
+            });
+            controller.accept({
+                revision: 1,
+                activeSessionId: "browser-1",
+                maxSessions: 8,
+                sessions: [
+                    {
+                        sessionId: "browser-1",
+                        url: "https://example.com/",
+                        title: "Example",
+                        visible: true,
+                        loading: false,
+                        documentId: 1,
+                        vimKeysEnabled: true,
+                        keyMode: "normal",
+                    },
+                ],
+            });
+            return { controller, selection, setSelection };
+        });
+        try {
+            const closing = fixture.controller.close("browser-1");
+            const next = { revision: 2, sessions: [], maxSessions: 8 };
+            fixture.controller.accept(next);
+            expect(fixture.selection()).toEqual({ kind: "source", tabId: 12 });
+            resolveClose(next);
+            expect(await closing).toBe(true);
+        } finally {
+            dispose();
+        }
+    });
+
     it("restores a closed session at its prior workbench position", async () => {
         const original = {
             sessionId: "browser-1",
@@ -263,6 +373,60 @@ describe("browser workbench controller", () => {
         });
         expect(controller.canRestore()).toBe(false);
         disposeRoot();
+    });
+
+    it("does not put a closed blank tab on the restore stack", async () => {
+        const blank = {
+            sessionId: "browser-1",
+            url: "",
+            title: "",
+            visible: true,
+            loading: false,
+            documentId: 1,
+            vimKeysEnabled: true,
+            keyMode: "normal" as const,
+        };
+        const loaded = {
+            ...blank,
+            sessionId: "browser-2",
+            url: "https://example.com/",
+        };
+        invoke.mockImplementation((command: string) =>
+            command === "gui_browser_close"
+                ? Promise.resolve({ revision: 2, sessions: [], maxSessions: 8 })
+                : Promise.resolve(),
+        );
+        await createRoot(async (dispose) => {
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "browser",
+                sessionId: blank.sessionId,
+            });
+            const controller = createBrowserWorkbench({
+                native: true,
+                sourceTabs: () => sourceTabs,
+                includeVector: () => false,
+                selection,
+                setSelection,
+                setError: vi.fn(),
+            });
+            controller.accept({
+                revision: 1,
+                sessions: [blank, loaded],
+                activeSessionId: blank.sessionId,
+                maxSessions: 8,
+            });
+            await controller.close(blank.sessionId, 1);
+            expect(controller.canRestore()).toBe(false);
+            controller.accept({
+                revision: 3,
+                sessions: [loaded],
+                activeSessionId: loaded.sessionId,
+                maxSessions: 8,
+            });
+            await controller.close(loaded.sessionId, 1);
+            expect(controller.canRestore()).toBe(true);
+            dispose();
+        });
     });
 
     it("projects a durable agent presentation and falls back after close", () =>
@@ -495,3 +659,41 @@ describe("browser workbench controller", () => {
         );
     });
 });
+
+it("opening browser chrome cancels queued page focus", () =>
+    createRoot((dispose) => {
+        const frames: FrameRequestCallback[] = [];
+        vi.stubGlobal(
+            "requestAnimationFrame",
+            (callback: FrameRequestCallback) => {
+                frames.push(callback);
+                return frames.length;
+            },
+        );
+        const [selection, setSelection] = createSignal<WorkbenchSelection>({
+            kind: "browser",
+            sessionId: "browser-1",
+        });
+        const controller = createBrowserWorkbench({
+            native: true,
+            sourceTabs: () => sourceTabs,
+            includeVector: () => false,
+            selection,
+            setSelection,
+            setError: vi.fn(),
+        });
+        controller.present("browser-1");
+        controller.present("browser-1", false);
+        while (frames.length) frames.shift()!(0);
+        expect(invoke).not.toHaveBeenCalledWith("gui_browser_toolbar", {
+            sessionId: "browser-1",
+            action: "focus",
+        });
+        controller.present("browser-1");
+        while (frames.length) frames.shift()!(0);
+        expect(invoke).toHaveBeenCalledWith("gui_browser_toolbar", {
+            sessionId: "browser-1",
+            action: "focus",
+        });
+        dispose();
+    }));

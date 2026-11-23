@@ -30,6 +30,30 @@ const setup = () => {
 };
 
 describe("browser key router", () => {
+    it("recognises shortcuts on non-Latin layouts through the physical key", () => {
+        expect(
+            browserShortcutAction(
+                { key: "ц", code: "KeyW", shiftKey: false, ctrlKey: true },
+                true,
+                false,
+            ),
+        ).toBe("file.close");
+        expect(
+            browserShortcutAction(
+                { key: "д", code: "KeyL", shiftKey: false, ctrlKey: true },
+                true,
+                false,
+            ),
+        ).toBe("browser.focus-address");
+        expect(
+            browserShortcutAction(
+                { key: "ц", code: "KeyW", shiftKey: false },
+                false,
+                false,
+            ),
+        ).toBeUndefined();
+    });
+
     it("releases Vim control keys outside the browser on non-macOS hosts", () => {
         expect(
             browserShortcutAction(
@@ -82,7 +106,7 @@ describe("browser key router", () => {
                 false,
                 true,
             ),
-        ).toBe("browser.restore-tab");
+        ).toBeUndefined();
     });
 
     it("routes browser actions through the shared workbench controller", async () => {
@@ -130,4 +154,12 @@ describe("browser key router", () => {
         await route({ sessionId: "gone", intent: "close_tab" });
         expect(actions.closeTab).not.toHaveBeenCalled();
     });
+});
+
+it("Ctrl+Tab intents include source tabs and wrap in both directions", async () => {
+    const { route, actions } = setup();
+    await route({ sessionId: "one", intent: "previous_workbench_tab" });
+    expect(actions.selectTab).toHaveBeenLastCalledWith(0);
+    await route({ sessionId: "one", intent: "next_workbench_tab" });
+    expect(actions.selectTab).toHaveBeenLastCalledWith(2);
 });

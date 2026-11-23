@@ -63,9 +63,9 @@ fn test_yank_inside_braces() {
     // Content should be unchanged
     assert_eq!(test.buffer_content(), "{hello}\n");
 
-    // But we should be able to paste it
+    // But we should be able to paste it (nvim: after `yi{` the cursor is on the `h`)
     test.keys("p");
-    assert_eq!(test.buffer_content(), "{hellohello}\n");
+    assert_eq!(test.buffer_content(), "{hhelloello}\n");
 }
 
 #[test]

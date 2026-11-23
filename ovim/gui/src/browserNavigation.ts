@@ -46,7 +46,14 @@ export const createBrowserNavigation = (options: BrowserNavigationOptions) => {
 
     createEffect(() => {
         const request = commandRequest();
-        if (!request || hasSession(request.sessionId)) return;
+        const selection = options.selection();
+        if (
+            !request ||
+            (hasSession(request.sessionId) &&
+                selection.kind === "browser" &&
+                selection.sessionId === request.sessionId)
+        )
+            return;
         commandRefocusSession = undefined;
         setCommandRequest(undefined);
     });
@@ -63,16 +70,21 @@ export const createBrowserNavigation = (options: BrowserNavigationOptions) => {
             position >= 0
                 ? (tabs[position + 1] ?? tabs[position - 1])
                 : undefined;
-        await options.workbench.close(
+        const remainedSelected = await options.workbench.close(
             sessionId,
             position >= 0 ? position : tabs.length,
         );
-        if (closingSelected && fallback) options.selectReference(fallback);
+        if (closingSelected && remainedSelected && fallback) {
+            const currentFallback = options
+                .tabs()
+                .find((tab) => tab.id === fallback.id);
+            if (currentFallback) options.selectReference(currentFallback);
+        }
     };
 
     const openCommand = (sessionId = options.workbench.activeSessionId()) => {
         if (!sessionId || !hasSession(sessionId)) return;
-        options.workbench.present(sessionId);
+        options.workbench.present(sessionId, false);
         commandRefocusSession = sessionId;
         setCommandRequest({
             serial: nextCommandSerial++,
@@ -82,7 +94,7 @@ export const createBrowserNavigation = (options: BrowserNavigationOptions) => {
 
     const focusAddress = (sessionId = options.workbench.activeSessionId()) => {
         if (!sessionId || !hasSession(sessionId)) return;
-        options.workbench.present(sessionId);
+        options.workbench.present(sessionId, false);
         setAddressFocusRequest({
             serial: nextAddressFocusSerial++,
             sessionId,
@@ -95,7 +107,13 @@ export const createBrowserNavigation = (options: BrowserNavigationOptions) => {
         setCommandRequest(undefined);
         if (sessionId)
             requestAnimationFrame(() => {
-                void options.workbench.focus(sessionId).catch(() => {});
+                const selection = options.selection();
+                if (
+                    !commandRequest() &&
+                    selection.kind === "browser" &&
+                    selection.sessionId === sessionId
+                )
+                    void options.workbench.focus(sessionId).catch(() => {});
             });
         else if (options.selection().kind === "source")
             requestAnimationFrame(options.focusSource);

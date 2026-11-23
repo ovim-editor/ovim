@@ -163,3 +163,82 @@ fn test_edit_selection_compatibility_entry_uses_requested_chat_profile() {
         "hel"
     );
 }
+
+#[test]
+fn test_attached_selection_closes_to_normal_and_can_be_reselected() {
+    for (keys, mode, text) in [
+        ("vll", Mode::Visual, "hel"),
+        ("V", Mode::VisualLine, "hello world\n"),
+    ] {
+        for resume in [false, true] {
+            let mut test = EditorTest::new("hello world\nnext\n");
+            if resume {
+                test.keys("<Space><Space>").press_esc();
+            }
+            test.keys(keys);
+            let selected_text = test.editor.visual_selection_text();
+            test.keys("<Space><Space>").press_esc();
+            test.assert_mode(Mode::Normal);
+            assert!(test.editor.visual_start().is_none());
+            assert_eq!(
+                test.editor.ai_chat_pending_code_attachment().unwrap().text,
+                text
+            );
+            test.keys("gv");
+            test.assert_mode(mode);
+            assert_eq!(test.editor.visual_selection_text(), selected_text);
+            test.press_esc().keys("0x");
+            assert_eq!(test.buffer_content(), "ello world\nnext\n");
+            assert!(test.editor.visual_start().is_none());
+        }
+    }
+}
+
+#[test]
+fn test_reopening_visible_chat_preserves_return_mode() {
+    for replacement in [false, true] {
+        let mut test = EditorTest::new("hello world\n");
+        test.keys("<Space><Space>");
+        test.editor
+            .open_ai_chat(ovim_core::ai::ChatOpts {
+                name: if replacement { "another" } else { "chat" }.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        test.press_esc();
+        test.assert_mode(Mode::Normal);
+    }
+}
+
+#[test]
+fn test_direct_chat_open_consumes_all_visual_modes() {
+    for mode in [Mode::Visual, Mode::VisualLine, Mode::VisualBlock] {
+        let mut test = EditorTest::new("hello world\nnext\n");
+        test.editor.set_mode(mode);
+        test.editor.set_visual_start(0, 0);
+        test.editor
+            .open_ai_chat(ovim_core::ai::ChatOpts::default())
+            .unwrap();
+        test.press_esc();
+        test.assert_mode(Mode::Normal);
+        assert!(test.editor.visual_start().is_none());
+        test.keys("gv");
+        test.assert_mode(mode);
+        assert!(test.editor.visual_start().is_some());
+    }
+}
+
+#[test]
+fn test_failed_chat_open_preserves_visual_selection() {
+    let mut test = EditorTest::new("hello world\n");
+    test.keys("vll");
+    assert!(test
+        .editor
+        .open_ai_chat(ovim_core::ai::ChatOpts {
+            profile: Some("nonexistent-test-profile".into()),
+            ..Default::default()
+        })
+        .is_err());
+    test.assert_mode(Mode::Visual);
+    assert_eq!(test.editor.visual_selection_text().as_deref(), Some("hel"));
+}

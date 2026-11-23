@@ -1,5 +1,6 @@
 use crate::editor::Editor;
 use crate::syntax::{Theme, UiGroup};
+use ovim_core::editor::ai_chat_input::{wrap_chat_input_rows, wrap_chat_input_rows_with_widths};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -10,8 +11,9 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::ai_chat::TEXT_DIM;
-use super::helpers::{grapheme_col_to_display_col, truncate_to_width};
+use super::helpers::{cursor_screen_position, truncate_to_width};
 use super::layout::OverlayContext;
+use super::popup_placement::{place_beside_cursor, place_completion_menu};
 
 fn hover_content_width(rendered_lines: &[Line<'_>], hover_text: &str, is_preview: bool) -> usize {
     if is_preview {
@@ -101,49 +103,14 @@ pub fn render_hover_window(
 
     let gutter_width = layout.gutter_width;
 
-    // Convert cursor to screen coordinates
-    let rope = editor.buffer().rope();
-    let line_text = ovim_core::display::line_content(rope, cursor_line);
-    let tab_width = editor.indent_options().tab_width;
-    let char_col = ovim_core::unicode::grapheme_to_char_col(
-        &line_text,
-        ovim_core::unicode::GraphemeCol(cursor_col),
-    )
-    .0;
-    let base_display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
-    let edit_log = editor.buffer().edit_log();
-    let inline_offset =
-        editor
-            .decorations
-            .inline_width_before_projected(cursor_line, char_col, rope, edit_log);
-    let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
-    let inline_widths =
-        editor
-            .decorations
-            .inline_decorations_for_line_projected(cursor_line, rope, edit_log);
-
-    let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
-        if let Some(wrap_map) = editor.wrap_map() {
-            let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
-                cursor_line,
-                display_col,
-                &line_text,
-                &inline_widths,
-            );
-            let viewport_row =
-                wrap_map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
-            (abs_row.saturating_sub(viewport_row), vcol)
-        } else {
-            (cursor_line.saturating_sub(viewport_start), display_col)
-        }
-    } else {
-        let h_offset = editor.horizontal_offset();
-        (
-            cursor_line.saturating_sub(viewport_start),
-            display_col.saturating_sub(h_offset),
-        )
-    };
+    let (screen_line, visual_col) = cursor_screen_position(
+        editor,
+        cursor_line,
+        ovim_core::unicode::GraphemeCol(cursor_col),
+        viewport_start,
+        text_width,
+    );
 
     let cursor_screen_x = buffer_area.x + gutter_width as u16 + visual_col as u16;
     let cursor_screen_y = buffer_area.y + screen_line as u16;
@@ -274,19 +241,152 @@ pub fn render_hover_window(
     }
 }
 
-/// Renders the completion menu popup
-pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayContext) {
+/// Theme colour of a completion kind's glyph.
+fn completion_kind_color(class: ovim_core::editor::CompletionKindClass) -> Color {
+    use ovim_core::editor::CompletionKindClass as C;
+    match class {
+        C::Function => Color::Rgb(130, 170, 255),
+        C::Type => Color::Rgb(255, 199, 119),
+        C::Variable => Color::Rgb(137, 220, 235),
+        C::Constant => Color::Rgb(199, 146, 234),
+        C::Keyword => Color::Rgb(240, 130, 190),
+        C::Module => Color::Rgb(166, 227, 161),
+        C::Snippet => Color::Rgb(148, 226, 213),
+        C::Other => Color::Rgb(160, 168, 184),
+    }
+}
+
+/// Cuts `text` to `max` terminal columns, ending in `…` when it was cut.
+fn fit_width(text: &str, max: usize) -> String {
+    if text.width() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w + 1 > max {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+/// One row of the completion menu: `kind label detail ....... description`.
+#[allow(clippy::too_many_arguments)]
+fn completion_row_line(
+    item: &lsp_types::CompletionItem,
+    matched: &[usize],
+    selected: bool,
+    inner_width: usize,
+    row_bg: Color,
+) -> Line<'static> {
+    use ovim_core::editor::{
+        completion_item_is_deprecated, completion_kind_style, completion_row_text,
+    };
+
+    let kind = completion_kind_style(item.kind);
+    let text = completion_row_text(item);
+    let deprecated = completion_item_is_deprecated(item);
+
+    let base = Style::default().bg(row_bg).fg(Color::Rgb(220, 224, 232));
+    let mut label_style = base;
+    let mut dim_style = Style::default().bg(row_bg).fg(Color::Rgb(128, 136, 152));
+    if selected {
+        label_style = label_style.add_modifier(Modifier::BOLD).fg(Color::White);
+        dim_style = dim_style.fg(Color::Rgb(190, 200, 220));
+    }
+    if deprecated {
+        label_style = label_style
+            .add_modifier(Modifier::CROSSED_OUT)
+            .fg(Color::Rgb(140, 146, 160));
+        dim_style = dim_style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    let match_style = label_style
+        .fg(Color::Rgb(255, 214, 102))
+        .add_modifier(Modifier::BOLD);
+    let icon_style = Style::default()
+        .bg(row_bg)
+        .fg(completion_kind_color(kind.class))
+        .add_modifier(Modifier::BOLD);
+
+    // " k " + label + suffix + gap + description + " "
+    let fixed = 3 + 1;
+    let room = inner_width.saturating_sub(fixed);
+    let label_w = item.label.width();
+    let suffix_w = text.label_suffix.width();
+    let desc_w = text.description.width();
+
+    // Give the description at most a third of the room, but never squeeze the
+    // label itself; the label suffix yields before the label does.
+    let mut desc = text.description.clone();
+    let mut suffix = text.label_suffix.clone();
+    let mut label = item.label.clone();
+    let mut positions: Vec<usize> = matched.to_vec();
+    if label_w + suffix_w + if desc_w > 0 { 2 + desc_w } else { 0 } > room {
+        let desc_budget = if desc_w > 0 {
+            (room / 3).min(desc_w)
+        } else {
+            0
+        };
+        desc = fit_width(&desc, desc_budget);
+        let after_desc = room.saturating_sub(if desc.is_empty() { 0 } else { desc.width() + 2 });
+        if label_w > after_desc {
+            label = fit_width(&label, after_desc);
+            positions.retain(|&p| p < label.chars().count());
+            suffix.clear();
+        } else {
+            suffix = fit_width(&suffix, after_desc - label_w);
+        }
+    }
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(format!(" {} ", kind.glyph), icon_style));
+    for (i, ch) in label.chars().enumerate() {
+        let style = if positions.contains(&i) {
+            match_style
+        } else {
+            label_style
+        };
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix.clone(), dim_style));
+    }
+    let used = 3 + label.width() + suffix.width();
+    let desc_cols = if desc.is_empty() { 0 } else { desc.width() + 1 };
+    let pad = inner_width.saturating_sub(used + desc_cols + 1);
+    spans.push(Span::styled(" ".repeat(pad), base));
+    if !desc.is_empty() {
+        spans.push(Span::styled(format!(" {desc}"), dim_style));
+    }
+    spans.push(Span::styled(" ", base));
+    Line::from(spans)
+}
+
+/// Renders the completion menu popup and, beside it, the documentation of the
+/// selected item. Returns the areas it covers so popups drawn afterwards (the
+/// parameter hints) can keep clear of them.
+pub fn render_completion_menu(
+    frame: &mut Frame,
+    editor: &Editor,
+    ctx: &OverlayContext,
+    theme: &Theme,
+) -> Vec<Rect> {
+    use ovim_core::editor::completion_row_text;
+
     let layout = ctx.layout;
     let viewport_start = ctx.viewport_start;
     let buffer_area = layout.buffer_area;
     let completion_menu = editor.completion_menu();
     if !completion_menu.is_visible() {
-        return;
-    }
-
-    let items = completion_menu.items();
-    if items.is_empty() {
-        return;
+        return Vec::new();
     }
 
     // Get cursor position on screen
@@ -294,124 +394,303 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     let cursor_line = cursor.line();
     let cursor_col = cursor.col().0;
 
-    // Get the line text and convert character column to display column
-    let rope = editor.buffer().rope();
-    let line_text = ovim_core::display::line_content(rope, cursor_line);
-
-    // Convert character column to display column (accounting for tabs, emojis, and inline decorations)
-    let tab_width = editor.indent_options().tab_width;
-    let char_col = ovim_core::unicode::grapheme_to_char_col(
-        &line_text,
-        ovim_core::unicode::GraphemeCol(cursor_col),
-    )
-    .0;
-    let base_display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
-    let edit_log = editor.buffer().edit_log();
-    let inline_offset =
-        editor
-            .decorations
-            .inline_width_before_projected(cursor_line, char_col, rope, edit_log);
-    let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
-    let inline_widths =
-        editor
-            .decorations
-            .inline_decorations_for_line_projected(cursor_line, rope, edit_log);
-
-    let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
-        if let Some(wrap_map) = editor.wrap_map() {
-            let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
-                cursor_line,
-                display_col,
-                &line_text,
-                &inline_widths,
-            );
-            let viewport_row =
-                wrap_map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
-            (abs_row.saturating_sub(viewport_row), vcol)
-        } else {
-            (cursor_line.saturating_sub(viewport_start), display_col)
-        }
-    } else {
-        let h_offset = editor.horizontal_offset();
-        (
-            cursor_line.saturating_sub(viewport_start),
-            display_col.saturating_sub(h_offset),
-        )
-    };
+    let (screen_line, visual_col) = cursor_screen_position(
+        editor,
+        cursor_line,
+        ovim_core::unicode::GraphemeCol(cursor_col),
+        viewport_start,
+        text_width,
+    );
 
     let gutter_width = layout.gutter_width;
 
-    // Position menu below cursor
     let menu_x = buffer_area.x + gutter_width as u16 + visual_col as u16;
-    let menu_y = buffer_area.y + screen_line as u16 + 1; // Below current line
+    let cursor_row = buffer_area.y + screen_line as u16;
 
-    // Determine menu dimensions
-    let max_items_to_show = 10;
-    let num_items = items.len().min(max_items_to_show);
-    let menu_height = num_items as u16 + 2; // +2 for borders
+    // Rows that fit: up to 10, fewer when the buffer area is short, then fewer
+    // still when neither side of the cursor line has room for all of them.
+    let max_rows = 10usize
+        .min(buffer_area.height.saturating_sub(3) as usize)
+        .max(1);
+    let wanted_height = completion_menu.window(max_rows).len() as u16 + 2; // +2 for borders
+    let Some((menu_y, menu_height)) = place_completion_menu(buffer_area, cursor_row, wanted_height)
+    else {
+        return Vec::new();
+    };
+    let window = completion_menu.window(menu_height as usize - 2);
+    let num_items = window.len();
 
-    // Calculate width based on longest label
+    // Width: widest visible row (icon, label, detail, right-aligned description).
     // Use UnicodeWidthStr::width() instead of len() because CJK characters
-    // are 2 columns wide while ASCII characters are 1 column wide
-    let max_label_len = items
-        .iter()
-        .take(max_items_to_show)
-        .map(|item| item.label.width())
+    // are 2 columns wide while ASCII characters are 1 column wide.
+    let content_width = window
+        .clone()
+        .filter_map(|i| completion_menu.get(i))
+        .map(|item| {
+            let text = completion_row_text(item);
+            let desc = if text.description.is_empty() {
+                0
+            } else {
+                text.description.width() + 2
+            };
+            3 + item.label.width() + text.label_suffix.width() + desc + 1
+        })
         .max()
         .unwrap_or(20);
-    let menu_width = (max_label_len + 4).min(60) as u16; // +4 for padding and borders
+    let max_inner = (buffer_area.width as usize).saturating_sub(2).min(64);
+    let inner_width = content_width.clamp(24, max_inner.max(24)).min(max_inner);
+    let menu_width = (inner_width + 2) as u16;
 
     // Adjust position if menu would go off screen
-    let menu_x = menu_x.min(buffer_area.width.saturating_sub(menu_width));
-    let menu_y = if menu_y + menu_height > buffer_area.y + buffer_area.height {
-        // Show above cursor if not enough space below
-        (buffer_area.y + screen_line as u16)
-            .saturating_sub(menu_height)
-            .max(buffer_area.y)
-    } else {
-        menu_y
-    };
+    let menu_x = menu_x
+        .min(buffer_area.right().saturating_sub(menu_width))
+        .max(buffer_area.x);
 
-    let menu_area = Rect::new(
-        menu_x,
-        menu_y,
-        menu_width,
-        menu_height.min(buffer_area.height),
-    );
+    let menu_area = Rect::new(menu_x, menu_y, menu_width, menu_height);
 
     // Build menu lines
     let selected_index = completion_menu.selected_index();
-    let mut lines = Vec::new();
+    let lines: Vec<Line<'static>> = window
+        .clone()
+        .filter_map(|i| {
+            let item = completion_menu.get(i)?;
+            let selected = i == selected_index;
+            let row_bg = if selected {
+                Color::Rgb(56, 78, 128)
+            } else {
+                Color::Rgb(40, 44, 52)
+            };
+            Some(completion_row_line(
+                item,
+                completion_menu.matched_positions(i),
+                selected,
+                inner_width,
+                row_bg,
+            ))
+        })
+        .collect();
 
-    for (idx, item) in items.iter().take(max_items_to_show).enumerate() {
-        let is_selected = idx == selected_index;
-        let style = if is_selected {
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().bg(Color::Rgb(40, 44, 52)).fg(Color::White)
-        };
-
-        // Format: "label"  or "  label" with selection indicator
-        let prefix = if is_selected { "> " } else { "  " };
-        let text = format!("{}{}", prefix, item.label);
-
-        lines.push(Line::from(Span::styled(text, style)));
-    }
-
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
         .style(Style::default().bg(Color::Rgb(40, 44, 52)));
+    if completion_menu.len() > num_items {
+        block = block.title_bottom(Line::from(format!(
+            " {}/{} ",
+            selected_index + 1,
+            completion_menu.len()
+        )));
+    }
 
     let paragraph = Paragraph::new(lines).block(block);
 
     // Clear background and render menu
     frame.render_widget(ratatui::widgets::Clear, menu_area);
     frame.render_widget(paragraph, menu_area);
+
+    let mut covered = vec![menu_area];
+    covered.extend(render_completion_documentation(
+        frame,
+        editor,
+        buffer_area,
+        menu_area,
+        cursor_row,
+        theme,
+    ));
+    covered
+}
+
+/// Documentation of the selected completion item, in a popup right of the menu
+/// (left when there is no room on the right), on the same side of the cursor
+/// line as the menu so it never covers the line being typed. Returns the area
+/// it covers.
+fn render_completion_documentation(
+    frame: &mut Frame,
+    editor: &Editor,
+    buffer_area: Rect,
+    menu_area: Rect,
+    cursor_row: u16,
+    theme: &Theme,
+) -> Option<Rect> {
+    use super::markdown::colors;
+    use ovim_core::editor::completion_documentation_markdown;
+
+    let item = editor.completion_menu().selected_item()?;
+    let markdown = completion_documentation_markdown(item)?;
+
+    const MIN_WIDTH: u16 = 24;
+    const MAX_WIDTH: u16 = 56;
+    let room_right = buffer_area.right().saturating_sub(menu_area.right());
+    let room_left = menu_area.x.saturating_sub(buffer_area.x);
+    let (side_right, room) = if room_right >= MIN_WIDTH || room_right >= room_left {
+        (true, room_right)
+    } else {
+        (false, room_left)
+    };
+    if room < MIN_WIDTH {
+        return None;
+    }
+    let width = room.min(MAX_WIDTH);
+    let lines = render_hover_preview_lines(&markdown, width as usize, theme);
+    if lines.is_empty() {
+        return None;
+    }
+    // A menu above the cursor line keeps its documentation above it too,
+    // bottom-aligned with the menu; below, the documentation starts at the menu.
+    let menu_above = menu_area.y < cursor_row;
+    let max_height = if menu_above {
+        menu_area.bottom().saturating_sub(buffer_area.y)
+    } else {
+        buffer_area.bottom().saturating_sub(menu_area.y)
+    }
+    .min(14);
+    let height = (lines.len() as u16 + 2).min(max_height).max(3);
+    let x = if side_right {
+        menu_area.right()
+    } else {
+        menu_area.x - width
+    };
+    let y = if menu_above {
+        menu_area.bottom().saturating_sub(height).max(buffer_area.y)
+    } else {
+        menu_area.y
+    };
+    let area = Rect::new(x, y, width, height);
+    let visible: Vec<Line<'static>> = lines.into_iter().take(height as usize - 2).collect();
+    let paragraph = Paragraph::new(visible)
+        .style(Style::default().bg(colors::BG))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(Style::default().fg(colors::BORDER)),
+        );
+    frame.render_widget(Clear, area);
+    frame.render_widget(paragraph, area);
+    Some(area)
+}
+
+/// Parameter-hints popup for the call being typed: the signature on one line
+/// with the active parameter highlighted, an `(n/m)` overload marker and the
+/// active parameter's documentation underneath. Sits above the cursor line
+/// where it can, and stays clear of the `occupied` areas of the completion
+/// menu (drawn first); when it fits nowhere without covering one, it is not
+/// drawn.
+pub fn render_signature_help(
+    frame: &mut Frame,
+    editor: &Editor,
+    ctx: &OverlayContext,
+    occupied: &[Rect],
+) {
+    let Some(signature) = editor.signature_help() else {
+        return;
+    };
+    let layout = ctx.layout;
+    let buffer_area = layout.buffer_area;
+    if buffer_area.width < 12 || buffer_area.height < 4 {
+        return;
+    }
+
+    let (before, active, after) = signature.label_segments();
+    let overload = if signature.signature_count > 1 {
+        format!(
+            "  ({}/{})",
+            signature.signature_index + 1,
+            signature.signature_count
+        )
+    } else {
+        String::new()
+    };
+    let doc_line = signature
+        .parameter_documentation
+        .as_deref()
+        .or(signature.documentation.as_deref())
+        .and_then(|doc| doc.lines().find(|line| !line.trim().is_empty()))
+        .map(|line| line.trim().to_string());
+
+    let max_inner = (buffer_area.width as usize).saturating_sub(4).clamp(8, 110);
+    // Keep the active parameter in view when the label is wider than the popup:
+    // drop characters from the head (`...`) until it fits.
+    let mut head: Vec<char> = before.chars().collect();
+    let mut tail: Vec<char> = after.chars().collect();
+    let active_chars: Vec<char> = active.chars().collect();
+    let width_of = |chars: &[char]| chars.iter().collect::<String>().width();
+    while width_of(&head) + width_of(&active_chars) + width_of(&tail) + overload.width() > max_inner
+    {
+        if head.len() > 4 {
+            head.remove(0);
+        } else if !tail.is_empty() {
+            tail.pop();
+        } else {
+            break;
+        }
+    }
+    let head_text: String = head.iter().collect();
+    let head_text = if head_text.chars().count() < before.chars().count() {
+        format!("…{}", head_text.chars().skip(1).collect::<String>())
+    } else {
+        head_text
+    };
+    let tail_text: String = tail.iter().collect();
+    let tail_text = if tail.len() < after.chars().count() {
+        format!("{}…", tail_text)
+    } else {
+        tail_text
+    };
+
+    let bg = Color::Rgb(40, 44, 52);
+    let base = Style::default().bg(bg).fg(Color::White);
+    let active_style = Style::default()
+        .bg(bg)
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(head_text, base),
+        Span::styled(active.clone(), active_style),
+        Span::styled(tail_text, base),
+        Span::styled(
+            overload.clone(),
+            Style::default().bg(bg).fg(Color::DarkGray),
+        ),
+    ])];
+    if let Some(doc) = doc_line {
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(&doc, max_inner),
+            Style::default().bg(bg).fg(Color::Gray),
+        )));
+    }
+
+    let content_width = lines
+        .iter()
+        .map(|line| line.spans.iter().map(|s| s.content.width()).sum::<usize>())
+        .max()
+        .unwrap_or(10);
+    let width = ((content_width + 4) as u16).min(buffer_area.width);
+    let height = (lines.len() as u16 + 2).min(buffer_area.height);
+
+    let (anchor_line, anchor_col) = signature.anchor;
+    let (screen_line, visual_col) = cursor_screen_position(
+        editor,
+        anchor_line,
+        ovim_core::unicode::GraphemeCol(anchor_col),
+        ctx.viewport_start,
+        layout.text_width,
+    );
+    let cursor_y = buffer_area.y + screen_line as u16;
+    let cursor_x = buffer_area.x + layout.gutter_width as u16 + visual_col as u16;
+    let x = cursor_x
+        .min(buffer_area.right().saturating_sub(width))
+        .max(buffer_area.x);
+    let Some(area) = place_beside_cursor(buffer_area, x, width, height, cursor_y, occupied) else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().bg(bg));
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Compact floating help card for AI chat review mode.
@@ -607,6 +886,42 @@ fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
     frame.render_widget(dialog, area);
 }
 
+/// First-run choice of how AI chat runs inference.
+pub fn render_provider_choice_dialog(frame: &mut Frame, editor: &Editor) {
+    let Some(dialog) = editor.provider_choice_dialog() else {
+        return;
+    };
+    let rows: Vec<(String, String)> = dialog
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            let marker = if index == dialog.selected { "›" } else { " " };
+            (
+                format!("{marker} {}. {}", index + 1, option.label),
+                format!("     {}", option.detail),
+            )
+        })
+        .collect();
+    let mut lines: Vec<(&str, char)> = vec![
+        (
+            "Pick how Ovim runs AI chat. You can change it later from the model picker.",
+            's',
+        ),
+        (" ", 's'),
+    ];
+    for (index, (label, detail)) in rows.iter().enumerate() {
+        lines.push((
+            label.as_str(),
+            if index == dialog.selected { 'a' } else { 't' },
+        ));
+        lines.push((detail.as_str(), 's'));
+    }
+    lines.push((" ", 's'));
+    lines.push(("↑↓/1-9: choose   Enter: use   Esc: not now", 'a'));
+    render_modal_dialog(frame, " How should AI chat run? ", &lines);
+}
+
 /// Contextual ChatGPT sign-in for Ovim-owned direct Codex inference.
 pub fn render_codex_auth_dialog(frame: &mut Frame, editor: &Editor) {
     use ovim_core::editor::CodexAuthDialogPhase;
@@ -751,7 +1066,11 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
                 .ai_chat_pending_tool_approval_summary()
                 .unwrap_or_else(|| "Allow requested tool action?".to_string()),
             "This request blocks agent progress until resolved.",
-            "Enter/Ctrl-Y allow once   Ctrl-A allow for chat   Esc/Ctrl-N deny",
+            if editor.ai_chat_uses_external_agent() {
+                "Enter/Ctrl-Y allow once   Esc/Ctrl-N deny"
+            } else {
+                "Enter/Ctrl-Y allow once   Ctrl-A allow for chat   Esc/Ctrl-N deny"
+            },
         )
     } else {
         (
@@ -846,24 +1165,85 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
                     false,
                 )
             }
+            ovim_core::editor::CodeExplanationPageView::Diff { title, comment, .. } => {
+                let Some(layout) = ovim_core::editor::CodeExplanationCardLayout::resolve(
+                    buffer.width,
+                    buffer.height,
+                    comment,
+                    editor.indent_options().tab_width,
+                ) else {
+                    return;
+                };
+                (
+                    layout.width,
+                    layout.height,
+                    layout.comment_width,
+                    format!(
+                        " Diff walkthrough {}/{} · {} ",
+                        view.current,
+                        view.total,
+                        truncate_to_width(title, layout.width.saturating_sub(28) as usize)
+                    ),
+                    comment.clone(),
+                    false,
+                )
+            }
         };
     let height_limit = buffer
         .height
         .saturating_sub(2)
         .max(layout_height)
         .min(buffer.height);
-    let discussion_row_limit = height_limit.saturating_sub(layout_height) as usize;
-    let answer_row_limit = discussion_row_limit.saturating_sub(1).max(1);
-    let discussion = walkthrough_discussion(
+    let mut teaching_lines = walkthrough_text_lines(
+        &teaching_text,
+        inner_width,
+        editor.indent_options().tab_width,
+        Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
+    );
+    // Estimate the hint height first; narrow cards may need several hint rows.
+    let discussion_row_limit = (height_limit as usize)
+        .saturating_sub(teaching_lines.len())
+        .saturating_sub(4);
+    let mut discussion = walkthrough_discussion(
         &view.discussion,
         inner_width,
-        answer_row_limit,
+        discussion_row_limit,
+        view.answer_scroll,
+    );
+    let hint_rows = wrap_chat_input_rows(&discussion.hints, inner_width, 4).len();
+    let minimum_discussion_rows = usize::from(!discussion.lines.is_empty());
+    let teaching_limit =
+        (height_limit as usize).saturating_sub(2 + hint_rows + minimum_discussion_rows);
+    teaching_lines.truncate(teaching_limit);
+    let available_rows =
+        (height_limit as usize).saturating_sub(teaching_lines.len() + 2 + hint_rows);
+    let spacer_rows = usize::from(available_rows > minimum_discussion_rows);
+    let discussion_row_limit = (height_limit as usize)
+        .saturating_sub(teaching_lines.len())
+        .saturating_sub(2 + spacer_rows + hint_rows);
+    discussion = walkthrough_discussion(
+        &view.discussion,
+        inner_width,
+        discussion_row_limit,
         view.answer_scroll,
     );
     editor.render_cache.code_explanation_answer_max_scroll = discussion.answer_max_scroll;
     let discussion_rows = discussion.lines.len() as u16;
+    let hint_lines = walkthrough_text_lines(
+        &discussion.hints,
+        inner_width,
+        4,
+        Style::default()
+            .fg(MODAL_COLORS.action)
+            .bg(MODAL_COLORS.bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    let content_height = teaching_lines
+        .len()
+        .saturating_add(discussion_rows as usize)
+        .saturating_add(2 + spacer_rows + hint_lines.len());
     let height = layout_height
-        .saturating_add(discussion_rows)
+        .max(content_height.min(u16::MAX as usize) as u16)
         .min(height_limit);
     let y = if concept_page {
         buffer.y + buffer.height.saturating_sub(height) / 2
@@ -879,21 +1259,12 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
         layout_width,
         height,
     );
-    let mut content = vec![Line::from(Span::styled(
-        teaching_text,
-        Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
-    ))];
+    let mut content = teaching_lines;
     content.extend(discussion.lines);
-    content.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            discussion.hints,
-            Style::default()
-                .fg(MODAL_COLORS.action)
-                .bg(MODAL_COLORS.bg)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ]);
+    if spacer_rows > 0 {
+        content.push(Line::from(""));
+    }
+    content.extend(hint_lines);
     let card = Paragraph::new(content)
         .style(Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg))
         .wrap(Wrap { trim: false })
@@ -931,7 +1302,7 @@ fn walkthrough_selection_screen_rows(
             let start_row = wrap_map.logical_to_visual(start_line);
             let end_row = wrap_map
                 .logical_to_visual(end_line)
-                .saturating_add(wrap_map.visual_lines_for(end_line) as usize)
+                .saturating_add(wrap_map.visual_lines_for(end_line))
                 .saturating_sub(1);
             return (
                 start_row as isize - viewport_row as isize,
@@ -985,6 +1356,61 @@ struct WalkthroughExchange {
     max_scroll: usize,
 }
 
+fn walkthrough_text_lines(
+    text: &str,
+    width: usize,
+    tab_width: usize,
+    style: Style,
+) -> Vec<Line<'static>> {
+    wrap_chat_input_rows(text, width, tab_width)
+        .into_iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                text[row.visible_start..row.end].to_string(),
+                style,
+            ))
+        })
+        .collect()
+}
+
+fn walkthrough_composer_lines(
+    input: &str,
+    cursor: usize,
+    label: &str,
+    width: usize,
+    row_limit: usize,
+) -> Vec<Line<'static>> {
+    let mut text = input.to_string();
+    let cursor = cursor.min(text.len());
+    let cursor = (0..=cursor)
+        .rev()
+        .find(|&byte| text.is_char_boundary(byte))
+        .unwrap_or(0);
+    text.insert(cursor, '▏');
+    let label_width = UnicodeWidthStr::width(label);
+    let rows = wrap_chat_input_rows_with_widths(&text, width.saturating_sub(label_width), width, 4);
+    let cursor_row = rows
+        .iter()
+        .position(|row| row.start <= cursor && cursor < row.end)
+        .unwrap_or(rows.len().saturating_sub(1));
+    let start = cursor_row
+        .saturating_add(1)
+        .saturating_sub(row_limit.max(1));
+    let style = Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg);
+    rows.into_iter()
+        .skip(start)
+        .take(row_limit.max(1))
+        .enumerate()
+        .map(|(index, row)| {
+            let prefix = if index == 0 && start == 0 { label } else { "" };
+            Line::from(Span::styled(
+                format!("{prefix}{}", &text[row.visible_start..row.end]),
+                style,
+            ))
+        })
+        .collect()
+}
+
 fn walkthrough_discussion(
     discussion: &ovim_core::editor::CodeExplanationDiscussionView,
     width: usize,
@@ -997,6 +1423,7 @@ fn walkthrough_discussion(
             latest_question: Some(question),
             latest_answer: Some(answer),
             latest_failed,
+            ..
         } => {
             let exchange = walkthrough_exchange_lines(
                 *question_count,
@@ -1007,15 +1434,24 @@ fn walkthrough_discussion(
                 answer_row_limit,
                 answer_scroll,
             );
-            let hints = if exchange.max_scroll > 0 {
+            let hints = if width < 60 && exchange.max_scroll > 0 {
                 format!(
-                    "↑/↓ reply {}–{}/{}   ←/→ steps   Space ask   Enter next/done   Esc dismiss",
+                    "↑/↓ reply {}–{}/{}   Space ask   Esc back",
+                    exchange.visible_start + 1,
+                    exchange.visible_end,
+                    exchange.total_rows,
+                )
+            } else if width < 60 {
+                "←/→ steps   Space ask   Esc back".into()
+            } else if exchange.max_scroll > 0 {
+                format!(
+                    "↑/↓ reply {}–{}/{}   ←/→ steps   Space ask   [/] replies   Enter next/done   Esc back",
                     exchange.visible_start + 1,
                     exchange.visible_end,
                     exchange.total_rows,
                 )
             } else {
-                "←/→ previous/next   Space ask   Enter next/done   Esc dismiss".into()
+                "←/→ previous/next   Space ask   [/] replies   Enter next/done   Esc back".into()
             };
             WalkthroughDiscussion {
                 lines: exchange.lines,
@@ -1026,7 +1462,11 @@ fn walkthrough_discussion(
         ovim_core::editor::CodeExplanationDiscussionView::Navigating { .. } => {
             WalkthroughDiscussion {
                 lines: Vec::new(),
-                hints: "←/→ previous/next   Space ask   Enter next/done   Esc dismiss".into(),
+                hints: if width < 60 {
+                    "←/→ steps   Space ask   Enter next   Esc".into()
+                } else {
+                    "←/→ steps   Space ask   t thread   Enter next/done   Esc dismiss".into()
+                },
                 answer_max_scroll: 0,
             }
         }
@@ -1034,22 +1474,21 @@ fn walkthrough_discussion(
             input,
             cursor,
             question_count,
-        } => {
-            let mut input_with_cursor = input.clone();
-            input_with_cursor.insert((*cursor).min(input_with_cursor.len()), '▏');
-            WalkthroughDiscussion {
-                lines: vec![Line::from(Span::styled(
-                    compact_walkthrough_line(
-                        &format!("Ask {}: ", question_count + 1),
-                        &input_with_cursor,
-                        width,
-                    ),
-                    Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg),
-                ))],
-                hints: "Enter send   Shift-Enter newline   Esc cancel".into(),
-                answer_max_scroll: 0,
-            }
-        }
+        } => WalkthroughDiscussion {
+            lines: walkthrough_composer_lines(
+                input,
+                *cursor,
+                &format!("Ask {}: ", question_count + 1),
+                width,
+                answer_row_limit,
+            ),
+            hints: if width < 60 {
+                "Enter send   Ctrl-J newline   Esc cancel".into()
+            } else {
+                "Enter send   Shift-Enter newline   Esc cancel".into()
+            },
+            answer_max_scroll: 0,
+        },
         ovim_core::editor::CodeExplanationDiscussionView::Answering {
             question,
             answer,
@@ -1064,15 +1503,24 @@ fn walkthrough_discussion(
                 answer_row_limit,
                 answer_scroll,
             );
-            let hints = if exchange.max_scroll > 0 {
+            let hints = if width < 60 && exchange.max_scroll > 0 {
                 format!(
-                    "Answering…   ↑/↓ reply {}–{}/{}   ←/→ steps   Esc dismiss",
+                    "↑/↓ reply {}–{}/{}   Esc back",
+                    exchange.visible_start + 1,
+                    exchange.visible_end,
+                    exchange.total_rows,
+                )
+            } else if width < 60 {
+                "Answering…   Esc back".into()
+            } else if exchange.max_scroll > 0 {
+                format!(
+                    "Answering…   ↑/↓ reply {}–{}/{}   ←/→ steps   Esc back",
                     exchange.visible_start + 1,
                     exchange.visible_end,
                     exchange.total_rows,
                 )
             } else {
-                "Answering…   ←/→ browse steps   Esc dismiss".into()
+                "Answering…   ←/→ steps   Esc back".into()
             };
             WalkthroughDiscussion {
                 lines: exchange.lines,
@@ -1093,23 +1541,32 @@ fn walkthrough_exchange_lines(
     answer_scroll: usize,
 ) -> WalkthroughExchange {
     let question_label = format!("Q{question_count}  ");
-    let question_budget = width.saturating_sub(UnicodeWidthStr::width(question_label.as_str()));
-    let question = question.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            question_label,
-            Style::default()
-                .fg(MODAL_COLORS.title)
-                .bg(MODAL_COLORS.bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            truncate_to_width(&question, question_budget),
+    let question_rows = wrap_chat_input_rows_with_widths(
+        question,
+        width.saturating_sub(UnicodeWidthStr::width(question_label.as_str())),
+        width,
+        4,
+    );
+    let mut lines = Vec::with_capacity(question_rows.len());
+    for (index, row) in question_rows.iter().enumerate() {
+        let mut spans = Vec::new();
+        if index == 0 {
+            spans.push(Span::styled(
+                question_label.clone(),
+                Style::default()
+                    .fg(MODAL_COLORS.title)
+                    .bg(MODAL_COLORS.bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.push(Span::styled(
+            question[row.visible_start..row.end].to_string(),
             Style::default()
                 .fg(MODAL_COLORS.secondary)
                 .bg(MODAL_COLORS.bg),
-        ),
-    ])];
+        ));
+        lines.push(Line::from(spans));
+    }
 
     let label = if failed { "Error  " } else { "AI  " };
     let label_width = UnicodeWidthStr::width(label);
@@ -1129,18 +1586,7 @@ fn walkthrough_exchange_lines(
             .collect::<Vec<_>>()
     };
     let answer_row_limit = answer_row_limit.max(1);
-    let total_rows = answer_rows.len();
-    let max_scroll = total_rows.saturating_sub(answer_row_limit);
-    let visible_start = answer_scroll.min(max_scroll);
-    let visible_end = visible_start
-        .saturating_add(answer_row_limit)
-        .min(total_rows);
-    for (index, row) in answer_rows
-        .into_iter()
-        .skip(visible_start)
-        .take(answer_row_limit)
-        .enumerate()
-    {
+    for (index, row) in answer_rows.into_iter().enumerate() {
         let prefix = if index == 0 {
             label.to_string()
         } else {
@@ -1162,25 +1608,23 @@ fn walkthrough_exchange_lines(
         spans.extend(row);
         lines.push(Line::from(spans));
     }
+    let total_rows = lines.len();
+    let max_scroll = total_rows.saturating_sub(answer_row_limit);
+    let visible_start = answer_scroll.min(max_scroll);
+    let visible_end = visible_start
+        .saturating_add(answer_row_limit)
+        .min(total_rows);
     WalkthroughExchange {
-        lines,
+        lines: lines
+            .into_iter()
+            .skip(visible_start)
+            .take(answer_row_limit)
+            .collect(),
         visible_start,
         visible_end,
         total_rows,
         max_scroll,
     }
-}
-
-fn compact_walkthrough_line(label: &str, text: &str, width: usize) -> String {
-    let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let available = width.saturating_sub(UnicodeWidthStr::width(label));
-    let (truncated, ellipsis) =
-        if UnicodeWidthStr::width(single_line.as_str()) > available && available > 0 {
-            (truncate_to_width(&single_line, available - 1), "…")
-        } else {
-            (truncate_to_width(&single_line, available), "")
-        };
-    format!("{label}{truncated}{ellipsis}")
 }
 
 /// Live and retained output for one agent-owned shell process.
@@ -1566,13 +2010,14 @@ mod tests {
     use ratatui::{
         backend::TestBackend,
         layout::Rect,
-        style::Modifier,
+        style::{Modifier, Style},
         text::{Line, Span},
         Terminal,
     };
 
     use crate::editor::Editor;
     use ovim_core::ai::chat_types::{ChatOpts, ToolCallInfo};
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn hover_width_uses_terminal_cells_in_preview_and_raw_modes() {
@@ -1625,6 +2070,41 @@ mod tests {
     }
 
     #[test]
+    fn permission_details_keep_command_and_description_on_separate_lines() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_modal_dialog(
+                    frame,
+                    " Tool Permission ",
+                    &[
+                        ("Claude Code: Bash\n\nRun project tests\n\nCommand:\ncd 'norsk' && npm test\n\nApproval applies to this invocation only.", 't'),
+                        ("Enter/Ctrl-Y allow once   Esc/Ctrl-N deny", 'a'),
+                    ],
+                );
+            })
+            .unwrap();
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        let description = rows
+            .iter()
+            .position(|row| row.contains("Run project tests"))
+            .unwrap();
+        let command = rows
+            .iter()
+            .position(|row| row.contains("cd 'norsk' && npm test"))
+            .unwrap();
+        assert!(command > description);
+        assert!(rows.iter().any(|row| row.contains("Esc/Ctrl-N deny")));
+    }
+
+    #[test]
     fn modal_dialog_keeps_primary_action_visible_when_body_wraps() {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1674,6 +2154,7 @@ mod tests {
         };
         let completed = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count: 1,
+            exchange_total: 1,
             latest_question: Some("Why is k used here?".into()),
             latest_answer: Some(answer.into()),
             latest_failed: false,
@@ -1706,6 +2187,7 @@ mod tests {
     fn walkthrough_reply_uses_available_rows_and_scrolls_in_place() {
         let discussion = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count: 2,
+            exchange_total: 2,
             latest_question: Some("Can you give me the complete reasoning?".into()),
             latest_answer: Some(
                 (1..=80)
@@ -1716,7 +2198,7 @@ mod tests {
             latest_failed: false,
         };
         let first = super::walkthrough_discussion(&discussion, 24, 10, 0);
-        assert_eq!(first.lines.len(), 11);
+        assert_eq!(first.lines.len(), 10);
         assert!(first.answer_max_scroll > 0);
         assert!(first.hints.contains("↑/↓ reply 1–10/"), "{}", first.hints);
         let first_rendered = first
@@ -1745,6 +2227,73 @@ mod tests {
             "{}",
             following.hints
         );
+    }
+
+    #[test]
+    fn walkthrough_teaching_text_preserves_newlines_and_wraps_to_card_width() {
+        let lines = super::walkthrough_text_lines(
+            "First line\nSecond line has more words than fit\n\nLast line",
+            16,
+            4,
+            Style::default(),
+        );
+        let rows = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows[0], "First line");
+        assert_eq!(rows[1].trim_end(), "Second line has");
+        assert_eq!(rows[2].trim_end(), "more words than");
+        assert_eq!(rows[3], "fit");
+        assert_eq!(rows[4], "");
+        assert_eq!(rows[5], "Last line");
+    }
+
+    #[test]
+    fn walkthrough_composer_wraps_and_keeps_cursor_visible() {
+        let input = "one two three four five six seven eight nine ten\nnext line";
+        let at_end = super::walkthrough_composer_lines(input, input.len(), "Ask 1: ", 20, 2);
+        assert_eq!(at_end.len(), 2);
+        assert!(at_end
+            .iter()
+            .any(|line| line.to_string().contains("next line▏")));
+        assert!(!at_end.iter().any(|line| line.to_string().contains('…')));
+
+        let at_start = super::walkthrough_composer_lines(input, 0, "Ask 1: ", 20, 2);
+        assert!(at_start[0].to_string().starts_with("Ask 1: ▏one"));
+        assert!(at_start.iter().all(|line| line.width() <= 20));
+    }
+
+    #[test]
+    fn walkthrough_long_question_can_be_read_by_scrolling() {
+        let question = "one two three four five six seven eight nine ten eleven twelve\nlast part";
+        let discussion = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+            question_count: 1,
+            exchange_total: 1,
+            latest_question: Some(question.into()),
+            latest_answer: Some("A short answer".into()),
+            latest_failed: false,
+        };
+        let first = super::walkthrough_discussion(&discussion, 18, 3, 0);
+        let last = super::walkthrough_discussion(&discussion, 18, 3, usize::MAX);
+        assert!(first.answer_max_scroll > 0);
+        let all_rows = (0..=first.answer_max_scroll)
+            .flat_map(|scroll| super::walkthrough_discussion(&discussion, 18, 3, scroll).lines)
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert!(all_rows.iter().any(|row| row.contains("last part")));
+        assert!(last
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("A short answer")));
+        assert!(all_rows
+            .iter()
+            .all(|row| UnicodeWidthStr::width(row.as_str()) <= 18));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1832,6 +2381,35 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Ask 1: Why?▏"), "{rendered}");
+        assert!(rendered.contains("Enter send"), "{rendered}");
+
+        for character in " This is a longer question whose cursor must remain visible".chars() {
+            editor.insert_code_explanation_question_char(character);
+        }
+        editor.set_last_layout(
+            ovim_core::Rect {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 7,
+            },
+            0,
+            32,
+            0,
+        );
+        let backend = TestBackend::new(32, 9);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_ai_code_explanation(frame, &mut editor))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("visible▏"), "{rendered}");
         assert!(rendered.contains("Enter send"), "{rendered}");
     }
 

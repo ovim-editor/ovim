@@ -103,6 +103,56 @@ ovim lsp languages --verbose
 
 See [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) for examples.
 
+### Language server options (`[[lsp_settings]]` / `ovim.lsp.configure`)
+
+Pass `initializationOptions` and workspace settings to a language server without
+touching its definition. In `~/.config/ovim/languages.toml`:
+
+```toml
+[[lsp_settings]]
+languages = ["java", "kotlin"]        # or language = "java"
+initialization_options = { hyperion = { buildToolClasspath = true } }
+settings = { hyperion = { buildToolClasspath = true } }
+```
+
+or in `init.lua`:
+
+```lua
+ovim.lsp.configure({ "java", "kotlin" }, {
+  initialization_options = { hyperion = { buildToolClasspath = true } },
+  settings = { hyperion = { buildToolClasspath = true } },
+})
+```
+
+`initialization_options` go into the `initialize` request; `settings` are sent
+with `workspace/didChangeConfiguration` right after `initialized` and answer
+`workspace/configuration` requests. Both are deep-merged over ovim's built-in
+defaults for that language; `init.lua` wins over `languages.toml`. Servers read
+them when they start, so `:LspRestart java` applies a change (a `:ConfigReload`
+re-runs `init.lua`, and the servers pick the result up on their next restart).
+Settings come only from your own config, never from files in the project you
+open.
+
+Java/Kotlin/Scala/Groovy language and debug support use hyperion-lsp. The Hyperion settings below apply only to that server.
+
+Example: **Hyperion runs Gradle/Maven for the classpath.** By default Hyperion
+only reads what a previous build left in `~/.gradle` / `~/.m2`, so a fresh clone
+has no libraries. With `hyperion.buildToolClasspath = true` it runs `./gradlew`
+(or `gradle`, `mvn`) itself to ask for the classpath. That executes the
+project's build scripts, hence opt-in. After changing build files (or the
+setting) run `:LspReloadProject`.
+
+To run any server command on the server that owns the current file:
+
+```vim
+:LspExec hyperion.reloadProject
+:LspExec some.command {"key": "value"} "second argument"
+```
+
+Arguments are JSON values; a short result shows in the status line, a long one
+opens in an `LspExec` buffer. `:LspReloadProject` is shorthand for
+`:LspExec hyperion.reloadProject`.
+
 ### Test runners (`[language.test]`)
 
 Rust, JavaScript/TypeScript, Python, and Go have built-in test runners (see
@@ -211,3 +261,80 @@ You can override this location by setting:
 This affects session file reads/writes and cleanup.
 Ovim secures the selected directory for owner-only access on Unix because each
 named headless session descriptor contains its API bearer capability.
+
+### Diff review base
+
+Set the default branch for `:GitDiff` and `<Space>gd` with
+`:set pullbase=develop` (or `origin/develop` for a remote-tracking branch).
+`:set pullbase?` shows the setting. Clear it with `:unset pullbase`,
+`:set pullbase=`, `:set pullbase&`, or `:set nopullbase` to restore automatic
+base selection. Changing it refreshes an open review; an explicit
+`:GitDiff <ref>` takes precedence. `:GitFetch` / `<Space>gf` fetches the selected
+base when it is a remote-tracking branch.
+
+Configure it for each session in `init.lua`:
+
+```lua
+ovim.opt.pullbase = "origin/develop"
+ovim.opt.pullbase = nil -- restore automatic selection
+```
+
+`vim.opt.pullbase` supports the same assignments. The branch must exist when
+opening or refreshing the review; it need not exist when loading configuration.
+
+To override the base for one project (or a directory containing several projects):
+
+```vim
+:set pullbase=develop path=~/Projects/example
+:set pullbase? path=~/Projects/example
+:unset pullbase path=~/Projects/example
+```
+
+In Lua, assign a table to add or remove one override:
+
+```lua
+ovim.opt.pullbase = { path = "~/Projects/example", branch = "develop" }
+ovim.opt.pullbase = { path = "~/Projects/example", branch = nil } -- remove this override
+```
+
+The most specific directory containing the Git worktree root wins, followed by
+the global `pullbase`, then automatic selection. Explicit `:GitDiff <ref>` still
+takes precedence. Matching uses the repository root, even when opening a file
+in a subdirectory. Paths must name existing directories; `~`, relative paths
+(from the current working directory), and symlinks are resolved when setting
+the override. In Ex commands, `path=` consumes the rest of the line, so paths
+with spaces need no quotes. Clearing a path override preserves the global
+setting and all other overrides; clearing the global setting preserves overrides.
+
+The `+`/`-` line-change gutter normally shows uncommitted changes against `HEAD`.
+When a global or matching path-specific `pullbase` is configured, it shows
+changes since that branch's merge-base with `HEAD`, like the branch review.
+Setting or clearing an override refreshes signs in open buffers. `<Space>gd`
+and `:GitDiff` continue to default to the repository's default branch when no
+override applies.
+
+`:blame` separately toggles line-author annotations. In the terminal editor,
+hover over an annotation to see its commit, author, date, and message without
+moving the cursor. Move away or type to dismiss the preview. Click an annotation
+(or use `gB`) to open that commit's full, highlighted diff in a read-only tab.
+Use `gb` for the keyboard-controlled details popup. The terminal caret is hidden
+while a hover popover is visible and restored when it closes. Diff views have a
+right-edge scroll indicator that tracks the visible portion, including wrapped rows.
+Commit groups share a stable
+text color and tinted gutter background, with contrast adjusted for light themes.
+
+### Pseudocode
+
+`:set pseudo` opens a source-mapped Java or Markdown reading view with types and
+formatting noise concealed. Use `:set nopseudo` to return to source. See
+[pseudocode reading view](pseudocode.md) for transformations, navigation, and Lua usage.
+
+### Definition tabs
+
+`<C-g>` follows a symbol's definition in a new tab. `:q` closes that definition
+tab and returns to the tab it came from. Nested jumps retain their return chain:
+A → B → C can be retraced with `:q` back to B, then `:q` back to A.
+
+Closing a definition tab does not clear the remaining chain. Manually switching
+tabs clears the chain; opening a different file or buffer within a definition tab
+clears that tab's return target. Ordinary tab-closing behavior then applies.

@@ -16,7 +16,7 @@ fn read_capped_output(
     mut reader: impl Read,
     limit: usize,
     progress: Option<(
-        tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>,
+        tokio::sync::mpsc::Sender<super::ai_chat_state::ShellProgressEvent>,
         super::ai_chat_state::ShellOutputStream,
     )>,
 ) -> (Vec<u8>, bool) {
@@ -29,7 +29,7 @@ fn read_capped_output(
             Ok(count) => count,
         };
         if let Some((sender, stream)) = progress.as_ref() {
-            let _ = sender.send(super::ai_chat_state::ShellProgressEvent::Output {
+            let _ = sender.blocking_send(super::ai_chat_state::ShellProgressEvent::Output {
                 stream: *stream,
                 bytes: buffer[..count].to_vec(),
             });
@@ -105,11 +105,20 @@ fn reap_shell_leader(
     }
 }
 
+/// Keep provider credentials out of the model's shell: it could otherwise
+/// print or exfiltrate them.
+fn scrub_credential_env(builder: &mut Command, scrubbed_env: &[String]) {
+    for name in scrubbed_env {
+        builder.env_remove(name);
+    }
+}
+
 pub(super) fn run_bash_program(
     command: &str,
     workdir: &Path,
+    scrubbed_env: &[String],
     kill: Option<&super::ai_chat_state::ShellKillHandle>,
-    progress: Option<tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>>,
+    progress: Option<tokio::sync::mpsc::Sender<super::ai_chat_state::ShellProgressEvent>>,
 ) -> ToolResult {
     if kill.is_some_and(super::ai_chat_state::ShellKillHandle::is_interrupted) {
         return ToolResult::Error("Execution cancelled".into());
@@ -125,6 +134,7 @@ pub(super) fn run_bash_program(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    scrub_credential_env(&mut builder, scrubbed_env);
     #[cfg(unix)]
     {
         // Make the child a process-group leader so cancellation can kill the
@@ -152,7 +162,8 @@ pub(super) fn run_bash_program(
         }
     }
     if let Some(sender) = progress.as_ref() {
-        let _ = sender.send(super::ai_chat_state::ShellProgressEvent::Spawned { pid: child.id() });
+        let _ = sender
+            .blocking_send(super::ai_chat_state::ShellProgressEvent::Spawned { pid: child.id() });
     }
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -729,14 +740,18 @@ impl Editor {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
 
-        let mut child = match Command::new(&shell)
+        let mut builder = Command::new(&shell);
+        builder
             .arg("-lc")
             .arg(command)
             .current_dir(&workdir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+            .stderr(Stdio::piped());
+        scrub_credential_env(
+            &mut builder,
+            &self.ai_state.config.shell_scrubbed_env_names(),
+        );
+        let mut child = match builder.spawn() {
             Ok(child) => child,
             Err(err) => {
                 return ToolResult::Error(format!(
@@ -824,12 +839,6 @@ impl Editor {
         let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => Arc::clone(lsp),
             None => {
-                // Fall back to cached data for document_symbols
-                if name == "document_symbols" {
-                    return format_document_symbols_cached(
-                        &self.lsp.state.available_document_symbols,
-                    );
-                }
                 return ToolResult::Error(
                     "LSP not available. The language server is not running for this file."
                         .to_string(),
@@ -837,13 +846,8 @@ impl Editor {
             }
         };
 
-        // Clone cached symbols for fallback
-        let cached_symbols = self.lsp.state.available_document_symbols.clone();
-
         match name {
-            "document_symbols" => {
-                handle_lsp_document_symbols(lsp, uri, language_id, cached_symbols)
-            }
+            "document_symbols" => handle_lsp_document_symbols(lsp, uri, language_id),
             "hover" => handle_lsp_hover(lsp, uri, language_id, args),
             "goto_definition" => handle_lsp_goto_definition(lsp, uri, language_id, args),
             _ => ToolResult::Error(format!("unknown LSP tool: {name}")),
@@ -855,48 +859,8 @@ impl Editor {
 // Free functions: enclosing symbol, symbol kind labels, LSP tool handlers
 // ---------------------------------------------------------------------------
 
-/// Walk a hierarchical `DocumentSymbol` tree to find the deepest symbol
-/// whose range contains `cursor_line`.
-pub(crate) fn find_enclosing_symbol(
-    symbols: &[lsp_types::DocumentSymbol],
-    cursor_line: u32,
-) -> Option<&lsp_types::DocumentSymbol> {
-    let mut best: Option<&lsp_types::DocumentSymbol> = None;
-
-    for sym in symbols {
-        let range = &sym.range;
-        if cursor_line >= range.start.line && cursor_line <= range.end.line {
-            // This symbol contains the cursor. Check if it's more specific than current best.
-            let is_tighter = best
-                .map(|b| {
-                    let b_span = b.range.end.line - b.range.start.line;
-                    let s_span = range.end.line - range.start.line;
-                    s_span < b_span
-                })
-                .unwrap_or(true);
-            if is_tighter {
-                best = Some(sym);
-            }
-            // Recurse into children for a tighter match
-            if let Some(children) = &sym.children {
-                if let Some(child) = find_enclosing_symbol(children, cursor_line) {
-                    let child_span = child.range.end.line - child.range.start.line;
-                    let best_span = best
-                        .map(|b| b.range.end.line - b.range.start.line)
-                        .unwrap_or(u32::MAX);
-                    if child_span < best_span {
-                        best = Some(child);
-                    }
-                }
-            }
-        }
-    }
-
-    best
-}
-
 /// Human-readable label for an LSP SymbolKind.
-pub(super) fn symbol_kind_label(kind: lsp_types::SymbolKind) -> &'static str {
+fn symbol_kind_label(kind: lsp_types::SymbolKind) -> &'static str {
     match kind {
         lsp_types::SymbolKind::FILE => "File",
         lsp_types::SymbolKind::MODULE => "Module",
@@ -938,20 +902,6 @@ fn format_symbol_tree(symbols: &[lsp_types::DocumentSymbol], indent: usize, out:
     }
 }
 
-/// Format cached document symbols (used when LSP is unavailable).
-fn format_document_symbols_cached(symbols: &[lsp_types::DocumentSymbol]) -> ToolResult {
-    if symbols.is_empty() {
-        return ToolResult::Success(
-            "No document symbols available. The language server may not be running \
-             or hasn't finished indexing yet."
-                .to_string(),
-        );
-    }
-    let mut out = String::from("Document symbols (cached):\n");
-    format_symbol_tree(symbols, 0, &mut out);
-    ToolResult::Success(out)
-}
-
 /// Extract 1-indexed line/column from tool args, converting to 0-indexed.
 fn extract_position(args: &serde_json::Value) -> Result<(u32, u32), String> {
     let line = args
@@ -971,16 +921,33 @@ fn extract_position(args: &serde_json::Value) -> Result<(u32, u32), String> {
     Ok(((line - 1) as u32, (col - 1) as u32))
 }
 
+/// How long an AI tool call waits for a language server before giving up.
+/// Tool calls run synchronously on the editor loop, so this bounds how long
+/// a slow server can freeze it.
+const LSP_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn block_on_lsp<T>(
+    request: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            tokio::time::timeout(LSP_TOOL_TIMEOUT, request)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "the language server did not answer in time"
+                    ))
+                })
+        })
+    })
+}
+
 fn handle_lsp_document_symbols(
     lsp: Arc<crate::lsp::LspManager>,
     uri: lsp_types::Uri,
     language_id: String,
-    cached_symbols: Vec<lsp_types::DocumentSymbol>,
 ) -> ToolResult {
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { lsp.document_symbols(&uri, &language_id).await })
-    });
+    let result = block_on_lsp(async { lsp.document_symbols(&uri, &language_id).await });
 
     match result {
         Ok(symbols) if !symbols.is_empty() => {
@@ -988,14 +955,12 @@ fn handle_lsp_document_symbols(
             format_symbol_tree(&symbols, 0, &mut out);
             ToolResult::Success(out)
         }
-        Ok(_) => {
-            // Live LSP returned empty — fall back to cached
-            format_document_symbols_cached(&cached_symbols)
-        }
-        Err(_) => {
-            // LSP request failed — fall back to cached
-            format_document_symbols_cached(&cached_symbols)
-        }
+        // An empty answer and a failed request read the same to the model.
+        Ok(_) | Err(_) => ToolResult::Success(
+            "No document symbols available. The language server may not be running \
+             or hasn't finished indexing yet."
+                .to_string(),
+        ),
     }
 }
 
@@ -1010,10 +975,7 @@ fn handle_lsp_hover(
         Err(e) => return ToolResult::Error(e),
     };
 
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { lsp.hover(&uri, line, col, &language_id).await })
-    });
+    let result = block_on_lsp(async { lsp.hover(&uri, line, col, &language_id).await });
 
     match result {
         Ok(Some(content)) => ToolResult::Success(content),
@@ -1035,10 +997,7 @@ fn handle_lsp_goto_definition(
         Err(e) => return ToolResult::Error(e),
     };
 
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { lsp.goto_definition(&uri, line, col, &language_id).await })
-    });
+    let result = block_on_lsp(async { lsp.goto_definition(&uri, line, col, &language_id).await });
 
     match result {
         Ok(Some(location)) => {
@@ -1054,5 +1013,38 @@ fn handle_lsp_goto_definition(
         }
         Ok(None) => ToolResult::Success("No definition found at this position.".to_string()),
         Err(e) => ToolResult::Error(format!("LSP goto_definition failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod output_backpressure_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_progress_preserves_output_while_capping_retained_tool_result() {
+        let expected = vec![b'x'; 2 * 1024 * 1024];
+        let input = expected.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let worker = std::thread::spawn(move || {
+            read_capped_output(
+                std::io::Cursor::new(input),
+                48 * 1024,
+                Some((
+                    sender,
+                    super::super::ai_chat_state::ShellOutputStream::Stdout,
+                )),
+            )
+        });
+        let mut output = Vec::new();
+        while let Some(event) = receiver.blocking_recv() {
+            assert!(receiver.len() <= 2, "progress must remain bounded");
+            if let super::super::ai_chat_state::ShellProgressEvent::Output { bytes, .. } = event {
+                output.extend(bytes);
+            }
+        }
+        let (retained, truncated) = worker.join().unwrap();
+        assert_eq!(output, expected, "backpressure must not discard output");
+        assert_eq!(retained, expected[..48 * 1024]);
+        assert!(truncated);
     }
 }

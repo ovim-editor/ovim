@@ -9,11 +9,14 @@
 
 // Submodules extend Editor with LSP functionality
 pub(in crate::editor) mod actions;
-mod completion;
+pub(super) mod completion;
 mod diagnostics;
 mod goto;
+mod hierarchy;
 mod hover;
 mod inlay_hints;
+mod joined_servers;
 pub(in crate::editor) mod navigation;
 mod references;
+pub(in crate::editor) mod signature_help;
 pub(in crate::editor) mod workspace_edits;

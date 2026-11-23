@@ -23,6 +23,10 @@ pub struct SearchContext {
     pub search_start_pos: Option<(usize, usize)>,
     /// Visual search state - saved when entering search from visual mode
     pub visual_search_state: Option<VisualSearchState>,
+    /// Count typed before `/` or `?` (`3/foo<CR>` goes to the third match)
+    pub search_count: Option<usize>,
+    /// Operator waiting for the search to pick its motion (`d/foo<CR>`)
+    pub search_operator: Option<super::Operator>,
 }
 
 impl SearchContext {
@@ -34,6 +38,8 @@ impl SearchContext {
             current_search: None,
             search_start_pos: None,
             visual_search_state: None,
+            search_count: None,
+            search_operator: None,
         }
     }
 }

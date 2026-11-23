@@ -11,6 +11,7 @@ enum AiChatSlashCommandKind {
     Exa,
     Model,
     Effort,
+    Permissions,
     Comprehension,
     Yolo,
 }
@@ -47,8 +48,8 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
     },
     AiChatSlashCompletion {
         command: "/model",
-        usage: "/model [profile]",
-        description: "Choose the chat model",
+        usage: "/model [profile|model]",
+        description: "Choose a profile, or a Claude model alias/ID",
         kind: AiChatSlashCommandKind::Model,
     },
     AiChatSlashCompletion {
@@ -56,6 +57,12 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
         usage: "/effort [default|none|low|medium|high|xhigh|max]",
         description: "Choose the chat reasoning effort",
         kind: AiChatSlashCommandKind::Effort,
+    },
+    AiChatSlashCompletion {
+        command: "/permissions",
+        usage: "/permissions [mode]",
+        description: "Choose the provider permission mode",
+        kind: AiChatSlashCommandKind::Permissions,
     },
     AiChatSlashCompletion {
         command: "/comprehension",
@@ -78,8 +85,30 @@ enum AiChatSlashCommand {
     Exa,
     Model { profile: Option<String> },
     Effort { effort: Option<String> },
+    Permissions { mode: Option<String> },
     Comprehension { policy: super::ComprehensionPolicy },
     Yolo { enabled: Option<bool> },
+}
+
+/// A command name: a lowercase letter, then word characters or hyphens
+/// (`^[a-z][\w-]*$`). Anything else after a leading `/`, such as the path in
+/// "/usr/lib/x fails", is ordinary prose.
+fn is_command_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase())
+        && characters.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Whether a message is addressed to Claude Code's own command set: its first
+/// word is `/` followed by a command name.
+pub(super) fn is_native_command(message: &str) -> bool {
+    message
+        .split_whitespace()
+        .next()
+        .and_then(|word| word.strip_prefix('/'))
+        .is_some_and(is_command_name)
 }
 
 impl AiChatSlashCommand {
@@ -87,6 +116,9 @@ impl AiChatSlashCommand {
         let command = input.strip_prefix('/')?;
         let mut parts = command.split_whitespace();
         let name = parts.next().unwrap_or_default();
+        if !name.is_empty() && !is_command_name(name) {
+            return None;
+        }
         let arguments = parts.collect::<Vec<_>>();
 
         let Some(spec) = AI_CHAT_SLASH_COMMANDS
@@ -132,6 +164,10 @@ impl AiChatSlashCommand {
                 })
             }
             AiChatSlashCommandKind::Effort => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Permissions if arguments.len() <= 1 => Ok(Self::Permissions {
+                mode: arguments.first().map(|value| (*value).to_string()),
+            }),
+            AiChatSlashCommandKind::Permissions => Err(format!("Usage: {}", spec.usage)),
             AiChatSlashCommandKind::Comprehension if arguments.len() <= 1 => {
                 let policy = match arguments.first().copied() {
                     None | Some("publish") => super::ComprehensionPolicy::Publish,
@@ -183,6 +219,19 @@ impl Editor {
         }
         AI_CHAT_SLASH_COMMANDS
             .iter()
+            .filter(|spec| {
+                spec.kind != AiChatSlashCommandKind::Permissions
+                    || !self.ai_chat_permission_modes().is_empty()
+            })
+            .filter(|spec| {
+                !self.ai_chat_uses_external_agent()
+                    || !matches!(
+                        spec.kind,
+                        AiChatSlashCommandKind::Exa
+                            | AiChatSlashCommandKind::Comprehension
+                            | AiChatSlashCommandKind::Yolo
+                    )
+            })
             .filter(|spec| {
                 spec.command
                     .strip_prefix('/')
@@ -272,6 +321,13 @@ impl Editor {
     /// Parse and execute editor-owned chat commands before provider submission.
     /// Returns `true` when the input was a slash command, including invalid ones.
     pub(super) fn try_execute_ai_chat_slash_command(&mut self, input: &str) -> Result<bool> {
+        // Claude owns native commands such as /compact. Ovim still owns its
+        // profile picker and conversation clear action.
+        if self.ai_chat_uses_external_agent()
+            && (input == "/compact" || input.starts_with("/compact "))
+        {
+            return Ok(false);
+        }
         let Some(command) = AiChatSlashCommand::parse(input) else {
             return Ok(false);
         };
@@ -283,7 +339,13 @@ impl Editor {
             }
             Ok(AiChatSlashCommand::Exa) => {
                 self.clear_ai_chat_input();
-                self.open_exa_setup_dialog(None);
+                if self.ai_chat_uses_external_agent() {
+                    self.set_status_message(
+                        "Configure Claude Code search tools through Claude's settings",
+                    );
+                } else {
+                    self.open_exa_setup_dialog(None);
+                }
             }
             Ok(AiChatSlashCommand::Model { profile: None }) => {
                 self.clear_ai_chat_input();
@@ -292,7 +354,14 @@ impl Editor {
             Ok(AiChatSlashCommand::Model {
                 profile: Some(profile),
             }) => {
-                if self.ai_set_profile(&profile) {
+                let selected = if self.ai_state.config.profiles.contains_key(&profile) {
+                    self.ai_select_chat_profile(&profile)
+                } else if self.ai_chat_uses_external_agent() {
+                    self.ai_select_chat_model(&self.ai_chat_effective_profile(), &profile)
+                } else {
+                    self.ai_select_chat_profile(&profile)
+                };
+                if selected {
                     self.clear_ai_chat_input();
                 }
             }
@@ -304,6 +373,19 @@ impl Editor {
                 effort: Some(effort),
             }) => {
                 if self.set_ai_chat_reasoning_effort(&effort) {
+                    self.clear_ai_chat_input();
+                }
+            }
+            Ok(AiChatSlashCommand::Permissions { mode: None }) => {
+                if self.ai_chat_permission_modes().is_empty() {
+                    self.set_status_message("The selected AI provider has no permission modes");
+                } else {
+                    self.clear_ai_chat_input();
+                    self.open_ai_chat_model_picker(super::ChatModelPickerSection::Permission);
+                }
+            }
+            Ok(AiChatSlashCommand::Permissions { mode: Some(mode) }) => {
+                if self.set_ai_chat_permission_mode(&mode) {
                     self.clear_ai_chat_input();
                 }
             }
@@ -335,6 +417,7 @@ impl Editor {
             chat.input_cursor = 0;
             chat.pending_images.clear();
             chat.pending_code_attachment = None;
+            chat.pending_diff_comments = None;
             chat.slash_completion_selected = 0;
         }
     }
@@ -365,6 +448,7 @@ impl Editor {
             chat.input_cursor = 0;
             chat.pending_images.clear();
             chat.pending_code_attachment = None;
+            chat.pending_diff_comments = None;
             chat.focus = ChatFocus::TextInput;
             chat.context_generation = chat.context_generation.saturating_add(1);
             chat.compaction_checkpoint = None;
@@ -377,6 +461,8 @@ impl Editor {
             chat.streaming_tool_calls.clear();
             chat.tool_event_summaries.clear();
             chat.tool_call_count = 0;
+            // A fresh conversation does not inherit "allow all shell commands".
+            chat.shell_allowed_session = false;
             chat.agent_edits.clear();
         }
         self.render_cache.ai_chat_last_total_rows = 0;
@@ -477,6 +563,52 @@ mod tests {
             AiChatSlashCommand::parse("/unknown"),
             Some(Err(_))
         ));
+    }
+
+    #[test]
+    fn only_command_shaped_first_words_are_commands() {
+        for prose in [
+            "/usr/lib/x fails",
+            "/etc/hosts is wrong",
+            "/Users/me/project builds slowly",
+            "/tmp/x",
+            "/1st-thing",
+            "/-flag",
+            "/.hidden",
+        ] {
+            assert!(
+                AiChatSlashCommand::parse(prose).is_none(),
+                "{prose} is not a command"
+            );
+            assert!(!is_native_command(prose), "{prose} is not a native command");
+        }
+        for command in ["/compact", "/review-pr 12", "/my_cmd2 now", "/init"] {
+            assert!(is_native_command(command), "{command}");
+        }
+        // Command-shaped but unregistered stays an explicit error in Ovim's
+        // own parser; a lone slash still asks for a command.
+        assert!(matches!(
+            AiChatSlashCommand::parse("/nonexistent thing"),
+            Some(Err(message)) if message.contains("Unknown AI chat command")
+        ));
+        assert!(matches!(
+            AiChatSlashCommand::parse("/"),
+            Some(Err(message)) if message.contains("Enter a slash command")
+        ));
+        assert!(!is_native_command("/"));
+        assert!(!is_native_command("hello /compact"));
+    }
+
+    #[test]
+    fn a_path_led_message_is_submitted_instead_of_rejected_as_a_command() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        assert!(!editor
+            .try_execute_ai_chat_slash_command("/usr/lib/x fails to load")
+            .unwrap());
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/nonexistent thing")
+            .unwrap());
     }
 
     #[test]

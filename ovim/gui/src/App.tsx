@@ -5,27 +5,43 @@ import {
     createEffect,
     createMemo,
     createSignal,
+    on,
     onCleanup,
     onMount,
+    untrack,
 } from "solid-js";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import { walkthroughPath } from "./walkthroughTitle";
 import { mockSnapshot } from "./mock";
+import { version } from "../package.json";
+import MarkdownDocument from "./MarkdownDocument";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
 import { createBrowserNavigation } from "./browserNavigation";
 import { createBrowserWorkbench } from "./browserWorkbench";
 import { browserShortcutAction, type BrowserKeyEvent } from "./browserKeys";
+import FileExplorer from "./FileExplorer";
+import { EXPLORER_DEFAULT_WIDTH } from "./explorerLayout";
+import { CONTEXT_DEFAULT_WIDTH } from "./contextDockLayout";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
-import NativeDiffPanel from "./DiffPanel";
+import TerminalPanel from "./TerminalPanel";
+import FlowDiff from "./FlowDiff";
 import SurfaceCommandLine from "./SurfaceCommandLine";
 import WorkbenchTabStrip from "./WorkbenchTabStrip";
 import { BROWSER_COMMAND_NAMES } from "./browserCommands";
-import { guiKeyInput } from "./guiInput";
+import { chordKey, guiKeyInput } from "./guiInput";
+import {
+    createMouseChannel,
+    pointerCell,
+    trackSelectionDrag,
+    type PointerRow,
+} from "./editorPointer";
 import { Icon, IconButton, type IconTone } from "./Icon";
+import { createSerialQueue } from "./serialQueue";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { isGuiNativeControl, trapDialogFocus } from "./focus";
@@ -51,6 +67,7 @@ import {
 } from "./layoutPersistence";
 import {
     activeSourceSelection,
+    adjacentWorkbenchTab,
     createWorkbenchTabOrder,
     reconcileWorkbenchTabs,
     type WorkbenchSelection,
@@ -58,9 +75,9 @@ import {
 } from "./workbench";
 import type {
     GuiAiChat,
+    GuiChatInputState,
     GuiCodeExplanation,
     GuiConnection,
-    GuiDiffReview,
     GuiKeyInput,
     GuiLayoutNode,
     GuiPane,
@@ -94,6 +111,33 @@ const openExternalLink = (url: string) => {
     window.open(url, "_blank", "noopener,noreferrer");
 };
 
+/** A completion label with the characters the user typed emphasised. */
+export const MatchedLabel = (props: { label: string; matched: number[] }) => {
+    const parts = createMemo(() => {
+        const matched = new Set(props.matched);
+        const chars = Array.from(props.label);
+        const out: Array<{ text: string; match: boolean }> = [];
+        chars.forEach((char, index) => {
+            const match = matched.has(index);
+            const last = out[out.length - 1];
+            if (last && last.match === match) last.text += char;
+            else out.push({ text: char, match });
+        });
+        return out;
+    });
+    return (
+        <For each={parts()}>
+            {(part) =>
+                part.match ? (
+                    <mark class="completion-match">{part.text}</mark>
+                ) : (
+                    <>{part.text}</>
+                )
+            }
+        </For>
+    );
+};
+
 export const Markdown = (props: {
     text: string;
     onOpenLink?: (url: string) => void;
@@ -105,7 +149,13 @@ export const Markdown = (props: {
                 breaks: true,
                 gfm: true,
             }) as string,
-            { USE_PROFILES: { html: true } },
+            {
+                USE_PROFILES: { html: true },
+                // Model output must not restyle the app or fetch remote
+                // resources (an <img> can exfiltrate via its URL).
+                FORBID_TAGS: ["style", "form", "button", "iframe", "img"],
+                FORBID_ATTR: ["style", "id", "name"],
+            },
         ),
     );
 
@@ -188,6 +238,7 @@ export const QueuedChatMessage = (props: {
 export const ChatActivityGroup = (props: {
     item: Extract<ChatTranscriptItem, { kind: "activity" }>;
     onSelect?: (index: number) => void;
+    onReplay?: (toolCallId: string) => void;
 }) => {
     const [expanded, setExpanded] = createSignal(false);
     return (
@@ -240,8 +291,21 @@ export const ChatActivityGroup = (props: {
                                         {entry.live ? "live" : entry.model}
                                     </small>
                                 </header>
+                                <ToolReplayButton
+                                    message={entry}
+                                    onReplay={props.onReplay}
+                                />
                                 <Show when={entry.content}>
-                                    <Markdown text={entry.content} />
+                                    <Show
+                                        when={entry.role === "tool"}
+                                        fallback={
+                                            <Markdown text={entry.content} />
+                                        }
+                                    >
+                                        <pre class="tool-result-output">
+                                            {entry.content}
+                                        </pre>
+                                    </Show>
                                 </Show>
                                 <ToolCallList tools={entry.tools} />
                             </section>
@@ -251,6 +315,50 @@ export const ChatActivityGroup = (props: {
             </Show>
         </details>
     );
+};
+
+const WALKTHROUGH_SCROLL_KEYS = new Set([
+    "ArrowUp",
+    "ArrowDown",
+    "j",
+    "k",
+    "PageUp",
+    "PageDown",
+]);
+
+/**
+ * Scroll long teaching text or a long reply inside the card. Core's own scroll
+ * is bounded by a TUI-only render cache, so in the GUI these keys would do
+ * nothing. Returns whether the key was consumed.
+ */
+export const scrollWalkthroughWithKey = (
+    card: ParentNode,
+    event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey">,
+) => {
+    if (
+        !WALKTHROUGH_SCROLL_KEYS.has(event.key) ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+    )
+        return false;
+    const scrollable = [".walkthrough-answer", ".walkthrough-teaching"]
+        .map((selector) => card.querySelector<HTMLElement>(selector))
+        .find(
+            (element) => element && element.scrollHeight > element.clientHeight,
+        );
+    if (scrollable) {
+        const page = Math.max(LINE_HEIGHT, scrollable.clientHeight * 0.9);
+        scrollable.scrollTop +=
+            event.key === "ArrowUp" || event.key === "k"
+                ? -LINE_HEIGHT
+                : event.key === "ArrowDown" || event.key === "j"
+                  ? LINE_HEIGHT
+                  : event.key === "PageUp"
+                    ? -page
+                    : page;
+    }
+    return true;
 };
 
 const WalkthroughDiscussion = (props: {
@@ -285,9 +393,12 @@ const WalkthroughDiscussion = (props: {
                             <pre class="walkthrough-question">
                                 <span>{parts()[0]}</span>
                                 <i class="chat-caret" aria-hidden="true" />
-                                <span>
-                                    {parts()[1] || "Type your question…"}
-                                </span>
+                                <span>{parts()[1]}</span>
+                                <Show when={!active().input}>
+                                    <span class="placeholder">
+                                        Type your question…
+                                    </span>
+                                </Show>
                             </pre>
                         </>
                     );
@@ -300,18 +411,42 @@ const WalkthroughDiscussion = (props: {
                         : undefined
                 }
             >
-                {(active) => (
-                    <>
-                        <small>Answering “{active().question}”</small>
-                        <div class="walkthrough-answer">
-                            <span
-                                class="walkthrough-spinner"
-                                aria-label="Answering"
-                            />
-                            <Markdown text={active().answer || "Thinking…"} />
-                        </div>
-                    </>
-                )}
+                {(active) => {
+                    let answer!: HTMLDivElement;
+                    let following = true;
+                    // Follow the stream unless the reader scrolled up.
+                    createEffect(() => {
+                        active().answer;
+                        if (following)
+                            queueMicrotask(() => {
+                                answer.scrollTop = answer.scrollHeight;
+                            });
+                    });
+                    return (
+                        <>
+                            <small>Answering “{active().question}”</small>
+                            <div
+                                ref={answer}
+                                class="walkthrough-answer"
+                                onScroll={() => {
+                                    following =
+                                        answer.scrollHeight -
+                                            answer.scrollTop -
+                                            answer.clientHeight <
+                                        24;
+                                }}
+                            >
+                                <span
+                                    class="walkthrough-spinner"
+                                    aria-label="Answering"
+                                />
+                                <Markdown
+                                    text={active().answer || "Thinking…"}
+                                />
+                            </div>
+                        </>
+                    );
+                }}
             </Show>
             <Show
                 when={
@@ -327,7 +462,11 @@ const WalkthroughDiscussion = (props: {
                             <small>
                                 {active().latestFailed
                                     ? "Answer failed"
-                                    : `Question ${active().questionCount}`}
+                                    : `Question ${active().questionCount}${
+                                          active().exchangeTotal > 0
+                                              ? ` of ${active().exchangeTotal}`
+                                              : ""
+                                      }`}
                                 : {active().latestQuestion}
                             </small>
                             <div class="walkthrough-answer">
@@ -345,8 +484,51 @@ export const CodeWalkthrough = (props: {
     walkthrough: GuiCodeExplanation;
     onKey: (key: string) => void;
     restoreFocus?: () => void;
+    onPosition?: (current: number, rows: number) => void;
 }) => {
     let dialog!: HTMLElement;
+    let heading!: HTMLElement;
+    const [titleBudget, setTitleBudget] = createSignal(80);
+    let measure = () => {};
+    onMount(() => {
+        let lastGeometry = "";
+        measure = () => {
+            setTitleBudget(Math.max(8, Math.floor(heading.clientWidth / 8)));
+            if (page().kind === "concept") return;
+            const viewport = dialog
+                .closest(".editor-body")
+                ?.querySelector<HTMLElement>(
+                    ".editor-pane.focused .code-viewport",
+                );
+            if (!viewport) return;
+            const code = viewport.getBoundingClientRect();
+            const rows = Math.max(
+                1,
+                Math.floor(
+                    (Math.min(
+                        code.bottom,
+                        dialog.getBoundingClientRect().top - 12,
+                    ) -
+                        code.top) /
+                        LINE_HEIGHT,
+                ),
+            );
+            const geometry = `${props.walkthrough.current}:${rows}:${code.width}`;
+            if (geometry === lastGeometry) return;
+            lastGeometry = geometry;
+            props.onPosition?.(props.walkthrough.current, rows);
+        };
+        const observer = new ResizeObserver(measure);
+        observer.observe(dialog);
+        observer.observe(dialog.parentElement!);
+        measure();
+        onCleanup(() => observer.disconnect());
+    });
+    createEffect(() => {
+        props.walkthrough.current;
+        props.walkthrough.page;
+        queueMicrotask(() => measure());
+    });
     const dispatch = (key: string) => {
         props.onKey(key);
         queueMicrotask(() => dialog?.focus({ preventScroll: true }));
@@ -354,17 +536,48 @@ export const CodeWalkthrough = (props: {
     onMount(() => queueMicrotask(() => dialog?.focus({ preventScroll: true })));
     onCleanup(() => queueMicrotask(() => props.restoreFocus?.()));
     const page = () => props.walkthrough.page;
-    const title = () => {
+    const title = (shorten = false) => {
         const active = page();
         if (active.kind === "concept") return active.title;
-        return `${active.path}:${active.startLine}${active.endLine !== active.startLine ? `–${active.endLine}` : ""}`;
+        if (active.kind === "diff") {
+            const paths = [active.oldPath, active.newPath]
+                .filter(Boolean)
+                .join(" → ");
+            const title = paths ? `${active.title} · ${paths}` : active.title;
+            return shorten ? active.title : title;
+        }
+        const range = `:${active.startLine}${active.endLine !== active.startLine ? `–${active.endLine}` : ""}`;
+        return `${shorten ? walkthroughPath(active.path, titleBudget() - range.length) : active.path}${range}`;
     };
     const teaching = () => {
         const active = page();
         return active.kind === "concept" ? active.body : active.comment;
     };
     const composing = () => props.walkthrough.discussion.state === "composing";
-    const answering = () => props.walkthrough.discussion.state === "answering";
+    const answering = () => props.walkthrough.answerInProgress;
+    const threadVisible = () => {
+        const discussion = props.walkthrough.discussion;
+        return (
+            discussion.state === "answering" ||
+            (discussion.state === "navigating" &&
+                Boolean(discussion.latestQuestion))
+        );
+    };
+    // Only a navigating thread has a visible exchange to step away from;
+    // while answering, the streaming exchange is always the latest one.
+    const hasEarlierQuestion = () => {
+        const discussion = props.walkthrough.discussion;
+        return (
+            discussion.state === "navigating" && discussion.questionCount > 1
+        );
+    };
+    const hasLaterQuestion = () => {
+        const discussion = props.walkthrough.discussion;
+        return (
+            discussion.state === "navigating" &&
+            discussion.questionCount < discussion.exchangeTotal
+        );
+    };
     return (
         <div
             class={`walkthrough-layer ${page().kind}`}
@@ -387,15 +600,30 @@ export const CodeWalkthrough = (props: {
                         <small>
                             {page().kind === "concept"
                                 ? "Concept"
-                                : "Code walkthrough"}{" "}
+                                : page().kind === "diff"
+                                  ? "Diff walkthrough"
+                                  : "Code walkthrough"}{" "}
                             · {props.walkthrough.current} of{" "}
                             {props.walkthrough.total}
                         </small>
-                        <b id="walkthrough-title">{title()}</b>
+                        <b
+                            ref={heading!}
+                            id="walkthrough-title"
+                            title={title()}
+                            aria-label={title()}
+                        >
+                            {title(true)}
+                        </b>
                     </div>
                     <button
                         type="button"
-                        aria-label="Dismiss walkthrough"
+                        aria-label={
+                            composing()
+                                ? "Cancel question"
+                                : threadVisible()
+                                  ? "Back to step"
+                                  : "Dismiss walkthrough"
+                        }
                         onClick={() => dispatch("Escape")}
                     >
                         Esc
@@ -431,6 +659,42 @@ export const CodeWalkthrough = (props: {
                         </button>
                     </div>
                     <div class="walkthrough-actions">
+                        <Show
+                            when={
+                                !composing() &&
+                                props.walkthrough.discussion.questionCount > 0
+                            }
+                        >
+                            <Show
+                                when={threadVisible()}
+                                fallback={
+                                    <button
+                                        type="button"
+                                        onClick={() => dispatch("t")}
+                                        title="t"
+                                    >
+                                        Show thread
+                                    </button>
+                                }
+                            >
+                                <button
+                                    type="button"
+                                    disabled={!hasEarlierQuestion()}
+                                    onClick={() => dispatch("[")}
+                                    title="["
+                                >
+                                    Earlier question
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={!hasLaterQuestion()}
+                                    onClick={() => dispatch("]")}
+                                    title="]"
+                                >
+                                    Later question
+                                </button>
+                            </Show>
+                        </Show>
                         <button
                             type="button"
                             disabled={answering()}
@@ -443,7 +707,12 @@ export const CodeWalkthrough = (props: {
                         <button
                             type="button"
                             class="primary"
-                            disabled={answering()}
+                            disabled={
+                                answering() ||
+                                (props.walkthrough.discussion.state ===
+                                    "composing" &&
+                                    !props.walkthrough.discussion.input.trim())
+                            }
                             onClick={() => dispatch("Enter")}
                         >
                             {composing()
@@ -458,6 +727,14 @@ export const CodeWalkthrough = (props: {
             </section>
         </div>
     );
+};
+
+/** Mirrors ovim-core `test_panel::format_duration`. */
+export const formatElapsed = (ms: number) => {
+    const seconds = Math.max(0, ms) / 1000;
+    if (seconds < 60) return `${seconds.toFixed(1)}s`;
+    const whole = Math.floor(seconds);
+    return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, "0")}s`;
 };
 
 export const imageExtension = (mimeType: string) =>
@@ -506,11 +783,15 @@ export const ChatSetupCard = (props: {
             <header>
                 <b>{props.setup.title}</b>
                 <span>
-                    {props.setup.kind === "exaKey" ? "optional" : "required"}
+                    {props.setup.kind === "exaKey"
+                        ? "optional"
+                        : props.setup.kind === "providerChoice"
+                          ? "first run"
+                          : "required"}
                 </span>
             </header>
             <p>{props.setup.detail}</p>
-            <Show when={props.setup.maskedInput !== undefined}>
+            <Show when={props.setup.maskedInput != null}>
                 <pre aria-label="Exa API key input">
                     <span>{maskedParts()[0]}</span>
                     <i class="chat-caret" aria-hidden="true" />
@@ -523,8 +804,31 @@ export const ChatSetupCard = (props: {
             <Show when={props.setup.error}>
                 <small role="alert">{props.setup.error}</small>
             </Show>
+            <Show when={props.setup.actions.some((action) => action.detail)}>
+                <div class="chat-setup-choices" role="group">
+                    <For
+                        each={props.setup.actions.filter(
+                            (action) => action.detail,
+                        )}
+                    >
+                        {(action) => (
+                            <button
+                                type="button"
+                                onClick={() => props.onKey?.(action.key)}
+                            >
+                                <b>{action.label}</b>
+                                <small>{action.detail}</small>
+                            </button>
+                        )}
+                    </For>
+                </div>
+            </Show>
             <footer>
-                <For each={props.setup.actions}>
+                <For
+                    each={props.setup.actions.filter(
+                        (action) => !action.detail,
+                    )}
+                >
                     {(action) => (
                         <button
                             type="button"
@@ -553,7 +857,7 @@ export type ChatTranscriptItem =
 
 const isActivityMessage = (message: GuiChatMessage) =>
     message.role === "thinking" ||
-    message.role === "tool" ||
+    (message.role === "tool" && !message.replayToolCallId) ||
     (message.role === "assistant" &&
         message.tools.length > 0 &&
         !message.content.trim());
@@ -626,6 +930,8 @@ const sameChatMessage = (left: GuiChatMessage, right: GuiChatMessage) =>
     left.content === right.content &&
     left.model === right.model &&
     left.toolName === right.toolName &&
+    left.replayToolCallId === right.replayToolCallId &&
+    left.replayLabel === right.replayLabel &&
     sameStrings(left.tools, right.tools) &&
     sameStrings(left.images ?? [], right.images ?? []) &&
     (left as ChatActivityEntry).live === (right as ChatActivityEntry).live;
@@ -725,9 +1031,29 @@ export const ToolCallList = (props: { tools: string[] }) => (
     </Show>
 );
 
+const ToolReplayButton = (props: {
+    message: GuiChatMessage;
+    onReplay?: (toolCallId: string) => void;
+}) => (
+    <Show when={props.message.replayToolCallId}>
+        {(id) => (
+            <button
+                type="button"
+                onClick={(event) => {
+                    event.stopPropagation();
+                    props.onReplay?.(id());
+                }}
+            >
+                {props.message.replayLabel}
+            </button>
+        )}
+    </Show>
+);
+
 export const ChatMessageView = (props: {
     message: GuiChatMessage;
     onSelect?: (index: number) => void;
+    onReplay?: (toolCallId: string) => void;
 }) => {
     const [expanded, setExpanded] = createSignal(false);
     let disclosure: HTMLDetailsElement | undefined;
@@ -789,10 +1115,16 @@ export const ChatMessageView = (props: {
                         <em>Details</em>
                     </summary>
                     <Show when={expanded()}>
-                        <Markdown text={props.message.content} />
+                        <pre class="tool-result-output">
+                            {props.message.content}
+                        </pre>
                     </Show>
                 </details>
             </Show>
+            <ToolReplayButton
+                message={props.message}
+                onReplay={props.onReplay}
+            />
             <Show when={props.message.images?.length}>
                 <footer
                     class="chat-message-attachments"
@@ -817,15 +1149,20 @@ export const ChatPanel = (props: {
     revision?: number;
     focusInput: () => void;
     bindInput?: (input: HTMLTextAreaElement | undefined) => void;
-    onInputUpdate?: (update: ChatInputUpdate) => Promise<void>;
+    onInputUpdate?: (update: ChatInputUpdate) => Promise<GuiChatInputState>;
     onSetupKey?: (key: string) => void;
     onInputWidth?: (columns: number) => void;
+    onRemoveDiffComments?: () => void;
     onRemoveImage?: (index: number) => void;
-    onProfile?: (profile: string) => void;
-    onReasoningEffort?: (effort: string) => void;
+    onProfile?: (profile: string, model?: string) => unknown;
+    onReasoningEffort?: (effort: string) => unknown;
+    onPermissionMode?: (mode: string) => unknown;
+    onApproval?: (decision: "allow" | "remember" | "deny") => void;
+    onAgentApproval?: (requestId: string, allow: boolean) => void;
     onYolo?: () => void;
     onComprehension?: () => void;
     onMessage?: (index: number) => void;
+    onReplay?: (toolCallId: string) => void;
     onAgent?: (agentId?: string) => void;
     hideComposer?: boolean;
     onQueuedAction?: (
@@ -887,6 +1224,7 @@ export const ChatPanel = (props: {
             queued.length,
             queued.at(-1)?.content.length ?? 0,
             props.chat.approval?.length ?? 0,
+            props.chat.agentApproval?.requestId ?? "",
         ];
         if (messages.length > messageCount && latest?.role === "user")
             setFollowing(true);
@@ -908,56 +1246,87 @@ export const ChatPanel = (props: {
                     <b>AI chat</b>
                     <ChatModelPicker
                         profile={props.chat.profile}
+                        model={props.chat.model}
                         profiles={props.chat.profiles}
                         reasoningEffort={props.chat.reasoningEffort}
                         reasoningEffortSelection={
                             props.chat.reasoningEffortSelection
                         }
                         reasoningEfforts={props.chat.reasoningEfforts}
+                        reasoningEffortDefault={
+                            props.chat.reasoningEffortDefault
+                        }
                         onProfile={props.onProfile}
                         onReasoningEffort={props.onReasoningEffort}
+                        permissionMode={props.chat.permissionMode}
+                        permissionModes={props.chat.permissionModes ?? []}
+                        onPermissionMode={props.onPermissionMode}
+                        turnActive={props.chat.activity !== "idle"}
                         focusInput={props.focusInput}
                     />
                 </div>
-                <div class="chat-policy-controls">
-                    <button
-                        type="button"
-                        classList={{ enabled: props.chat.yoloMode }}
-                        aria-pressed={props.chat.yoloMode}
-                        title={
-                            props.chat.yoloMode
-                                ? "Disable approval bypass for this chat"
-                                : "Bypass Terra and interactive approvals for this chat"
-                        }
-                        onClick={() => {
-                            props.onYolo?.();
-                            queueMicrotask(props.focusInput);
-                        }}
+                <Show when={!props.chat.externalAgent}>
+                    <div class="chat-policy-controls">
+                        <button
+                            type="button"
+                            classList={{ enabled: props.chat.yoloMode }}
+                            aria-pressed={props.chat.yoloMode}
+                            title={
+                                props.chat.yoloMode
+                                    ? "Disable approval bypass for this chat"
+                                    : "Bypass Terra and interactive approvals for this chat"
+                            }
+                            onClick={() => {
+                                props.onYolo?.();
+                                queueMicrotask(props.focusInput);
+                            }}
+                        >
+                            YOLO {props.chat.yoloMode ? "ON" : "OFF"}
+                        </button>
+                        <button
+                            type="button"
+                            classList={{
+                                enabled:
+                                    props.chat.comprehensionPolicy !== "off",
+                            }}
+                            aria-pressed={
+                                props.chat.comprehensionPolicy !== "off"
+                            }
+                            title={
+                                props.chat.comprehensionCheckpoint
+                                    ? `Checkpoint: ${props.chat.comprehensionCheckpoint}`
+                                    : "Require demonstrated comprehension at the configured boundary"
+                            }
+                            onClick={() => {
+                                props.onComprehension?.();
+                                queueMicrotask(props.focusInput);
+                            }}
+                        >
+                            COMPREHENSION
+                            {props.chat.comprehensionPolicy === "off"
+                                ? " OFF"
+                                : `: ${props.chat.comprehensionPolicy.toUpperCase()}`}
+                        </button>
+                    </div>
+                </Show>
+                <Show when={props.chat.shellAllowed}>
+                    <span
+                        class="chat-policy-warning"
+                        role="status"
+                        title="You allowed every shell command for this chat session. Run /clear to revoke it."
                     >
-                        YOLO {props.chat.yoloMode ? "ON" : "OFF"}
-                    </button>
-                    <button
-                        type="button"
-                        classList={{
-                            enabled: props.chat.comprehensionPolicy !== "off",
-                        }}
-                        aria-pressed={props.chat.comprehensionPolicy !== "off"}
-                        title={
-                            props.chat.comprehensionCheckpoint
-                                ? `Checkpoint: ${props.chat.comprehensionCheckpoint}`
-                                : "Require demonstrated comprehension at the configured boundary"
-                        }
-                        onClick={() => {
-                            props.onComprehension?.();
-                            queueMicrotask(props.focusInput);
-                        }}
+                        SHELL ALLOWED
+                    </span>
+                </Show>
+                <Show when={props.chat.permissionMode === "bypassPermissions"}>
+                    <span
+                        class="chat-policy-warning"
+                        role="status"
+                        title="Claude is not asking for permission in this chat. Run /permissions auto to restore prompts."
                     >
-                        COMPREHENSION
-                        {props.chat.comprehensionPolicy === "off"
-                            ? " OFF"
-                            : `: ${props.chat.comprehensionPolicy.toUpperCase()}`}
-                    </button>
-                </div>
+                        BYPASS PERMISSIONS
+                    </span>
+                </Show>
             </header>
             <div class="chat-body">
                 <Show when={props.chat.agents.length}>
@@ -1076,6 +1445,7 @@ export const ChatPanel = (props: {
                                                 ).message
                                             }
                                             onSelect={props.onMessage}
+                                            onReplay={props.onReplay}
                                         />
                                     }
                                 >
@@ -1083,6 +1453,7 @@ export const ChatPanel = (props: {
                                         <ChatActivityGroup
                                             item={activity()}
                                             onSelect={props.onMessage}
+                                            onReplay={props.onReplay}
                                         />
                                     )}
                                 </Show>
@@ -1136,9 +1507,76 @@ export const ChatPanel = (props: {
                         >
                             <b>Approval required</b>
                             <span>{approval()}</span>
-                            <small>
-                                Use the keyboard choices shown by Ovim.
-                            </small>
+                            <div class="approval-actions">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.onApproval?.("allow");
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    Allow once
+                                </button>
+                                <Show when={props.chat.approvalCanRemember}>
+                                    <button
+                                        type="button"
+                                        title="Allow this and similar calls without asking again"
+                                        onClick={() => {
+                                            props.onApproval?.("remember");
+                                            queueMicrotask(props.focusInput);
+                                        }}
+                                    >
+                                        Allow and remember
+                                    </button>
+                                </Show>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.onApproval?.("deny");
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    Deny
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </Show>
+                <Show when={props.chat.agentApproval}>
+                    {(approval) => (
+                        <div
+                            class="approval-card agent-approval-card"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            <b>Agent approval · {approval().agentName}</b>
+                            <span>{approval().summary}</span>
+                            <div class="approval-actions">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.onAgentApproval?.(
+                                            approval().requestId,
+                                            true,
+                                        );
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    Allow once
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.onAgentApproval?.(
+                                            approval().requestId,
+                                            false,
+                                        );
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    Deny
+                                </button>
+                            </div>
                         </div>
                     )}
                 </Show>
@@ -1158,6 +1596,7 @@ export const ChatPanel = (props: {
                     bindInput={props.bindInput}
                     onUpdate={props.onInputUpdate}
                     onWidth={props.onInputWidth}
+                    onRemoveDiffComments={props.onRemoveDiffComments}
                     onRemoveImage={props.onRemoveImage}
                 />
             </Show>
@@ -1197,20 +1636,42 @@ function App() {
         compactDockQuery?.matches ?? false,
     );
     const [activeDock, setActiveDock] = createSignal<"explorer" | "context">(
-        mockSnapshot.aiChat || mockSnapshot.testPanel || mockSnapshot.debug
+        mockSnapshot.aiChat ||
+            mockSnapshot.testPanel ||
+            mockSnapshot.debug ||
+            mockSnapshot.runConsole
             ? "context"
             : "explorer",
     );
     const [activeContextPanel, setActiveContextPanel] = createSignal<
-        "ai" | "tests" | "debug" | "diff"
+        "ai" | "tests" | "debug" | "run" | "terminal"
     >("ai");
-    const [diffDockOpen, setDiffDockOpen] = createSignal(false);
-    const [diffReview, setDiffReview] = createSignal<GuiDiffReview>();
+    const [terminalLaunch, setTerminalLaunch] = createSignal<{
+        command?: string;
+    }>();
+    const terminalDockOpen = () => Boolean(terminalLaunch());
+    const [contextDockHidden, setContextDockHidden] = createSignal(false);
+    // Native menu accelerators fire before the webview sees a key, so the
+    // menu must know when the shell owns Ctrl chords (see gui/menu.rs).
+    const [terminalFocused, setTerminalFocused] = createSignal(false);
+    {
+        const track = () =>
+            setTerminalFocused(
+                Boolean(document.activeElement?.closest(".terminal-panel")),
+            );
+        const settle = () => queueMicrotask(track);
+        document.addEventListener("focusin", track);
+        document.addEventListener("focusout", settle);
+        onCleanup(() => {
+            document.removeEventListener("focusin", track);
+            document.removeEventListener("focusout", settle);
+        });
+    }
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
     let lspDialog: HTMLElement | undefined;
-    let cellWidth = FALLBACK_CELL_WIDTH;
+    const [cellWidth, setCellWidth] = createSignal(FALLBACK_CELL_WIDTH);
     let composing = false;
     let ignoreNextInput = false;
     let wheelRemainder = 0;
@@ -1229,20 +1690,23 @@ function App() {
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
-            !walkthrough() &&
-            (view().aiChat ||
-                view().testPanel ||
-                view().debug ||
-                diffDockOpen()),
+            (!walkthrough() &&
+                (view().aiChat ||
+                    view().testPanel ||
+                    view().debug ||
+                    view().runConsole)) ||
+            terminalDockOpen(),
         ),
     );
     let hadContextDock = hasContextDock();
-    let previousContextAvailability = {
-        ai: Boolean(view().aiChat),
-        tests: Boolean(view().testPanel),
-        debug: Boolean(view().debug),
-        diff: diffDockOpen(),
-    };
+    const contextAvailability = (snapshot: GuiSnapshot) => ({
+        ai: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.aiChat),
+        tests: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.testPanel),
+        debug: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.debug),
+        run: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.runConsole),
+        terminal: terminalDockOpen(),
+    });
+    let previousContextAvailability = contextAvailability(view());
     let layoutWorkspace = "";
     let vectorFilePath: string | undefined;
     const activeStrokPath = createMemo(() => {
@@ -1282,28 +1746,38 @@ function App() {
 
     createEffect(() => {
         if (!native) return;
-        const surface = workbenchView() === "browser" ? "browser" : "source";
+        const surface =
+            workbenchView() === "browser"
+                ? "browser"
+                : terminalFocused()
+                  ? "terminal"
+                  : "source";
         void invoke("gui_set_menu_surface", {
             surface,
             canRestoreBrowser: browserWorkbench.canRestore(),
         }).catch((reason) => setError(String(reason)));
     });
 
-    createEffect(() => {
-        const activeSource = activeSourceSelection(view().tabs);
-        const selection = workbenchSelection();
-        if (
-            selection.kind === "source" &&
-            selection.tabId !== activeSource.tabId
-        ) {
-            setWorkbenchSelection(activeSource);
-        } else if (
-            selection.kind === "vector" &&
-            selection.sourceTabId !== activeSource.tabId
-        ) {
-            setWorkbenchSelection(activeSource);
-        }
-    });
+    createEffect(
+        on(
+            () => view().tabs,
+            (tabs) => {
+                const activeSource = activeSourceSelection(tabs);
+                const selection = workbenchSelection();
+                if (
+                    selection.kind === "source" &&
+                    selection.tabId !== activeSource.tabId
+                ) {
+                    setWorkbenchSelection(activeSource);
+                } else if (
+                    selection.kind === "vector" &&
+                    selection.sourceTabId !== activeSource.tabId
+                ) {
+                    setWorkbenchSelection(activeSource);
+                }
+            },
+        ),
+    );
 
     createEffect(() => {
         const filePath = view().filePath;
@@ -1348,7 +1822,12 @@ function App() {
         });
     });
 
-    const diffWorkspace = () => view().workspacePath || "";
+    const [explorerWidth, setExplorerWidth] = createSignal(
+        EXPLORER_DEFAULT_WIDTH,
+    );
+
+    const [contextWidth, setContextWidth] = createSignal(CONTEXT_DEFAULT_WIDTH);
+    const [contextDockWidth, setContextDockWidth] = createSignal(0);
 
     const layoutStorage = () => {
         try {
@@ -1363,14 +1842,24 @@ function App() {
         if (workspace === layoutWorkspace) return;
         layoutWorkspace = workspace;
         const preference = readWorkbenchLayout(layoutStorage(), workspace);
+        setExplorerWidth(preference?.explorerWidth ?? EXPLORER_DEFAULT_WIDTH);
+        setContextWidth(preference?.contextWidth ?? CONTEXT_DEFAULT_WIDTH);
         if (!preference) return;
         setActiveDock(preference.activeDock);
         setActiveContextPanel(preference.activeContextPanel);
-        if (preference.activeContextPanel === "diff") setDiffDockOpen(true);
+        // Reopening the terminal makes the context dock appear, which would
+        // override a saved Explorer focus and spawn a shell nobody asked for.
+        if (
+            preference.activeContextPanel === "terminal" &&
+            preference.activeDock === "context"
+        )
+            setTerminalLaunch({});
     });
 
     createEffect(() => {
         const preference = {
+            explorerWidth: explorerWidth(),
+            contextWidth: contextWidth(),
             activeDock: activeDock(),
             activeContextPanel: activeContextPanel(),
         };
@@ -1384,26 +1873,39 @@ function App() {
         if (hasContext && !hadContextDock) setActiveDock("context");
         else if (!hasContext && activeDock() === "context")
             setActiveDock("explorer");
-        else if (hasContext && !hasExplorer && activeDock() === "explorer")
+        else if (
+            hasContext &&
+            !hasExplorer &&
+            activeDock() === "explorer" &&
+            !contextDockHidden()
+        )
             setActiveDock("context");
         hadContextDock = hasContext;
     });
 
     createEffect(() => {
-        const next = {
-            ai: Boolean(view().aiChat),
-            tests: Boolean(view().testPanel),
-            debug: Boolean(view().debug),
-            diff: diffDockOpen(),
-        };
+        // A walkthrough hides every panel but the terminal; each one becomes
+        // available again, and so selectable, when the walkthrough ends.
+        const next = contextAvailability(view());
+        if (
+            Object.keys(next).some((id) => {
+                const panel = id as keyof typeof next;
+                return next[panel] && !previousContextAvailability[panel];
+            })
+        ) {
+            setContextDockHidden(false);
+            setActiveDock("context");
+        }
         if (next.ai && !previousContextAvailability.ai)
             setActiveContextPanel("ai");
         if (next.tests && !previousContextAvailability.tests)
             setActiveContextPanel("tests");
         if (next.debug && !previousContextAvailability.debug)
             setActiveContextPanel("debug");
-        if (next.diff && !previousContextAvailability.diff)
-            setActiveContextPanel("diff");
+        if (next.run && !previousContextAvailability.run)
+            setActiveContextPanel("run");
+        if (next.terminal && !previousContextAvailability.terminal)
+            setActiveContextPanel("terminal");
         previousContextAvailability = next;
     });
 
@@ -1411,7 +1913,7 @@ function App() {
         const paneTree = editorBody?.querySelector<HTMLElement>(".pane-tree");
         const paneColumns = Math.floor(
             (paneTree?.clientWidth || editorBody?.clientWidth || 960) /
-                cellWidth,
+                cellWidth(),
         );
         // The shared core viewport contract consumes full terminal dimensions and
         // subtracts its own tree/status/tab chrome. Add those cells back after
@@ -1429,6 +1931,12 @@ function App() {
     };
 
     const syncDimensions = () => {
+        const dock = editorBody?.querySelector<HTMLElement>(".side-dock");
+        setContextDockWidth(
+            dock && getComputedStyle(dock).position !== "absolute"
+                ? dock.getBoundingClientRect().width
+                : 0,
+        );
         if (!native) return;
         const next = dimensions();
         if (
@@ -1441,6 +1949,11 @@ function App() {
             setError(String(reason)),
         );
     };
+
+    createEffect(() => {
+        void hasContextDock();
+        queueMicrotask(syncDimensions);
+    });
 
     const echoOptions = (): EchoOptions => ({
         remote: linkIsRemote,
@@ -1485,12 +1998,30 @@ function App() {
         if (!shouldAcceptRevision(latestSnapshotRevision, snapshot.revision))
             return;
         latestSnapshotRevision = snapshot.revision;
+        const treeRevealed =
+            snapshot.fileTree &&
+            snapshot.fileTree.revealGeneration !==
+                view().fileTree?.revealGeneration &&
+            snapshot.fileTree.revealGeneration > 0;
         const chatOpened = !view().aiChat && Boolean(snapshot.aiChat);
         const chatClosed = Boolean(view().aiChat) && !snapshot.aiChat;
         const coreDialogClosed =
-            Boolean(view().picker || view().lspManager) &&
+            Boolean(
+                view().picker || view().lspManager || view().searchReplace,
+            ) &&
             !snapshot.picker &&
-            !snapshot.lspManager;
+            !snapshot.lspManager &&
+            !snapshot.searchReplace;
+        // Decide dismissal before publishing the snapshot: ContextDock selects
+        // a fallback as soon as its active tab disappears.
+        const selected = activeContextPanel();
+        if (
+            contextAvailability(view())[selected] &&
+            !contextAvailability(snapshot)[selected]
+        ) {
+            setContextDockHidden(true);
+            setActiveDock("explorer");
+        }
         authoritative = snapshot;
         // The authority is adopted first and the speculation re-derived on top
         // of it, so a frame that contradicts what is on screen replaces it in
@@ -1501,6 +2032,7 @@ function App() {
             retainProjection(previous, withEcho(snapshot, settled)),
         );
         scheduleExpiry(settled);
+        if (treeRevealed) setActiveDock("explorer");
         setConnected(true);
         setError("");
         requestAnimationFrame(syncDimensions);
@@ -1510,28 +2042,80 @@ function App() {
         if (snapshot.shouldQuit && native) void windowAction("close-approved");
     };
 
+    // Tauri runs each async command as its own task on a multi-threaded
+    // runtime, so two calls in flight can reach the editor in either order.
+    // One call at a time keeps keys, clicks and pastes in the order typed.
+    const inOrder = createSerialQueue();
+
     const mutateStrict = async (
         command: string,
         args: Record<string, unknown>,
     ) => {
         if (!native) return;
         try {
-            await invoke(command, args);
+            await inOrder(() => invoke(command, args));
         } catch (reason) {
             setError(String(reason));
             throw reason;
         }
     };
 
-    const mutate = async (command: string, args: Record<string, unknown>) => {
+    const updateChatInput = async (
+        update: ChatInputUpdate,
+    ): Promise<GuiChatInputState> => {
+        if (!native)
+            return {
+                input: update.input,
+                cursor: update.cursor,
+                revision: view().revision,
+            };
         try {
-            await mutateStrict(command, args);
-        } catch {
-            // `mutateStrict` has already projected the failure into the GUI status.
+            return await inOrder(() =>
+                invoke<GuiChatInputState>("gui_update_chat_input", {
+                    ...update,
+                }),
+            );
+        } catch (reason) {
+            setError(String(reason));
+            throw reason;
         }
     };
 
-    const focusEditorInput = () => inputSink?.focus({ preventScroll: true });
+    /** Resolves to whether core accepted the mutation. */
+    const mutate = async (
+        command: string,
+        args: Record<string, unknown>,
+    ): Promise<boolean> => {
+        try {
+            await mutateStrict(command, args);
+            return true;
+        } catch {
+            // `mutateStrict` has already projected the failure into the GUI status.
+            return false;
+        }
+    };
+
+    const focusEditorInput = () => {
+        const diff =
+            view().mode === "NORMAL"
+                ? editorBody?.querySelector<HTMLElement>(
+                      ".editor-pane.focused .flow-diff",
+                  )
+                : undefined;
+        (diff || inputSink)?.focus({ preventScroll: true });
+    };
+    createEffect(() => {
+        const mode = view().mode;
+        const pane = view().panes.find((item) => item.focused);
+        if (mode !== "NORMAL" || !pane) return;
+        queueMicrotask(() => {
+            if (
+                document.activeElement === inputSink ||
+                document.activeElement === document.body
+            )
+                focusEditorInput();
+        });
+    });
     const focusChatInput = () => {
         if (chatInput?.isConnected) chatInput.focus({ preventScroll: true });
         else focusEditorInput();
@@ -1640,7 +2224,9 @@ function App() {
         void editorCommand("qa!");
     };
 
-    const selectAllEditorText = async () => {
+    /** Send Normal-mode keys from a GUI control. Leave Insert/Visual/pending
+     *  states first so a button never types its shortcut into the buffer. */
+    const sendNormalKeys = async (keys: string) => {
         focusEditorInput();
         await sendKey({
             key: "Escape",
@@ -1649,11 +2235,27 @@ function App() {
             alt: false,
             meta: false,
         });
-        await sendLiteral("ggVG");
+        await sendLiteral(keys);
     };
+
+    const selectAllEditorText = () => sendNormalKeys("ggVG");
 
     const performMenuAction = (action: string) => {
         const active = document.activeElement;
+        if (action === "terminal.toggle") {
+            toggleTerminal();
+            return;
+        }
+        if (active?.closest(".terminal-panel") && action.startsWith("edit."))
+            return;
+        // A browser tab hides the source buffer: never undo or select there.
+        if (
+            workbenchView() === "browser" &&
+            (action === "edit.undo" ||
+                action === "edit.redo" ||
+                action === "edit.select-all")
+        )
+            return;
         const nativeEditor =
             active instanceof HTMLTextAreaElement && active !== inputSink;
         switch (action) {
@@ -1726,14 +2328,21 @@ function App() {
                 else void editorCommand("redo");
                 break;
             case "edit.select-all":
-                if (
-                    active instanceof HTMLInputElement ||
-                    active instanceof HTMLTextAreaElement
-                )
+                if (active instanceof HTMLInputElement || nativeEditor)
                     active.select();
                 else void selectAllEditorText();
                 break;
-            case "edit.find":
+            case "edit.find": {
+                const diff =
+                    workbenchView() === "source"
+                        ? document.querySelector<HTMLElement>(
+                              ".editor-pane.focused .flow-diff",
+                          )
+                        : undefined;
+                if (diff) {
+                    diff.dispatchEvent(new Event("ovim-diff-find"));
+                    break;
+                }
                 if (activeBrowserId())
                     performBrowserKey({
                         sessionId: activeBrowserId(),
@@ -1750,6 +2359,7 @@ function App() {
                     });
                 }
                 break;
+            }
         }
     };
 
@@ -1765,11 +2375,11 @@ function App() {
             return;
         }
         setActiveDock("explorer");
-        focusEditorInput();
-        void sendLiteral("-");
+        void sendNormalKeys("-");
     };
 
     const activateAiChat = () => {
+        setContextDockHidden(false);
         setActiveContextPanel("ai");
         if (compactDocks() && view().aiChat && activeDock() === "explorer") {
             setActiveDock("context");
@@ -1781,25 +2391,38 @@ function App() {
         void mutate("gui_open_ai_chat", {});
     };
 
-    const toggleDiff = () => {
-        const wasActive =
-            diffDockOpen() &&
-            activeDock() === "context" &&
-            activeContextPanel() === "diff";
-        setDiffDockOpen(true);
-        setActiveContextPanel("diff");
-        if (compactDocks() && wasActive) {
+    const closeTerminal = () => {
+        if (activeContextPanel() === "terminal") {
+            setContextDockHidden(true);
             setActiveDock("explorer");
             queueMicrotask(focusEditorInput);
-            return;
         }
+        setTerminalLaunch(undefined);
+    };
+
+    const openTerminal = (command?: string) => {
+        // An explicit command starts a fresh session; bare :term reveals the
+        // existing shell without interrupting its work.
+        if (command !== undefined || !terminalDockOpen()) {
+            setTerminalLaunch({ command });
+        }
+        setActiveContextPanel("terminal");
+        setContextDockHidden(false);
         setActiveDock("context");
     };
 
-    const runEditorShortcut = async (keys: string) => {
-        focusEditorInput();
-        await sendLiteral(keys);
+    const toggleTerminal = () => {
+        if (
+            terminalDockOpen() &&
+            !contextDockHidden() &&
+            activeDock() === "context" &&
+            activeContextPanel() === "terminal"
+        )
+            closeTerminal();
+        else openTerminal();
     };
+
+    const runEditorShortcut = (keys: string) => sendNormalKeys(keys);
 
     const addVectorFeedbackToChat = async () => {
         const feedback = vectorFeedback().trim();
@@ -1823,6 +2446,7 @@ function App() {
             case "source":
                 setWorkbenchSelection({ kind: "source", tabId: tab.tabId });
                 void mutate("gui_select_tab", { index: tab.index });
+                queueMicrotask(focusEditorInput);
                 break;
             case "vector":
                 setWorkbenchSelection({
@@ -1842,6 +2466,35 @@ function App() {
         selectWorkbenchReference(tab);
         return true;
     }
+
+    /** Close one source tab with the editor's own commands. A clean tab goes
+     *  through `:tabclose`; a modified one through `:bd`, which refuses with
+     *  E37 so unsaved work is never discarded by a stray click. */
+    const closeSourceTab = async (tab: GuiSnapshot["tabs"][number]) => {
+        const tabs = view().tabs;
+        if (tabs.length < 2) return;
+        const active = tabs.find((candidate) => candidate.active);
+        const restore = async () => {
+            if (!active || active.id === tab.id) return;
+            // Tabs after the closed one shift down by one.
+            await mutateStrict("gui_select_tab", {
+                index:
+                    active.index > tab.index ? active.index - 1 : active.index,
+            });
+        };
+        try {
+            await mutateStrict("gui_select_tab", { index: tab.index });
+            await editorCommand(tab.modified ? "bd" : "tabclose");
+            await restore();
+        } catch {
+            // The status line carries the editor's refusal; return to where
+            // the reviewer was.
+            if (active)
+                await mutateStrict("gui_select_tab", {
+                    index: active.index,
+                }).catch(() => {});
+        }
+    };
 
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
         const tabCount = workbenchTabs().length;
@@ -1866,7 +2519,7 @@ function App() {
 
     const themeVars = createMemo(() => ({
         ...themeVariables(view().theme),
-        "--cell-width": `${cellWidth}px`,
+        "--cell-width": `${cellWidth()}px`,
     }));
 
     const breadcrumbs = createMemo(() => {
@@ -1882,14 +2535,49 @@ function App() {
             event.key === "Dead"
         )
             return;
+        if (
+            event.ctrlKey &&
+            event.key === "Tab" &&
+            !event.altKey &&
+            !event.metaKey
+        ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            selectWorkbenchTab(
+                adjacentWorkbenchTab(
+                    workbenchTabs(),
+                    workbenchSelection(),
+                    event.shiftKey,
+                ),
+            );
+            queueMicrotask(focusPrimaryInput);
+            return;
+        }
         const target = event.target as Element | null;
         const primaryModifier = macos ? event.metaKey : event.ctrlKey;
-        if (primaryModifier && event.key.toLowerCase() === "s") {
+        // Layout-independent key for chords (Ctrl+W on a Russian layout).
+        const chordLower = chordKey(event).toLowerCase();
+        if (
+            primaryModifier &&
+            !event.altKey &&
+            event.shiftKey &&
+            chordLower === "t"
+        ) {
+            event.preventDefault();
+            toggleTerminal();
+            return;
+        }
+        if (target?.closest?.(".terminal-panel")) return;
+        if (primaryModifier && chordLower === "s") {
             event.preventDefault();
             performMenuAction(event.altKey ? "file.save-all" : "file.save");
             return;
         }
-        if (primaryModifier && event.key.toLowerCase() === "q") {
+        // Meta is the Command key even when the webview withholds or spoofs
+        // navigator.platform. Keep Ctrl+Q platform-specific so macOS Vim input
+        // is not stolen from the editor.
+        const quitModifier = event.metaKey || primaryModifier;
+        if (quitModifier && chordLower === "q") {
             event.preventDefault();
             requestExit("quit");
             return;
@@ -1915,9 +2603,19 @@ function App() {
             openBrowserCommand();
             return;
         }
+        if (
+            primaryModifier &&
+            chordLower === "f" &&
+            target?.closest?.(".flow-diff")
+        ) {
+            event.preventDefault();
+            performMenuAction("edit.find");
+            return;
+        }
         if (primaryModifier && !nativeControl) {
-            const key = event.key.toLowerCase();
-            if (key === "z" || key === "a" || key === "f") {
+            const key = chordLower;
+            // Off macOS, Ctrl-A (increment) and Ctrl-F (page down) are Vim's.
+            if (key === "z" || (macos && (key === "a" || key === "f"))) {
                 event.preventDefault();
                 performMenuAction(
                     key === "z"
@@ -1933,15 +2631,45 @@ function App() {
         }
         if (event.key === "Tab" && target?.closest?.("[data-gui-core-dialog]"))
             return;
-        if (nativeControl) return;
+        if (
+            event.key === "Escape" &&
+            target?.closest(".side-dock") &&
+            (activeContextPanel() === "tests" || activeContextPanel() === "run")
+        ) {
+            event.preventDefault();
+            focusEditorInput();
+            const key = guiKeyInput(event);
+            if (key) void sendKey(key);
+            return;
+        }
+        const walkthroughCard = walkthrough()
+            ? document.querySelector(".walkthrough-card")
+            : null;
+        if (
+            walkthroughCard &&
+            walkthrough()?.discussion.state !== "composing" &&
+            !target?.closest?.("input, textarea, select, [contenteditable]") &&
+            scrollWalkthroughWithKey(walkthroughCard, event)
+        ) {
+            event.preventDefault();
+            return;
+        }
+        const walkthroughButton =
+            walkthrough() && target?.closest?.(".walkthrough-card")
+                ? target.closest("button")
+                : null;
+        // Tab can leave focus on a footer button. Only the button's own
+        // activation keys stay native; Esc, arrows and typed text still
+        // belong to the walkthrough.
+        const forwardFromWalkthroughButton =
+            Boolean(walkthroughButton) &&
+            event.key !== "Enter" &&
+            event.key !== " ";
+        if (nativeControl && !forwardFromWalkthroughButton) return;
         const clipboardModifier = macos
             ? event.metaKey
             : event.ctrlKey && event.shiftKey;
-        if (
-            clipboardModifier &&
-            ["c", "v", "x"].includes(event.key.toLowerCase())
-        )
-            return;
+        if (clipboardModifier && ["c", "v", "x"].includes(chordLower)) return;
         const input = guiKeyInput(event);
         if (!input) return;
         event.preventDefault();
@@ -1953,7 +2681,9 @@ function App() {
         const nativeTextOwner =
             target !== inputSink &&
             Boolean(
-                target?.closest?.("input, textarea, [contenteditable='true']"),
+                target?.closest?.(
+                    "input, textarea, [contenteditable='true'], .flow-diff",
+                ),
             );
         const image =
             Array.from(event.clipboardData?.items ?? [])
@@ -2000,7 +2730,9 @@ function App() {
         const target = event.target as Element | null;
         if (
             target !== inputSink &&
-            target?.closest?.("input, textarea, [contenteditable='true']")
+            target?.closest?.(
+                "input, textarea, [contenteditable='true'], .flow-diff",
+            )
         )
             return;
         const text = view().selectionText;
@@ -2019,7 +2751,9 @@ function App() {
         const target = event.target as Element | null;
         if (
             target !== inputSink &&
-            target?.closest?.("input, textarea, [contenteditable='true']")
+            target?.closest?.(
+                "input, textarea, [contenteditable='true'], .flow-diff",
+            )
         )
             return;
         const text = view().selectionText;
@@ -2066,10 +2800,23 @@ function App() {
     };
 
     const handleWheel = async (event: WheelEvent) => {
-        const pane = (event.target as Element | null)?.closest<HTMLElement>(
-            ".editor-pane",
-        );
-        if (!pane) return;
+        const target = event.target as Element | null;
+        // The modal blocks source clicks, but its uncovered code surface still
+        // scrolls the focused pane. Card content keeps native DOM scrolling.
+        if (target?.closest(".walkthrough-card, .walkthrough-layer.concept"))
+            return;
+        const pane =
+            target?.closest<HTMLElement>(".editor-pane") ??
+            (target?.closest(".walkthrough-layer.code, .walkthrough-layer.diff")
+                ? editorBody.querySelector<HTMLElement>(".editor-pane.focused")
+                : null);
+        if (
+            !pane ||
+            (event.target as Element | null)?.closest(
+                ".markdown-document, .flow-diff",
+            )
+        )
+            return;
         event.preventDefault();
         const scale =
             event.deltaMode === WheelEvent.DOM_DELTA_LINE
@@ -2077,51 +2824,95 @@ function App() {
                 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
                   ? editorBody.clientHeight
                   : 1;
-        wheelRemainder += event.deltaY * scale;
-        const count = Math.min(
-            8,
-            Math.floor(Math.abs(wheelRemainder) / LINE_HEIGHT),
-        );
+        const delta = event.deltaY * scale;
+        // A reversal starts fresh instead of first paying off old travel.
+        if (Math.sign(delta) !== Math.sign(wheelRemainder)) wheelRemainder = 0;
+        wheelRemainder += delta;
+        const count = Math.floor(Math.abs(wheelRemainder) / LINE_HEIGHT);
         if (count === 0) return;
         const direction = Math.sign(wheelRemainder);
-        wheelRemainder -= direction * count * LINE_HEIGHT;
+        // Keep sub-line travel for smooth trackpads, but drop the excess of a
+        // capped flick rather than carrying a backlog into later events.
+        wheelRemainder =
+            count > 8 ? 0 : wheelRemainder - direction * count * LINE_HEIGHT;
         const paneIndex = Number(pane.dataset.pane);
-        if (Number.isFinite(paneIndex) && !pane.classList.contains("focused")) {
-            await mutate("gui_focus_pane", { index: paneIndex });
-        }
-        const key = direction > 0 ? "e" : "y";
-        for (let index = 0; index < count; index += 1) {
-            await sendKey({
-                key,
-                shift: false,
-                control: true,
-                alt: false,
-                meta: false,
-            });
-        }
+        if (!Number.isFinite(paneIndex)) return;
+        // Scroll the viewport directly: sending ^E/^Y as keys would accept a
+        // completion in Insert mode, edit prompts and land in macros.
+        await mutate("gui_scroll", {
+            pane: paneIndex,
+            lines: direction * Math.min(8, count),
+        });
     };
 
-    const setCursor = (
+    const mouseChannel = createMouseChannel((message) =>
+        mutateStrict("gui_mouse", { ...message }),
+    );
+
+    // Rendered rows of one pane, measured now: the DOM scrolls under a drag.
+    const paneRows = (paneIndex: number): PointerRow[] => {
+        const lines = view().panes.find(
+            (candidate) => candidate.index === paneIndex,
+        )?.lines;
+        const viewport = editorBody?.querySelector<HTMLElement>(
+            `.editor-pane[data-pane="${paneIndex}"] .code-viewport`,
+        );
+        if (!lines || !viewport) return [];
+        return Array.from(viewport.children)
+            .slice(0, lines.length)
+            .map((row, index) => {
+                const bounds = row.getBoundingClientRect();
+                const content = row.querySelector(".line-content") ?? row;
+                return {
+                    number: lines[index].number,
+                    displayStart: lines[index].displayStart,
+                    top: bounds.top,
+                    bottom: bounds.bottom,
+                    // The content element itself is translated by the horizontal
+                    // scroll offset, so its bounding box already starts at
+                    // display column zero (plus `displayStart`).
+                    contentLeft: content.getBoundingClientRect().left,
+                };
+            });
+    };
+
+    // Primary-button press on the text: places the cursor, and while the button
+    // is held drags a selection (double-click selects words, triple-click lines,
+    // shift extends). Ovim core owns the semantics; this reports cells.
+    const selectText = (
         event: MouseEvent,
         pane: number,
         line: number,
         displayStart: number,
     ) => {
+        // Right and middle clicks neither place the cursor nor select; the
+        // pane's own handler still focuses the pane.
+        if (event.button !== 0) return;
         event.stopPropagation();
+        event.preventDefault();
         focusEditorInput();
         const target = event.currentTarget as HTMLElement;
-        // The content element itself is translated by the horizontal scroll
-        // offset, so its bounding box already starts at display column zero.
-        const displayColumn =
-            displayStart +
-            Math.max(
-                0,
-                Math.floor(
-                    (event.clientX - target.getBoundingClientRect().left) /
-                        cellWidth,
+        const start = {
+            line: line - 1,
+            displayColumn:
+                displayStart +
+                Math.max(
+                    0,
+                    Math.floor(
+                        (event.clientX - target.getBoundingClientRect().left) /
+                            cellWidth(),
+                    ),
                 ),
-            );
-        void mutate("gui_set_cursor", { pane, line: line - 1, displayColumn });
+            clickCount: Math.max(1, event.detail),
+            shift: event.shiftKey,
+        };
+        mouseChannel.send({ pane, kind: "down", ...start });
+        trackSelectionDrag({
+            pane,
+            start,
+            channel: mouseChannel,
+            cellAt: (x, y) => pointerCell(paneRows(pane), x, y, cellWidth()),
+        });
     };
 
     const pickerChars = (text: string, matched: number[]) => {
@@ -2136,9 +2927,10 @@ function App() {
         const page = walkthrough()?.page;
         return Boolean(
             focused &&
-            page?.kind === "code" &&
-            line >= page.startLine &&
-            line <= page.endLine,
+            ((page?.kind === "code" &&
+                line >= page.startLine &&
+                line <= page.endLine) ||
+                page?.kind === "diff"),
         );
     };
 
@@ -2155,18 +2947,92 @@ function App() {
         return { name: "status-info", tone: "information" };
     };
 
+    /**
+     * Where the rendered cursor cell actually is, relative to `.editor-body`.
+     * Computing it from line/column numbers breaks as soon as lines wrap (one
+     * GuiLine per visual row), panes are split, or a pane title is shown, so
+     * overlays and the IME anchor measure the cursor element instead.
+     */
+    const [cursorAnchor, setCursorAnchor] = createSignal<
+        { left: number; top: number; bottom: number } | undefined
+    >();
+    const measureCursorAnchor = () => {
+        const body = editorBody;
+        const cursor = body?.querySelector<HTMLElement>(
+            ".editor-pane.focused .code-segment.cursor",
+        );
+        const rect = cursor?.getBoundingClientRect();
+        // An unlaid-out (zero-size) element cannot anchor anything.
+        if (!body || !rect || (rect.width === 0 && rect.height === 0)) {
+            setCursorAnchor(undefined);
+            return;
+        }
+        const origin = body.getBoundingClientRect();
+        const next = {
+            left: rect.left - origin.left - body.clientLeft + body.scrollLeft,
+            top: rect.top - origin.top - body.clientTop + body.scrollTop,
+            bottom: rect.bottom - origin.top - body.clientTop + body.scrollTop,
+        };
+        const previous = cursorAnchor();
+        if (
+            previous &&
+            Math.abs(previous.left - next.left) < 0.01 &&
+            Math.abs(previous.top - next.top) < 0.01 &&
+            Math.abs(previous.bottom - next.bottom) < 0.01
+        )
+            return;
+        setCursorAnchor(next);
+    };
+    // Re-measure after every snapshot (scroll, wrap, split and mode changes
+    // all arrive as one) and whenever the cell width changes.
+    createEffect(() => {
+        view();
+        cellWidth();
+        untrack(measureCursorAnchor);
+    });
+
+    /** Measured anchor for something sitting on the cursor's own line. */
+    const anchorOnCursorLine = (line: number, displayColumn: number) => {
+        const anchor = cursorAnchor();
+        if (!anchor || line !== view().cursor.line) return undefined;
+        return {
+            left:
+                anchor.left +
+                (displayColumn - view().cursor.displayColumn) * cellWidth(),
+            top: anchor.top,
+            bottom: anchor.bottom,
+        };
+    };
+
+    /** Top-left of the cursor cell for the IME sink and composition preview. */
+    const cursorCellStyle = () => {
+        const anchor = cursorAnchor();
+        if (anchor) return { top: `${anchor.top}px`, left: `${anchor.left}px` };
+        return {
+            top: `${Math.max(0, view().cursor.line - view().firstLine) * LINE_HEIGHT + 8}px`,
+            left: `${Math.max(0, view().cursor.displayColumn - view().horizontalOffset) * cellWidth() + 66}px`,
+        };
+    };
+
     const inlineOverlayStyle = (
         line: number,
         displayColumn: number,
         width: number,
         height: number,
     ) => {
+        const measured = anchorOnCursorLine(line, displayColumn);
         const position = anchoredOverlayPosition({
             anchorX:
+                measured?.left ??
                 Math.max(0, displayColumn - view().horizontalOffset) *
-                    cellWidth +
-                66,
-            anchorY: Math.max(0, line - view().firstLine + 1) * LINE_HEIGHT + 6,
+                    cellWidth() +
+                    66,
+            anchorY:
+                measured?.bottom ??
+                Math.max(0, line - view().firstLine + 1) * LINE_HEIGHT + 6,
+            aboveY:
+                measured?.top ??
+                Math.max(0, line - view().firstLine) * LINE_HEIGHT + 6,
             containerWidth: editorBody?.clientWidth || 960,
             containerHeight: editorBody?.clientHeight || 600,
             preferredWidth: width,
@@ -2177,6 +3043,62 @@ function App() {
             top: `${position.top}px`,
             width: `${position.width}px`,
             "max-height": `${position.height}px`,
+        };
+    };
+
+    /** Parameter hints sit ABOVE the cursor line (the completion menu opens below). */
+    const signatureOverlayStyle = (
+        line: number,
+        displayColumn: number,
+        rows: number,
+    ) => {
+        const height = rows * LINE_HEIGHT + 14;
+        const measured = anchorOnCursorLine(line, displayColumn);
+        const lineTop =
+            measured?.top ??
+            Math.max(0, line - view().firstLine) * LINE_HEIGHT + 6;
+        const lineBottom = measured?.bottom ?? lineTop + LINE_HEIGHT;
+        const top = lineTop >= height ? lineTop - height : lineBottom;
+        const containerWidth = editorBody?.clientWidth || 960;
+        const width = Math.min(560, containerWidth - 24);
+        const anchorX =
+            measured?.left ??
+            Math.max(0, displayColumn - view().horizontalOffset) * cellWidth() +
+                66;
+        return {
+            left: `${Math.max(8, Math.min(anchorX, containerWidth - width - 8))}px`,
+            top: `${top}px`,
+            "max-width": `${width}px`,
+        };
+    };
+
+    /** The completion menu width; the documentation popup sits beside it. */
+    const COMPLETION_WIDTH = 430;
+    const COMPLETION_DOCS_WIDTH = 320;
+    const completionDocsStyle = (line: number, displayColumn: number) => {
+        const menu = inlineOverlayStyle(
+            line,
+            displayColumn,
+            COMPLETION_WIDTH,
+            Math.min(
+                290,
+                Math.max(34, (view().completion?.items.length ?? 1) * 34),
+            ),
+        );
+        const containerWidth = editorBody?.clientWidth || 960;
+        const menuLeft = parseFloat(menu.left);
+        const menuWidth = parseFloat(menu.width);
+        const rightLeft = menuLeft + menuWidth + 6;
+        const fitsRight =
+            rightLeft + COMPLETION_DOCS_WIDTH <= containerWidth - 8;
+        const left = fitsRight
+            ? rightLeft
+            : Math.max(8, menuLeft - COMPLETION_DOCS_WIDTH - 6);
+        return {
+            left: `${left}px`,
+            top: menu.top,
+            width: `${COMPLETION_DOCS_WIDTH}px`,
+            "max-height": "290px",
         };
     };
 
@@ -2214,14 +3136,15 @@ function App() {
                             bindInput={(input) => {
                                 chatInput = input;
                             }}
-                            onUpdate={(update) =>
-                                mutateStrict("gui_update_chat_input", {
-                                    ...update,
-                                })
-                            }
+                            onUpdate={updateChatInput}
                             onWidth={(columns) =>
                                 void mutate("gui_set_chat_input_width", {
                                     columns,
+                                })
+                            }
+                            onRemoveDiffComments={() =>
+                                void mutate("gui_editor_command", {
+                                    command: "DiffCommentsDetach",
                                 })
                             }
                             onRemoveImage={(index) =>
@@ -2243,7 +3166,14 @@ function App() {
                 single: view().panes.length === 1,
                 "insert-mode": view().mode === "INSERT",
             }}
-            onMouseDown={() => {
+            onMouseDown={(event) => {
+                if ((event.target as Element)?.closest(".flow-diff")) {
+                    if (!props.pane.focused)
+                        void mutate("gui_focus_pane", {
+                            index: props.pane.index,
+                        });
+                    return;
+                }
                 inputSink.focus({ preventScroll: true });
                 if (!props.pane.focused)
                     void mutate("gui_focus_pane", { index: props.pane.index });
@@ -2261,113 +3191,405 @@ function App() {
                     </small>
                 </header>
             </Show>
-            <div class="code-viewport">
-                <For each={props.pane.lines}>
-                    {(line) => (
-                        <div
-                            class="code-line"
-                            classList={{
-                                [`diff-${line.diff}`]: Boolean(line.diff),
-                                current: line.current && props.pane.focused,
-                                walkthrough: lineIsInWalkthrough(
-                                    line.number,
-                                    props.pane.focused,
-                                ),
-                            }}
-                        >
-                            <span class={`change-mark ${line.git || ""}`} />
-                            <span
-                                class={`diagnostic-mark ${line.diagnostic || ""}`}
-                            >
-                                <Show when={line.diagnostic}>
-                                    {(severity) => {
-                                        const status =
-                                            diagnosticIcon(severity());
-                                        return (
-                                            <Icon
-                                                name={status.name}
-                                                tone={status.tone}
-                                                size={16}
-                                            />
-                                        );
-                                    }}
-                                </Show>
-                            </span>
-                            <span class="line-number">
-                                {line.continuation ? "" : line.number}
-                            </span>
-                            <span
-                                class="line-content"
-                                style={{
-                                    transform: `translateX(-${Math.max(0, props.pane.horizontalOffset - line.displayStart) * cellWidth}px)`,
+            <Show
+                when={props.pane.diffReview}
+                fallback={
+                    <Show
+                        when={props.pane.markdown}
+                        fallback={
+                            <>
+                                <div class="code-viewport">
+                                    <For each={props.pane.lines}>
+                                        {(line) => (
+                                            <div
+                                                class="code-line"
+                                                classList={{
+                                                    [`diff-${line.diff}`]:
+                                                        Boolean(line.diff),
+                                                    current:
+                                                        line.current &&
+                                                        props.pane.focused,
+                                                    walkthrough:
+                                                        lineIsInWalkthrough(
+                                                            line.number,
+                                                            props.pane.focused,
+                                                        ),
+                                                    executing: Boolean(
+                                                        line.executing,
+                                                    ),
+                                                }}
+                                            >
+                                                <span
+                                                    class={`change-mark ${line.git || ""}`}
+                                                />
+                                                <span
+                                                    class={`diagnostic-mark ${line.diagnostic || ""}`}
+                                                >
+                                                    <Show
+                                                        when={line.diagnostic}
+                                                    >
+                                                        {(severity) => {
+                                                            const status =
+                                                                diagnosticIcon(
+                                                                    severity(),
+                                                                );
+                                                            return (
+                                                                <Icon
+                                                                    name={
+                                                                        status.name
+                                                                    }
+                                                                    tone={
+                                                                        status.tone
+                                                                    }
+                                                                    size={16}
+                                                                />
+                                                            );
+                                                        }}
+                                                    </Show>
+                                                </span>
+                                                <span
+                                                    class={`line-number ${line.breakpoint ? `breakpoint-${line.breakpoint}` : ""}`}
+                                                    classList={{
+                                                        "execution-line":
+                                                            Boolean(
+                                                                line.executing,
+                                                            ),
+                                                    }}
+                                                    title={
+                                                        line.continuation
+                                                            ? undefined
+                                                            : "Click to toggle a breakpoint"
+                                                    }
+                                                    onMouseDown={(event) => {
+                                                        if (
+                                                            line.continuation ||
+                                                            !props.pane.focused
+                                                        )
+                                                            return;
+                                                        event.preventDefault();
+                                                        void mutate(
+                                                            "gui_toggle_breakpoint",
+                                                            {
+                                                                line: line.number,
+                                                            },
+                                                        );
+                                                    }}
+                                                >
+                                                    <Show when={line.fold}>
+                                                        {(fold) => (
+                                                            <span
+                                                                class={`fold-gutter fold-${fold()}`}
+                                                                title={
+                                                                    fold() ===
+                                                                    "closed"
+                                                                        ? "Unfold"
+                                                                        : fold() ===
+                                                                            "open"
+                                                                          ? "Fold"
+                                                                          : undefined
+                                                                }
+                                                                onMouseDown={(
+                                                                    event,
+                                                                ) => {
+                                                                    // Only a fold header toggles; the
+                                                                    // breakpoint click must not fire.
+                                                                    event.stopPropagation();
+                                                                    if (
+                                                                        fold() ===
+                                                                            "inside" ||
+                                                                        !props
+                                                                            .pane
+                                                                            .focused
+                                                                    )
+                                                                        return;
+                                                                    event.preventDefault();
+                                                                    void mutate(
+                                                                        "gui_toggle_fold",
+                                                                        {
+                                                                            line: line.number,
+                                                                        },
+                                                                    );
+                                                                }}
+                                                            >
+                                                                {fold() ===
+                                                                "closed"
+                                                                    ? "▸"
+                                                                    : fold() ===
+                                                                        "open"
+                                                                      ? "▾"
+                                                                      : ""}
+                                                            </span>
+                                                        )}
+                                                    </Show>
+                                                    {line.continuation
+                                                        ? ""
+                                                        : line.number}
+                                                </span>
+                                                <span
+                                                    class="line-content"
+                                                    style={{
+                                                        transform: `translateX(-${Math.max(0, props.pane.horizontalOffset - line.displayStart) * cellWidth()}px)`,
+                                                    }}
+                                                    onMouseDown={(event) =>
+                                                        selectText(
+                                                            event,
+                                                            props.pane.index,
+                                                            line.number,
+                                                            line.displayStart,
+                                                        )
+                                                    }
+                                                >
+                                                    <For each={line.segments}>
+                                                        {(segment) => (
+                                                            <span
+                                                                class="code-segment"
+                                                                classList={{
+                                                                    cursor:
+                                                                        segment.cursor &&
+                                                                        props
+                                                                            .pane
+                                                                            .focused,
+                                                                    selected:
+                                                                        segment.selected,
+                                                                    "search-match":
+                                                                        segment.searchMatch,
+                                                                    speculative:
+                                                                        Boolean(
+                                                                            segment.speculative,
+                                                                        ),
+                                                                }}
+                                                                style={{
+                                                                    color: segment.token
+                                                                        ? view()
+                                                                              .theme
+                                                                              .syntax[
+                                                                              segment
+                                                                                  .token
+                                                                          ]
+                                                                        : undefined,
+                                                                    width: `${segment.cells * cellWidth()}px`,
+                                                                }}
+                                                            >
+                                                                {segment.text}
+                                                            </span>
+                                                        )}
+                                                    </For>
+                                                    <span class="code-lenses">
+                                                        <For
+                                                            each={
+                                                                line.codeLenses
+                                                            }
+                                                        >
+                                                            {(lens) => (
+                                                                <button
+                                                                    class="code-lens"
+                                                                    title={`${lens.title} (line ${line.number})`}
+                                                                    onMouseDown={(
+                                                                        event,
+                                                                    ) =>
+                                                                        event.stopPropagation()
+                                                                    }
+                                                                    onClick={(
+                                                                        event,
+                                                                    ) => {
+                                                                        event.stopPropagation();
+                                                                        void mutate(
+                                                                            "gui_code_lens",
+                                                                            {
+                                                                                pane: props
+                                                                                    .pane
+                                                                                    .index,
+                                                                                ...lens,
+                                                                            },
+                                                                        );
+                                                                        focusEditorInput();
+                                                                    }}
+                                                                >
+                                                                    {lens.title}
+                                                                </button>
+                                                            )}
+                                                        </For>
+                                                    </span>
+                                                    <Show when={line.folded}>
+                                                        {(count) => (
+                                                            <span
+                                                                class="fold-marker"
+                                                                title="Closed fold (zo to open)"
+                                                            >
+                                                                ⋯ {count()}{" "}
+                                                                lines
+                                                            </span>
+                                                        )}
+                                                    </Show>
+                                                </span>
+                                            </div>
+                                        )}
+                                    </For>
+                                </div>
+                                <InlineSelectionComposer pane={props.pane} />
+                                <div class="overview-ruler" aria-hidden="true">
+                                    <For each={props.pane.lines}>
+                                        {(line) => (
+                                            <Show
+                                                when={
+                                                    (line.current &&
+                                                        props.pane.focused) ||
+                                                    line.diagnostic ||
+                                                    line.git
+                                                }
+                                            >
+                                                <span
+                                                    classList={{
+                                                        current:
+                                                            line.current &&
+                                                            props.pane.focused,
+                                                        diagnostic: Boolean(
+                                                            line.diagnostic,
+                                                        ),
+                                                        changed: Boolean(
+                                                            line.git,
+                                                        ),
+                                                    }}
+                                                    style={{
+                                                        top: `${props.pane.totalLines <= 1 ? 0 : ((line.number - 1) / (props.pane.totalLines - 1)) * 100}%`,
+                                                    }}
+                                                />
+                                            </Show>
+                                        )}
+                                    </For>
+                                </div>
+                            </>
+                        }
+                    >
+                        {(document) => (
+                            <MarkdownDocument
+                                document={document()}
+                                firstLine={props.pane.firstLine}
+                                syntax={view().theme.syntax}
+                                cursorLine={props.pane.cursor.line}
+                                focused={props.pane.focused}
+                                onSelect={(line) => {
+                                    focusEditorInput();
+                                    void mutate("gui_set_cursor", {
+                                        pane: props.pane.index,
+                                        line,
+                                        displayColumn: 0,
+                                    });
                                 }}
-                                onMouseDown={(event) =>
-                                    setCursor(
-                                        event,
-                                        props.pane.index,
-                                        line.number,
-                                        line.displayStart,
-                                    )
-                                }
-                            >
-                                <For each={line.segments}>
-                                    {(segment) => (
-                                        <span
-                                            class="code-segment"
-                                            classList={{
-                                                cursor:
-                                                    segment.cursor &&
-                                                    props.pane.focused,
-                                                selected: segment.selected,
-                                                "search-match":
-                                                    segment.searchMatch,
-                                                speculative: Boolean(
-                                                    segment.speculative,
-                                                ),
-                                            }}
-                                            style={{
-                                                color: segment.token
-                                                    ? view().theme.syntax[
-                                                          segment.token
-                                                      ]
-                                                    : undefined,
-                                                width: `${segment.cells * cellWidth}px`,
-                                            }}
-                                        >
-                                            {segment.text}
-                                        </span>
-                                    )}
-                                </For>
-                            </span>
-                        </div>
-                    )}
-                </For>
-            </div>
-            <InlineSelectionComposer pane={props.pane} />
-            <div class="overview-ruler" aria-hidden="true">
-                <For each={props.pane.lines}>
-                    {(line) => (
-                        <Show
-                            when={
-                                (line.current && props.pane.focused) ||
-                                line.diagnostic ||
-                                line.git
-                            }
-                        >
-                            <span
-                                classList={{
-                                    current: line.current && props.pane.focused,
-                                    diagnostic: Boolean(line.diagnostic),
-                                    changed: Boolean(line.git),
-                                }}
-                                style={{
-                                    top: `${props.pane.totalLines <= 1 ? 0 : ((line.number - 1) / (props.pane.totalLines - 1)) * 100}%`,
-                                }}
+                                onOpenLink={openExternalLink}
                             />
-                        </Show>
-                    )}
-                </For>
-            </div>
+                        )}
+                    </Show>
+                }
+            >
+                {(review) => (
+                    <FlowDiff
+                        review={review()}
+                        onComment={
+                            review().managed
+                                ? (comment) =>
+                                      mutateStrict("gui_diff_comment", {
+                                          pane: props.pane.index,
+                                          bufferId: props.pane.bufferId,
+                                          comment,
+                                      })
+                                : undefined
+                        }
+                        syntax={view().theme.syntax}
+                        onExport={
+                            native
+                                ? async (file) =>
+                                      invoke<boolean>(
+                                          "gui_save_diff_export",
+                                          new Uint8Array(
+                                              await file.blob.arrayBuffer(),
+                                          ),
+                                          {
+                                              headers: {
+                                                  "x-ovim-export-filename":
+                                                      file.filename,
+                                              },
+                                          },
+                                      )
+                                : undefined
+                        }
+                        onCoreKey={(key) => {
+                            inputSink.focus({ preventScroll: true });
+                            void sendKey({
+                                key,
+                                shift: false,
+                                control: false,
+                                alt: false,
+                                meta: false,
+                            });
+                        }}
+                        onNavigateReviewLine={(line) => {
+                            void mutate("gui_set_cursor", {
+                                pane: props.pane.index,
+                                line,
+                                displayColumn: 0,
+                            });
+                        }}
+                        onDefinition={(path, line, side, definitionColumn) => {
+                            void mutate("gui_open_diff_source", {
+                                pane: props.pane.index,
+                                bufferId: props.pane.bufferId,
+                                path,
+                                line,
+                                side,
+                                definitionColumn,
+                            });
+                        }}
+                        onOpenSource={(path, line, side) => {
+                            void mutate("gui_open_diff_source", {
+                                pane: props.pane.index,
+                                bufferId: props.pane.bufferId,
+                                path,
+                                line,
+                                side,
+                            });
+                        }}
+                        onLayoutChange={
+                            review().managed
+                                ? (layout) => {
+                                      void mutate("gui_diff_action", {
+                                          pane: props.pane.index,
+                                          bufferId: props.pane.bufferId,
+                                          action: layout,
+                                      });
+                                  }
+                                : undefined
+                        }
+                        onExpandContext={
+                            review().managed
+                                ? (id, up, all) => {
+                                      void mutate("gui_diff_action", {
+                                          pane: props.pane.index,
+                                          bufferId: props.pane.bufferId,
+                                          action: `${up ? "expand_up" : "expand_down"}${all ? "_all" : ""}:${id}`,
+                                      });
+                                  }
+                                : undefined
+                        }
+                        onAction={
+                            review().managed
+                                ? (key) => {
+                                      void mutate("gui_diff_action", {
+                                          pane: props.pane.index,
+                                          bufferId: props.pane.bufferId,
+                                          action:
+                                              key === "q"
+                                                  ? "close"
+                                                  : key === "r"
+                                                    ? "refresh"
+                                                    : key,
+                                      });
+                                  }
+                                : undefined
+                        }
+                    />
+                )}
+            </Show>
         </section>
     );
 
@@ -2429,20 +3651,41 @@ function App() {
                             meta: false,
                         }).finally(() => focusChatInput())
                     }
-                    onInputUpdate={(update) =>
-                        mutateStrict("gui_update_chat_input", { ...update })
-                    }
+                    onInputUpdate={updateChatInput}
                     onInputWidth={(columns) =>
                         void mutate("gui_set_chat_input_width", { columns })
+                    }
+                    onRemoveDiffComments={() =>
+                        void mutate("gui_editor_command", {
+                            command: "DiffCommentsDetach",
+                        })
                     }
                     onRemoveImage={(index) =>
                         void mutate("gui_remove_chat_image", { index })
                     }
-                    onProfile={(profile) =>
-                        void mutate("gui_select_ai_profile", { profile })
+                    onProfile={(profile, model) =>
+                        mutate("gui_select_ai_profile", { profile, model })
                     }
                     onReasoningEffort={(effort) =>
-                        void mutate("gui_select_reasoning_effort", { effort })
+                        mutate("gui_select_reasoning_effort", { effort })
+                    }
+                    onPermissionMode={(mode) =>
+                        mutate("gui_select_permission_mode", { mode })
+                    }
+                    onApproval={(decision) =>
+                        void mutate("gui_ai_policy", {
+                            action: {
+                                allow: "approve-tool",
+                                remember: "approve-tool-remember",
+                                deny: "deny-tool",
+                            }[decision],
+                        })
+                    }
+                    onAgentApproval={(requestId, allow) =>
+                        void mutate("gui_ai_policy", {
+                            action: allow ? "approve-agent" : "deny-agent",
+                            target: requestId,
+                        })
                     }
                     onYolo={() =>
                         void mutate("gui_ai_policy", { action: "toggle-yolo" })
@@ -2454,6 +3697,9 @@ function App() {
                     }
                     onMessage={(index) =>
                         void mutate("gui_select_chat_message", { index })
+                    }
+                    onReplay={(toolCallId) =>
+                        void mutate("gui_replay_chat_tool", { toolCallId })
                     }
                     onAgent={(agentId) =>
                         void mutate("gui_select_chat_agent", { agentId })
@@ -2483,13 +3729,13 @@ function App() {
                             <b>{test().scope} tests</b>
                             <small>{test().directory}</small>
                         </div>
-                        <span
-                            class={`run-status ${test().status}`}
-                            role="status"
-                            aria-live="polite"
-                        >
-                            {test().status} ·{" "}
-                            {(test().elapsedMs / 1000).toFixed(1)}s
+                        <span class={`run-status ${test().status}`}>
+                            {/* Announce status changes only, not the
+                                ticking timer. */}
+                            <span role="status" aria-live="polite">
+                                {test().status}
+                            </span>{" "}
+                            · {formatElapsed(test().elapsedMs)}
                         </span>
                     </header>
                     <div class="run-command">$ {test().command}</div>
@@ -2532,6 +3778,159 @@ function App() {
             )}
         </Show>
     );
+
+    const RunPanel = () => {
+        // Follow live output unless the user scrolled up to read.
+        let output: HTMLPreElement | undefined;
+        let following = true;
+        createEffect(() => {
+            const run = view().runConsole;
+            if (!run) return;
+            void run.lines.length;
+            void run.lines[run.lines.length - 1]?.text;
+            queueMicrotask(() => {
+                if (output && following) output.scrollTop = output.scrollHeight;
+            });
+        });
+        return (
+            <Show when={view().runConsole}>
+                {(run) => (
+                    <section
+                        class="side-panel run-panel"
+                        aria-label="Run console"
+                        aria-busy={run().active}
+                    >
+                        <header class="side-panel-header">
+                            <div>
+                                <b>
+                                    {run().mode === "debug" ? "Debug" : "Run"}:{" "}
+                                    {run().title}
+                                </b>
+                                <small>
+                                    {run().runCount > 1
+                                        ? `run ${run().runIndex} of ${run().runCount}`
+                                        : "run console"}
+                                </small>
+                            </div>
+                            <span
+                                class={`run-status ${run().status}`}
+                                role="status"
+                                aria-live="polite"
+                            >
+                                {run().statusText}
+                            </span>
+                        </header>
+                        <div class="run-command">
+                            $ {run().command || "(resolving…)"}
+                        </div>
+                        <pre
+                            class="output-lines run-output"
+                            role="log"
+                            ref={output}
+                            onScroll={(event) => {
+                                const el = event.currentTarget;
+                                following =
+                                    el.scrollHeight -
+                                        el.scrollTop -
+                                        el.clientHeight <
+                                    24;
+                            }}
+                        >
+                            <Show when={run().truncated}>
+                                <i>… {run().truncated} earlier lines</i>
+                            </Show>
+                            <For
+                                each={run().lines}
+                                fallback={
+                                    <span class="output-empty">
+                                        No output yet
+                                    </span>
+                                }
+                            >
+                                {(line, index) => (
+                                    <span
+                                        class={`run-line ${line.kind}`}
+                                        classList={{ jumpable: line.jumpable }}
+                                        title={
+                                            line.jumpable
+                                                ? "Open source location"
+                                                : undefined
+                                        }
+                                        onClick={() => {
+                                            if (!line.jumpable) return;
+                                            void editorCommand(
+                                                `RunJump ${run().firstIndex + index()}`,
+                                            );
+                                        }}
+                                    >
+                                        {line.text}
+                                    </span>
+                                )}
+                            </For>
+                        </pre>
+                        <footer class="panel-summary">
+                            <span>
+                                {run().exitCode == null
+                                    ? "Output updates live"
+                                    : `exit code ${run().exitCode}`}
+                            </span>
+                            <div>
+                                <Show when={run().runCount > 1}>
+                                    <button
+                                        type="button"
+                                        title="Previous run"
+                                        onClick={() =>
+                                            void editorCommand("RunPrev")
+                                        }
+                                    >
+                                        ◀
+                                    </button>
+                                    <button
+                                        type="button"
+                                        title="Next run"
+                                        onClick={() =>
+                                            void editorCommand("RunNext")
+                                        }
+                                    >
+                                        ▶
+                                    </button>
+                                </Show>
+                                <button
+                                    type="button"
+                                    disabled={!run().active}
+                                    title="Stop · Space R S"
+                                    onClick={() =>
+                                        void editorCommand("RunStop")
+                                    }
+                                >
+                                    Stop
+                                </button>
+                                <button
+                                    type="button"
+                                    title="Rerun · Space R L"
+                                    onClick={() =>
+                                        void editorCommand("RunLast")
+                                    }
+                                >
+                                    Rerun
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={run().active}
+                                    title="Clear finished runs · Space R X"
+                                    onClick={() =>
+                                        void editorCommand("RunClear")
+                                    }
+                                >
+                                    Clear
+                                </button>
+                            </div>
+                        </footer>
+                    </section>
+                )}
+            </Show>
+        );
+    };
 
     const DebugPanel = () => (
         <Show when={view().debug}>
@@ -2666,6 +4065,147 @@ function App() {
                             )}
                         </For>
                     </div>
+                    <div
+                        class="debug-rows"
+                        role="tree"
+                        aria-label="Variables, watches and breakpoints"
+                    >
+                        <For each={debug().rows}>
+                            {(row) => (
+                                <Show
+                                    when={
+                                        row.kind !== "header" &&
+                                        row.kind !== "note"
+                                    }
+                                    fallback={
+                                        <div
+                                            class={`debug-row ${row.kind}`}
+                                            style={{
+                                                "padding-left": `${row.depth * 12 + 6}px`,
+                                            }}
+                                        >
+                                            {row.label}
+                                        </div>
+                                    }
+                                >
+                                    <div
+                                        class={`debug-row ${row.kind}`}
+                                        classList={{
+                                            disabled: row.enabled === false,
+                                            selected: Boolean(row.selected),
+                                        }}
+                                        role="treeitem"
+                                        aria-selected={
+                                            row.kind === "thread"
+                                                ? Boolean(row.selected)
+                                                : undefined
+                                        }
+                                        title={
+                                            row.kind === "thread" &&
+                                            !row.selected
+                                                ? "Show this thread's stack"
+                                                : undefined
+                                        }
+                                        aria-expanded={
+                                            row.expandable
+                                                ? row.expanded
+                                                : undefined
+                                        }
+                                        style={{
+                                            "padding-left": `${row.depth * 12 + 6}px`,
+                                        }}
+                                        onClick={() => {
+                                            void mutate("gui_debug_panel_row", {
+                                                index: row.index,
+                                                action: "activate",
+                                            });
+                                        }}
+                                    >
+                                        <span class="debug-row-marker">
+                                            {row.kind === "breakpoint"
+                                                ? row.enabled === false
+                                                    ? "○"
+                                                    : row.conditional
+                                                      ? "◆"
+                                                      : "●"
+                                                : row.kind === "exception"
+                                                  ? row.enabled
+                                                      ? "☑"
+                                                      : "☐"
+                                                  : row.kind === "thread"
+                                                    ? row.selected
+                                                        ? "▶"
+                                                        : ""
+                                                    : row.expandable
+                                                      ? row.expanded
+                                                          ? "▾"
+                                                          : "▸"
+                                                      : ""}
+                                        </span>
+                                        <b>{row.label}</b>
+                                        <Show when={row.value}>
+                                            <span class="debug-row-value">
+                                                {row.value}
+                                            </span>
+                                        </Show>
+                                        <Show when={row.typeName}>
+                                            <small>{row.typeName}</small>
+                                        </Show>
+                                        <Show
+                                            when={
+                                                row.kind === "breakpoint" ||
+                                                row.kind === "watch"
+                                            }
+                                        >
+                                            <span class="debug-row-actions">
+                                                <Show
+                                                    when={
+                                                        row.kind ===
+                                                        "breakpoint"
+                                                    }
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        title="Enable or disable"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            void mutate(
+                                                                "gui_debug_panel_row",
+                                                                {
+                                                                    index: row.index,
+                                                                    action: "toggle",
+                                                                },
+                                                            );
+                                                        }}
+                                                    >
+                                                        {row.enabled === false
+                                                            ? "Enable"
+                                                            : "Disable"}
+                                                    </button>
+                                                </Show>
+                                                <button
+                                                    type="button"
+                                                    title="Remove"
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        void mutate(
+                                                            "gui_debug_panel_row",
+                                                            {
+                                                                index: row.index,
+                                                                action: "delete",
+                                                            },
+                                                        );
+                                                    }}
+                                                >
+                                                    Remove
+                                                </button>
+                                            </span>
+                                        </Show>
+                                    </div>
+                                </Show>
+                            )}
+                        </For>
+                    </div>
                     <pre class="output-lines">
                         <For
                             each={debug().output}
@@ -2683,31 +4223,42 @@ function App() {
         </Show>
     );
 
-    const DiffPanel = () => (
-        <NativeDiffPanel
-            native={native}
-            workspace={diffWorkspace()}
-            onReview={setDiffReview}
-        />
+    const TerminalSurface = () => (
+        <Show when={terminalLaunch()} keyed>
+            {(launch) => (
+                <TerminalPanel
+                    native={native}
+                    command={launch.command}
+                    onClose={closeTerminal}
+                    theme={view().theme}
+                    active={
+                        activeDock() === "context" &&
+                        activeContextPanel() === "terminal" &&
+                        !contextDockHidden() &&
+                        !walkthrough()
+                    }
+                />
+            )}
+        </Show>
     );
 
     const contextPanels = createMemo<ContextPanelDefinition[]>(
         (previous = []) => {
-            if (walkthrough()) return [];
             const panels: ContextPanelDefinition[] = [];
             const chat = view().aiChat;
             const tests = view().testPanel;
             const debug = view().debug;
-            if (diffDockOpen()) {
+            if (terminalDockOpen()) {
                 panels.push({
-                    id: "diff",
-                    label: "Diff",
-                    state: `${diffReview()?.files.length ?? 0} files`,
-                    icon: "source-control",
-                    component: DiffPanel,
+                    id: "terminal",
+                    label: "Terminal",
+                    state: "shell",
+                    icon: "terminal",
+                    component: TerminalSurface,
+                    keepMounted: true,
                 });
             }
-            if (chat) {
+            if (chat && !walkthrough()) {
                 panels.push({
                     id: "ai",
                     label: "AI chat",
@@ -2716,7 +4267,7 @@ function App() {
                     component: AiPanel,
                 });
             }
-            if (tests) {
+            if (tests && !walkthrough()) {
                 panels.push({
                     id: "tests",
                     label: "Tests",
@@ -2725,13 +4276,23 @@ function App() {
                     component: TestPanel,
                 });
             }
-            if (debug) {
+            if (debug && !walkthrough()) {
                 panels.push({
                     id: "debug",
                     label: "Debug",
                     state: debug.running ? "running" : "paused",
                     icon: "debug",
                     component: DebugPanel,
+                });
+            }
+            const runConsole = view().runConsole;
+            if (runConsole && !walkthrough()) {
+                panels.push({
+                    id: "run",
+                    label: "Run",
+                    state: runConsole.status,
+                    icon: "debug",
+                    component: RunPanel,
                 });
             }
             return retainProjection(previous, panels);
@@ -2741,6 +4302,8 @@ function App() {
 
     const SideDock = () => (
         <ContextDock
+            width={contextWidth()}
+            onWidthChange={setContextWidth}
             panels={contextPanels()}
             activePanel={activeContextPanel()}
             onActivePanel={setActiveContextPanel}
@@ -2756,7 +4319,10 @@ function App() {
                 >
                     <header>
                         <b>{problems().title || problems().kind}</b>
-                        <span>{problems().total} items</span>
+                        <span>
+                            {problems().total}{" "}
+                            {problems().total === 1 ? "item" : "items"}
+                        </span>
                     </header>
                     <div role="listbox" aria-label="Problem entries">
                         <For
@@ -2819,7 +4385,11 @@ function App() {
                                     })()}
                                     <strong>{item.message}</strong>
                                     <small>
-                                        {item.file}:{item.line}:{item.column}
+                                        {item.file}
+                                        {item.line > 0 ? `:${item.line}` : ""}
+                                        {item.line > 0 && item.column > 0
+                                            ? `:${item.column}`
+                                            : ""}
                                     </small>
                                 </button>
                             )}
@@ -2827,6 +4397,215 @@ function App() {
                     </div>
                 </section>
             )}
+        </Show>
+    );
+
+    const SearchReplaceOverlay = () => (
+        <Show when={!view().aiChat ? view().searchReplace : undefined}>
+            {(panel) => {
+                const act = (index: number, action: string) => {
+                    void mutate("gui_search_replace_row", { index, action });
+                };
+                const field = (
+                    name: "find" | "replace" | "files",
+                    label: string,
+                    value: string,
+                ) => (
+                    <button
+                        type="button"
+                        class="sr-field"
+                        classList={{ focused: panel().focus === name }}
+                        aria-label={`${label} field`}
+                        onClick={() => act(panel().selected, `field-${name}`)}
+                    >
+                        <span>{label}</span>
+                        <code>{value || " "}</code>
+                    </button>
+                );
+                const toggle = (
+                    action: string,
+                    label: string,
+                    title: string,
+                    on: boolean,
+                ) => (
+                    <button
+                        type="button"
+                        class="sr-toggle"
+                        aria-pressed={on}
+                        title={title}
+                        onClick={() => act(panel().selected, action)}
+                    >
+                        {label}
+                    </button>
+                );
+                return (
+                    <div class="overlay-shade sr-overlay">
+                        <section
+                            ref={(element) =>
+                                queueMicrotask(() =>
+                                    element.focus({ preventScroll: true }),
+                                )
+                            }
+                            class="sr-panel"
+                            role="dialog"
+                            aria-labelledby="sr-title"
+                            data-gui-core-dialog
+                            tabIndex={-1}
+                            onKeyDown={(event) =>
+                                void trapDialogFocus(event, event.currentTarget)
+                            }
+                        >
+                            <header>
+                                <b id="sr-title">Replace in files</b>
+                                <span class="sr-summary">
+                                    {panel().error
+                                        ? panel().error
+                                        : panel().searching
+                                          ? "Searching..."
+                                          : panel().searched
+                                            ? `${panel().checkedMatches} of ${panel().totalMatches} checked in ${panel().fileCount} files${panel().truncated ? " (truncated)" : ""}`
+                                            : ""}
+                                </span>
+                                <kbd>esc</kbd>
+                            </header>
+                            <div class="sr-inputs">
+                                <div class="sr-row">
+                                    {field("find", "Find", panel().find)}
+                                    {toggle(
+                                        "case",
+                                        "Aa",
+                                        "Match case (Alt-C)",
+                                        panel().caseSensitive,
+                                    )}
+                                    {toggle(
+                                        "word",
+                                        "W",
+                                        "Whole word (Alt-W)",
+                                        panel().wholeWord,
+                                    )}
+                                    {toggle(
+                                        "regex",
+                                        ".*",
+                                        "Regular expression (Alt-R)",
+                                        panel().regex,
+                                    )}
+                                </div>
+                                {field("replace", "Replace", panel().replace)}
+                                {field("files", "Files", panel().files)}
+                            </div>
+                            <div
+                                class="sr-results"
+                                role="listbox"
+                                aria-label="Matches"
+                            >
+                                <For
+                                    each={panel().rows}
+                                    fallback={
+                                        <p class="panel-empty compact">
+                                            {panel().find
+                                                ? "No matches"
+                                                : "Type something to find"}
+                                        </p>
+                                    }
+                                >
+                                    {(row) => (
+                                        <div
+                                            class="sr-item"
+                                            classList={{
+                                                selected:
+                                                    row.index ===
+                                                    panel().selected,
+                                                file: row.kind === "file",
+                                                off: row.state === "unchecked",
+                                            }}
+                                            role="option"
+                                            aria-selected={
+                                                row.index === panel().selected
+                                            }
+                                            onClick={() =>
+                                                act(row.index, "select")
+                                            }
+                                            onDblClick={() =>
+                                                act(row.index, "open")
+                                            }
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                ref={(element) =>
+                                                    createEffect(() => {
+                                                        element.indeterminate =
+                                                            row.state ===
+                                                            "partial";
+                                                    })
+                                                }
+                                                checked={
+                                                    row.state === "checked"
+                                                }
+                                                aria-label={
+                                                    row.kind === "file"
+                                                        ? `Include ${row.path}`
+                                                        : `Include ${row.path}:${row.line}`
+                                                }
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    act(row.index, "toggle");
+                                                }}
+                                            />
+                                            <Show
+                                                when={row.kind === "match"}
+                                                fallback={
+                                                    <>
+                                                        <strong>
+                                                            {row.path}
+                                                        </strong>
+                                                        <small>
+                                                            {row.count}
+                                                        </small>
+                                                    </>
+                                                }
+                                            >
+                                                <small class="sr-line">
+                                                    {row.line}
+                                                </small>
+                                                <code>
+                                                    <span>{row.before}</span>
+                                                    <del>{row.matched}</del>
+                                                    <ins>{row.replacement}</ins>
+                                                    <span>{row.after}</span>
+                                                </code>
+                                            </Show>
+                                        </div>
+                                    )}
+                                </For>
+                            </div>
+                            <footer>
+                                <button
+                                    type="button"
+                                    class="sr-apply"
+                                    disabled={panel().checkedMatches === 0}
+                                    onClick={() =>
+                                        act(panel().selected, "apply")
+                                    }
+                                >
+                                    Replace {panel().checkedMatches}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        act(panel().selected, "toggle-all")
+                                    }
+                                >
+                                    Toggle all
+                                </button>
+                                <span>
+                                    <kbd>Tab</kbd> field <kbd>Ctrl-T</kbd>{" "}
+                                    toggle <kbd>Alt-Enter</kbd> replace
+                                </span>
+                            </footer>
+                        </section>
+                    </div>
+                );
+            }}
         </Show>
     );
 
@@ -3065,15 +4844,40 @@ function App() {
     );
 
     onMount(() => {
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d");
-        if (context) {
-            context.font =
-                getComputedStyle(document.documentElement).getPropertyValue(
-                    "--editor-font",
-                ) || "13.5px monospace";
-            cellWidth = context.measureText("M").width || FALLBACK_CELL_WIDTH;
-        }
+        const measureCellWidth = () => {
+            const viewport =
+                editorBody.querySelector<HTMLElement>(".code-viewport");
+            if (!viewport) return;
+            // Measure DOM text in the same font/shaping context as the code.
+            // WebKit's DOM advances can differ from canvas at fractional sizes.
+            const probe = document.createElement("span");
+            probe.style.cssText =
+                "position:absolute;visibility:hidden;pointer-events:none;white-space:pre";
+            // Reconsider the configured font after every font-load event.
+            // Some WebKit/fontconfig combinations substitute a proportional
+            // font for an unavailable named family before reaching monospace.
+            viewport.style.removeProperty("font-family");
+            viewport.append(probe);
+            const advance = (character: string) => {
+                probe.textContent = character.repeat(100);
+                return probe.getBoundingClientRect().width / 100;
+            };
+            let width = advance("M");
+            if (Math.abs(width - advance("i")) > 0.01) {
+                viewport.style.fontFamily = "monospace";
+                width = advance("M");
+            }
+            probe.remove();
+            setCellWidth(width || FALLBACK_CELL_WIDTH);
+            syncDimensions();
+        };
+        measureCellWidth();
+        // A font loaded after mount must update text, hit-testing and overlays together.
+        let disposed = false;
+        void document.fonts?.ready.then(() => {
+            if (!disposed) measureCellWidth();
+        });
+        document.fonts?.addEventListener("loadingdone", measureCellWidth);
         window.addEventListener("keydown", handleKeyDown, { capture: true });
         window.addEventListener("paste", handlePaste);
         window.addEventListener("copy", handleCopy);
@@ -3095,8 +4899,14 @@ function App() {
             setCompactDocks(event.matches);
         compactDockQuery?.addEventListener("change", updateCompactDocks);
         editorBody.addEventListener("wheel", handleWheel, { passive: false });
-        const observer = new ResizeObserver(syncDimensions);
+        const observer = new ResizeObserver(() => {
+            syncDimensions();
+            measureCursorAnchor();
+        });
         observer.observe(editorBody);
+        // Docks opening or closing reflow the panes without resizing the body.
+        const paneTree = editorBody.querySelector(".pane-tree");
+        if (paneTree) observer.observe(paneTree);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
         let unlistenBrowserKey: (() => void) | undefined;
@@ -3122,17 +4932,21 @@ function App() {
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
             lastDimensions = dimensions();
+            const terminals = new Channel<{ command: string | null }>();
+            terminals.onmessage = (request) =>
+                openTerminal(request.command ?? undefined);
             void invoke("gui_subscribe", {
                 ...lastDimensions,
                 onEvent: snapshots,
+                onTerminalRequest: terminals,
             }).catch((reason) => setError(String(reason)));
             const link = new Channel<GuiConnection>();
             link.onmessage = (state) => {
                 setConnection(state);
                 if (state.state !== "connected") {
-                    // Chunk R6 drops input while the link is down rather than
-                    // queueing it, so a prediction made just before the outage
-                    // is speaking for a keystroke that will never be sent.
+                    // Input is dropped while the link is down rather than
+                    // queued, so a prediction made just before the outage is
+                    // speaking for a keystroke that will never be sent.
                     showEcho(discard());
                     return;
                 }
@@ -3145,7 +4959,7 @@ function App() {
             void invoke("gui_connection", { onEvent: link }).catch((reason) =>
                 setError(String(reason)),
             );
-            void invoke<boolean>("gui_link_is_remote")
+            void invoke<boolean>("gui_link_is_remote", {})
                 .then((remote) => {
                     linkIsRemote = remote;
                 })
@@ -3153,6 +4967,11 @@ function App() {
         }
         restoreInputFocus();
         onCleanup(() => {
+            disposed = true;
+            document.fonts?.removeEventListener(
+                "loadingdone",
+                measureCellWidth,
+            );
             window.removeEventListener("keydown", handleKeyDown, {
                 capture: true,
             });
@@ -3270,6 +5089,7 @@ function App() {
                 classList={{
                     "active-explorer-dock": activeDock() === "explorer",
                     "active-context-dock": activeDock() === "context",
+                    "context-collapsed": contextDockHidden(),
                 }}
             >
                 <nav class="activity-bar" aria-label="Primary navigation">
@@ -3291,15 +5111,15 @@ function App() {
                             onClick={() => runEditorShortcut(" sg")}
                         />
                         <IconButton
-                            icon="source-control"
-                            label="Diff review"
-                            shortcut="v · Space Space"
+                            icon="terminal"
+                            label="Terminal"
+                            shortcut={macos ? "Cmd+Shift+T" : "Ctrl+Shift+T"}
                             selected={
-                                diffDockOpen() &&
+                                terminalDockOpen() &&
                                 activeDock() === "context" &&
-                                activeContextPanel() === "diff"
+                                activeContextPanel() === "terminal"
                             }
-                            onClick={toggleDiff}
+                            onClick={toggleTerminal}
                         />
                         <IconButton
                             icon="ai-spark"
@@ -3322,120 +5142,20 @@ function App() {
 
                 <Show when={view().fileTree}>
                     {(tree) => (
-                        <aside class="explorer">
-                            <div class="panel-heading">
-                                <span>Explorer</span>
-                                <small>{tree().root}</small>
-                            </div>
-                            <div
-                                class="tree-list"
-                                role="tree"
-                                aria-label="Project files"
-                            >
-                                <For
-                                    each={tree().items}
-                                    fallback={
-                                        <p class="panel-empty compact">
-                                            This workspace is empty
-                                        </p>
-                                    }
-                                >
-                                    {(item) => (
-                                        <button
-                                            type="button"
-                                            role="treeitem"
-                                            aria-selected={
-                                                item.index === tree().selected
-                                            }
-                                            aria-expanded={
-                                                item.directory
-                                                    ? item.expanded
-                                                    : undefined
-                                            }
-                                            aria-level={item.depth + 1}
-                                            class="tree-item"
-                                            classList={{
-                                                selected:
-                                                    item.index ===
-                                                    tree().selected,
-                                            }}
-                                            style={{
-                                                "padding-left": `${10 + item.depth * 14}px`,
-                                            }}
-                                            title={item.path}
-                                            onClick={() => {
-                                                void mutate(
-                                                    "gui_select_file_tree",
-                                                    {
-                                                        index: item.index,
-                                                        activate: false,
-                                                    },
-                                                );
-                                                queueMicrotask(
-                                                    focusEditorInput,
-                                                );
-                                            }}
-                                            onDblClick={() => {
-                                                void mutate(
-                                                    "gui_select_file_tree",
-                                                    {
-                                                        index: item.index,
-                                                        activate: true,
-                                                    },
-                                                );
-                                                queueMicrotask(
-                                                    focusEditorInput,
-                                                );
-                                            }}
-                                            onKeyDown={(event) => {
-                                                if (event.key !== "Enter")
-                                                    return;
-                                                event.preventDefault();
-                                                void mutate(
-                                                    "gui_select_file_tree",
-                                                    {
-                                                        index: item.index,
-                                                        activate: true,
-                                                    },
-                                                );
-                                                queueMicrotask(
-                                                    focusEditorInput,
-                                                );
-                                            }}
-                                        >
-                                            <span
-                                                class={`tree-chevron ${item.directory ? "directory" : "file"}`}
-                                            >
-                                                <Show when={item.directory}>
-                                                    <Icon
-                                                        name={
-                                                            item.expanded
-                                                                ? "chevron-down"
-                                                                : "chevron-right"
-                                                        }
-                                                        size={16}
-                                                    />
-                                                </Show>
-                                            </span>
-                                            <Icon
-                                                name={
-                                                    item.directory
-                                                        ? "folder"
-                                                        : "file"
-                                                }
-                                                size={16}
-                                                tone={
-                                                    item.directory
-                                                        ? "warning"
-                                                        : "muted"
-                                                }
-                                            />
-                                            <span>{item.name}</span>
-                                        </button>
-                                    )}
-                                </For>
-                            </div>
-                        </aside>
+                        <FileExplorer
+                            tree={tree()}
+                            width={explorerWidth()}
+                            reservedWidth={contextDockWidth()}
+                            onWidthChange={setExplorerWidth}
+                            active={activeDock() === "explorer"}
+                            onSelect={(index, activate) => {
+                                void mutate("gui_select_file_tree", {
+                                    index,
+                                    activate,
+                                });
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        />
                     )}
                 </Show>
 
@@ -3450,6 +5170,12 @@ function App() {
                         canRestoreBrowser={browserWorkbench.canRestore()}
                         onSelect={selectWorkbenchTab}
                         onSourceFocus={() => queueMicrotask(focusEditorInput)}
+                        onCloseSource={(tab) => void closeSourceTab(tab)}
+                        onCloseBrowser={(sessionId) =>
+                            void closeBrowserSession(sessionId).catch(
+                                (reason) => setError(String(reason)),
+                            )
+                        }
                         onNewBrowser={() => void openBrowserSession()}
                         onRestoreBrowser={() =>
                             performBrowserKey({ intent: "restore_tab" })
@@ -3478,6 +5204,23 @@ function App() {
                                                         tone="muted"
                                                     />
                                                 </Show>
+                                            </>
+                                        )}
+                                    </For>
+                                    <For each={view().symbolBreadcrumbs}>
+                                        {(symbol) => (
+                                            <>
+                                                <Icon
+                                                    name="chevron-right"
+                                                    size={16}
+                                                    tone="muted"
+                                                />
+                                                <span
+                                                    class="symbol-crumb"
+                                                    data-kind={symbol.kind}
+                                                >
+                                                    {symbol.name}
+                                                </span>
                                             </>
                                         )}
                                     </For>
@@ -3614,7 +5357,8 @@ function App() {
                                 pendingExit() ||
                                 browserCommandRequest() ||
                                 view().picker ||
-                                view().lspManager,
+                                view().lspManager ||
+                                view().searchReplace,
                             )}
                             onNavigate={navigateBrowserSession}
                             onToolbar={runBrowserToolbar}
@@ -3632,10 +5376,7 @@ function App() {
                         <textarea
                             ref={inputSink!}
                             class="input-sink"
-                            style={{
-                                top: `${Math.max(0, view().cursor.line - view().firstLine) * LINE_HEIGHT + 8}px`,
-                                left: `${Math.max(0, view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 66}px`,
-                            }}
+                            style={cursorCellStyle()}
                             aria-label="Ovim editor input"
                             aria-multiline="true"
                             autocomplete="off"
@@ -3650,45 +5391,52 @@ function App() {
                             {(text) => (
                                 <span
                                     class="ime-preview"
-                                    style={{
-                                        top: `${Math.max(0, view().cursor.line - view().firstLine) * LINE_HEIGHT + 8}px`,
-                                        left: `${Math.max(0, view().cursor.displayColumn - view().horizontalOffset) * cellWidth + 66}px`,
-                                    }}
+                                    style={cursorCellStyle()}
                                 >
                                     {text()}
                                 </span>
                             )}
                         </Show>
-                        <Show
-                            when={!view().dashboard}
-                            fallback={
-                                <Dashboard
-                                    send={runEditorShortcut}
-                                    version="1.2.7"
-                                />
-                            }
+                        <div
+                            class="editor-content"
+                            classList={{
+                                "has-problems":
+                                    Boolean(view().problems) &&
+                                    !view().dashboard,
+                            }}
                         >
-                            <div
-                                class="editor-content"
-                                classList={{
-                                    "has-problems": Boolean(view().problems),
-                                }}
-                            >
-                                <div class="primary-content">
-                                    <div class="pane-tree">
+                            <div class="primary-content">
+                                <div class="pane-tree">
+                                    <Show
+                                        when={!view().dashboard}
+                                        fallback={
+                                            <Dashboard
+                                                send={runEditorShortcut}
+                                                version={version}
+                                            />
+                                        }
+                                    >
                                         <PaneTree node={view().layout} />
-                                    </div>
-                                    <SideDock />
+                                    </Show>
                                 </div>
-                                <ProblemPanel />
+                                <SideDock />
                             </div>
-                        </Show>
+                            <Show when={!view().dashboard}>
+                                <ProblemPanel />
+                            </Show>
+                        </div>
 
                         <Show when={walkthrough()}>
                             {(active) => (
                                 <CodeWalkthrough
                                     walkthrough={active()}
                                     restoreFocus={focusPrimaryInput}
+                                    onPosition={(current, rows) =>
+                                        void mutate(
+                                            "gui_position_walkthrough",
+                                            { current, rows },
+                                        )
+                                    }
                                     onKey={(key) =>
                                         void sendKey({
                                             key,
@@ -3715,7 +5463,7 @@ function App() {
                                     style={inlineOverlayStyle(
                                         view().cursor.line,
                                         view().cursor.displayColumn,
-                                        430,
+                                        COMPLETION_WIDTH,
                                         Math.min(
                                             290,
                                             Math.max(
@@ -3746,6 +5494,8 @@ function App() {
                                                     selected:
                                                         item.index ===
                                                         menu().selected,
+                                                    deprecated:
+                                                        !!item.deprecated,
                                                 }}
                                                 onPointerEnter={() =>
                                                     void mutate(
@@ -3769,18 +5519,111 @@ function App() {
                                                     );
                                                 }}
                                             >
-                                                <span class="completion-kind">
-                                                    <Icon
-                                                        name="command"
-                                                        size={16}
-                                                    />
+                                                <span
+                                                    class={`completion-kind kind-${item.kindClass ?? "other"}`}
+                                                    title={item.kind}
+                                                    aria-hidden="true"
+                                                >
+                                                    {item.kindGlyph ?? "·"}
                                                 </span>
-                                                <strong>{item.label}</strong>
-                                                <small>{item.detail}</small>
+                                                <span class="completion-label">
+                                                    <MatchedLabel
+                                                        label={item.label}
+                                                        matched={
+                                                            item.matched ?? []
+                                                        }
+                                                    />
+                                                    <Show when={item.detail}>
+                                                        <em class="completion-detail">
+                                                            {item.detail}
+                                                        </em>
+                                                    </Show>
+                                                </span>
+                                                <small class="completion-description">
+                                                    {item.description}
+                                                </small>
                                             </button>
                                         )}
                                     </For>
+                                    <Show
+                                        when={
+                                            (menu().total ?? 0) >
+                                            menu().items.length
+                                        }
+                                    >
+                                        <div class="completion-count">
+                                            {menu().selected + 1} /{" "}
+                                            {menu().total}
+                                        </div>
+                                    </Show>
                                 </div>
+                            )}
+                        </Show>
+
+                        <Show
+                            when={
+                                !view().aiChat
+                                    ? view().completion?.documentation
+                                    : undefined
+                            }
+                        >
+                            {(documentation) => (
+                                <aside
+                                    class="completion-docs"
+                                    aria-label="Completion documentation"
+                                    style={completionDocsStyle(
+                                        view().cursor.line,
+                                        view().cursor.displayColumn,
+                                    )}
+                                >
+                                    <Markdown text={documentation()} />
+                                </aside>
+                            )}
+                        </Show>
+
+                        <Show
+                            when={
+                                !view().aiChat
+                                    ? view().signatureHelp
+                                    : undefined
+                            }
+                        >
+                            {(signature) => (
+                                <section
+                                    class="signature-popover"
+                                    role="tooltip"
+                                    aria-label="Parameter hints"
+                                    style={signatureOverlayStyle(
+                                        signature().line,
+                                        signature().displayColumn,
+                                        signature().documentation ? 2 : 1,
+                                    )}
+                                >
+                                    <div class="signature-label">
+                                        <span>{signature().before}</span>
+                                        <strong class="signature-active">
+                                            {signature().active}
+                                        </strong>
+                                        <span>{signature().after}</span>
+                                        <Show
+                                            when={
+                                                signature().signatureCount > 1
+                                            }
+                                        >
+                                            <em class="signature-count">
+                                                {signature().signatureIndex + 1}
+                                                /{signature().signatureCount}
+                                            </em>
+                                        </Show>
+                                    </div>
+                                    <Show when={signature().documentation}>
+                                        {(doc) => (
+                                            <div class="signature-doc">
+                                                {doc().split("\n")[0]}
+                                            </div>
+                                        )}
+                                    </Show>
+                                </section>
                             )}
                         </Show>
 
@@ -3921,7 +5764,10 @@ function App() {
                                         </div>
                                         <footer>
                                             <span>
-                                                {picker().total} results
+                                                {picker().total}{" "}
+                                                {picker().total === 1
+                                                    ? "result"
+                                                    : "results"}
                                             </span>
                                             <span>
                                                 <kbd>↑↓</kbd> navigate{" "}
@@ -3933,6 +5779,7 @@ function App() {
                             )}
                         </Show>
                         <LspOverlay />
+                        <SearchReplaceOverlay />
                     </div>
 
                     <div class="message-line">
@@ -3955,13 +5802,23 @@ function App() {
                                 </span>
                             }
                         >
-                            {(prompt) => (
-                                <div class="prompt">
-                                    <b>{prompt().prefix}</b>
-                                    <span>{prompt().text}</span>
-                                    <i />
-                                </div>
-                            )}
+                            {(prompt) => {
+                                // `cursor` is a UTF-8 byte offset from core.
+                                const parts = createMemo(() =>
+                                    splitAtUtf8Offset(
+                                        prompt().text,
+                                        prompt().cursor,
+                                    ),
+                                );
+                                return (
+                                    <div class="prompt">
+                                        <b>{prompt().prefix}</b>
+                                        <span>{parts()[0]}</span>
+                                        <i />
+                                        <span>{parts()[1]}</span>
+                                    </div>
+                                );
+                            }}
                         </Show>
                         <Show
                             when={linkStatus()}
@@ -3999,6 +5856,17 @@ function App() {
                                     ? "VECTOR"
                                     : view().mode}
                         </div>
+                        <Show when={view().recording}>
+                            {(register) => (
+                                <div
+                                    class="recording-chip"
+                                    role="status"
+                                    title={`Recording macro into register ${register()} (press q to stop)`}
+                                >
+                                    recording @{register()}
+                                </div>
+                            )}
+                        </Show>
                         <div class="status-left">
                             <Show when={view().gitBranch}>
                                 <span>

@@ -86,15 +86,12 @@ impl Editor {
 
         self.ensure_lsp_document_synced().await;
 
-        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
-
         Some(GotoPrepared {
             lsp,
             uri,
             line,
             character,
             language_id,
-            server_ids,
         })
     }
 
@@ -117,20 +114,17 @@ impl Editor {
         let line = p.line;
         let character = p.character;
         let language_id = p.language_id;
-        let server_ids = p.server_ids;
 
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = if server_ids.len() > 1 {
-                lsp.goto_definition_multi(&uri, line, character, &server_ids)
-                    .await
-            } else {
-                lsp.goto_definition(&uri, line, character, &language_id)
-                    .await
-            };
+            let result = lsp
+                .goto_definition(&uri, line, character, &language_id)
+                .await;
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab,
+                origin,
             }));
         });
 
@@ -162,6 +156,7 @@ impl Editor {
         let character = p.character;
         let language_id = p.language_id;
 
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = lsp
@@ -170,6 +165,7 @@ impl Editor {
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab,
+                origin,
             }));
         });
 
@@ -201,6 +197,7 @@ impl Editor {
         let character = p.character;
         let language_id = p.language_id;
 
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = lsp
@@ -209,6 +206,7 @@ impl Editor {
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab: false,
+                origin,
             }));
         });
 
@@ -226,5 +224,25 @@ struct GotoPrepared {
     line: u32,
     character: u32,
     language_id: String,
-    server_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn prepares_definition_request_inside_dynamic_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app/[id]/page.tsx");
+        let mut editor = Editor::with_content("const value = 1;\n");
+        editor.set_file_path(path.to_string_lossy().into_owned());
+        editor.lsp.state.lsp_manager = Some(std::sync::Arc::new(crate::lsp::LspManager::new()));
+
+        let request = editor
+            .prepare_goto_request("goto-definition")
+            .await
+            .unwrap();
+        assert_eq!(crate::lsp::uri_to_file_path(&request.uri), Some(path));
+        assert_eq!(request.language_id, "typescriptreact");
+    }
 }

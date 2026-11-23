@@ -289,6 +289,19 @@ pub struct RemoteOptions {
 }
 
 impl RemoteOptions {
+    /// The remote flags of `ovim gui` / `ovim-gui`, with the positional path
+    /// that belongs to the remote host under `--remote`.
+    pub fn from_args(args: crate::cli::GuiRemoteArgs, path: Option<String>) -> Self {
+        Self {
+            destination: args.remote,
+            path,
+            fresh: args.fresh,
+            allow_version_mismatch: args.allow_version_mismatch,
+            session_file: args.remote_session,
+            endpoint: args.remote_endpoint,
+        }
+    }
+
     /// Turn the flags into a reachable editor, or into `None` for a local one.
     ///
     /// Everything that can fail here fails before a window exists, so a wrong
@@ -757,6 +770,10 @@ else
   # Detached from this shell in every direction: nohup survives the hangup
   # when ssh closes the channel, and the redirections keep the session from
   # holding the channel open or reading what is left of this script.
+  # Started from the project, as `ovim gui .` would be: the diff review, `:!`
+  # and relative paths all resolve against the session's working directory.
+  if [ -d "$resolved" ]; then workdir=$resolved; else workdir=$(dirname "$resolved"); fi
+  cd "$workdir" || exit {EXIT_NO_PATH}
   nohup "$bin" "$resolved" --headless --session "$name" </dev/null >/dev/null 2>&1 &
   waited=0
   while [ "$waited" -lt "$ready" ] && [ ! -f "$descriptor" ]; do
@@ -1847,6 +1864,8 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "--session" ]; then shift; name=$1; fi
   shift
 done
+# Where the session was started, for the test to compare.
+pwd -P > "$OVIM_SESSION_DIR/$name.cwd"
 # Laid out the way serde_json::to_string_pretty writes a real descriptor.
 cat > "$OVIM_SESSION_DIR/$name.json" <<EOF
 {
@@ -1920,6 +1939,15 @@ exec sleep 60
         let started = parse_report(&first.stdout).expect("the first report should parse");
         assert_eq!(started.origin, SessionOrigin::Started);
         assert_eq!(started.session.port, 51829);
+        // Started from the project, as `ovim gui .` would be, because the
+        // diff review and `:!` resolve against the session's directory.
+        let cwd =
+            std::fs::read_to_string(sessions.join(format!("{}.cwd", started.session.session_name)))
+                .expect("the stub records where it was started");
+        assert_eq!(
+            std::path::Path::new(cwd.trim()),
+            project.canonicalize().unwrap()
+        );
 
         // The second launch must find the first one rather than start a rival:
         // that is what makes closing the laptop and coming back cheap.

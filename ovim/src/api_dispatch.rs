@@ -21,8 +21,8 @@ use ovim::api::{
     AgentEventsResponse, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DecorationInfo,
     DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo,
     LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo,
-    PickerResultInfo, RenderInfo, SuccessResponse, ViewSnapshot, VisualSelection,
-    AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
+    PickerResultInfo, RenderInfo, SearchReplaceInfo, SearchReplaceRowInfo, SuccessResponse,
+    ViewSnapshot, VisualSelection, AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
 };
 use ovim::editor::{self, Editor, InputHandler};
 use ovim::mode::Mode;
@@ -52,14 +52,16 @@ pub(crate) async fn handle_api_request(
             let events_result = parse_key_string(&keys);
             let response = match events_result {
                 Ok(events) => {
-                    let mut input_error = None;
-
-                    for event in events {
-                        if let Err(error) = InputHandler::handle_key_event_no_dirty(editor, event) {
-                            input_error = Some(error.to_string());
-                            break;
+                    let input_error = editor.with_execution_scope(|editor| {
+                        for event in events {
+                            if let Err(error) =
+                                InputHandler::handle_key_event_no_dirty(editor, event)
+                            {
+                                return Some(error.to_string());
+                            }
                         }
-                    }
+                        None
+                    });
 
                     refresh_after_input(editor);
 
@@ -160,7 +162,7 @@ pub(crate) async fn handle_api_request(
             let _ = tx.send(ApiResponse::Buffer(buffer_info));
         }
         ApiRequest::SetBuffer(content, tx) => {
-            editor.buffer_mut().replace_all(&content);
+            editor.with_insert_undo_break(|editor| editor.buffer_mut().replace_all(&content));
             refresh_after_api_mutation(editor, true);
             let line_count = editor.buffer().rope().len_lines();
 
@@ -205,10 +207,11 @@ pub(crate) async fn handle_api_request(
                 }
             };
 
+            // Insert and Replace mode record what is typed as one undo step.
             let old_mode = editor.mode();
-            if old_mode == Mode::Insert && new_mode != Mode::Insert {
+            if old_mode.types_text() && !new_mode.types_text() {
                 editor.finalize_change_building();
-            } else if old_mode != Mode::Insert && new_mode == Mode::Insert {
+            } else if !old_mode.types_text() && new_mode.types_text() {
                 editor.start_change_building(editor.cursor_position());
             }
             editor.set_mode(new_mode);
@@ -220,9 +223,8 @@ pub(crate) async fn handle_api_request(
             }));
         }
         ApiRequest::ExecuteCommand(command, tx) => {
-            // Route through the full interactive dispatcher so headless `exec`
-            // has parity with the command line (substitute, global, ranges, …),
-            // not just the standard commands module.
+            // The same ex dispatcher as the `:` prompt; a `:!cmd` runs with
+            // captured output since there is no terminal.
             let response: ApiResponse = InputHandler::execute_command_api(editor, &command).into();
             refresh_after_input(editor);
             let _ = tx.send(response);
@@ -357,17 +359,32 @@ pub(crate) async fn handle_api_request(
 
             let _ = tx.send(ApiResponse::Metrics(metrics_info));
         }
+        // The language server may take seconds to answer these: the request is
+        // sent now and answered from a task, so the editor loop (keys, ticks,
+        // rendering) is never held up behind it.
         ApiRequest::GetOutline(tx) => {
-            let info = editor.get_outline().await;
-            let _ = tx.send(ApiResponse::Outline(info));
+            let pending = editor.begin_outline().await;
+            tokio::spawn(async move {
+                if let Ok(info) = pending.await {
+                    let _ = tx.send(ApiResponse::Outline(info));
+                }
+            });
         }
         ApiRequest::SearchSymbol(query, tx) => {
-            let info = editor.search_symbols(&query).await;
-            let _ = tx.send(ApiResponse::SymbolSearch(info));
+            let pending = editor.begin_symbol_search(&query).await;
+            tokio::spawn(async move {
+                if let Ok(info) = pending.await {
+                    let _ = tx.send(ApiResponse::SymbolSearch(info));
+                }
+            });
         }
         ApiRequest::GetTrace(tx) => {
-            let info = editor.get_trace().await;
-            let _ = tx.send(ApiResponse::Trace(info));
+            let pending = editor.begin_trace().await;
+            tokio::spawn(async move {
+                if let Ok(info) = pending.await {
+                    let _ = tx.send(ApiResponse::Trace(info));
+                }
+            });
         }
         ApiRequest::GetDiagnostics(tx) => {
             let file = editor.buffer().file_path().map(|s| s.to_string());
@@ -442,7 +459,8 @@ pub(crate) async fn handle_api_request(
             let _ = tx.send(ApiResponse::ContextWindow(context_info));
         }
         ApiRequest::EditLine { line, old, new, tx } => {
-            let response = handle_edit_line(editor, line, &old, &new);
+            let response =
+                editor.with_insert_undo_break(|editor| handle_edit_line(editor, line, &old, &new));
             if matches!(&response, ApiResponse::Success(_)) {
                 refresh_after_api_mutation(editor, false);
             }
@@ -454,14 +472,16 @@ pub(crate) async fn handle_api_request(
             text,
             tx,
         } => {
-            let response = handle_insert_lines(editor, line, before, &text);
+            let response = editor
+                .with_insert_undo_break(|editor| handle_insert_lines(editor, line, before, &text));
             if matches!(&response, ApiResponse::Success(_)) {
                 refresh_after_api_mutation(editor, false);
             }
             let _ = tx.send(response);
         }
         ApiRequest::DeleteLines { from, to, tx } => {
-            let response = handle_delete_lines(editor, from, to);
+            let response =
+                editor.with_insert_undo_break(|editor| handle_delete_lines(editor, from, to));
             if matches!(&response, ApiResponse::Success(_)) {
                 refresh_after_api_mutation(editor, false);
             }
@@ -911,6 +931,7 @@ fn create_view_snapshot(editor: &Editor, dimensions: Option<(u16, u16)>) -> View
         search_forward: editor.search_forward(),
         status: editor.status_message().to_string(),
         active_session: editor.active_session().map(str::to_string),
+        breadcrumbs: editor.breadcrumb_text(),
     }
 }
 
@@ -958,15 +979,10 @@ pub(crate) fn create_snapshot_with_dimensions(
 
     // Get marks
     let mut marks = HashMap::new();
-    let mark_manager = editor.marks();
-    for (name, mark) in mark_manager.iter() {
-        marks.insert(
-            name.to_string(),
-            CursorPosition {
-                line: mark.line,
-                column: mark.col,
-            },
-        );
+    for (name, line, col, file) in editor.list_marks() {
+        if file.is_none() {
+            marks.insert(name.to_string(), CursorPosition { line, column: col });
+        }
     }
 
     // Get picker state if in picker mode
@@ -993,6 +1009,65 @@ pub(crate) fn create_snapshot_with_dimensions(
         total_results: p.filtered_result_count(),
         loading: p.is_loading(),
     });
+
+    let search_replace = editor
+        .is_search_replace_open()
+        .then(|| editor.search_replace_panel())
+        .flatten()
+        .map(|panel| {
+            use ovim_core::editor::search_replace::ReviewRow;
+            let rows = panel
+                .rows()
+                .into_iter()
+                .enumerate()
+                .take(2000)
+                .map(|(index, row)| match row {
+                    ReviewRow::File(file) => {
+                        let file = &panel.results[file];
+                        SearchReplaceRowInfo {
+                            kind: "file".to_string(),
+                            path: file.rel.clone(),
+                            line: 0,
+                            checked: file.checked_count() == file.matches.len(),
+                            selected: index == panel.selected,
+                            preview: String::new(),
+                        }
+                    }
+                    ReviewRow::Match(file, m) => {
+                        let file = &panel.results[file];
+                        let entry = &file.matches[m];
+                        let text = &entry.found.line_text;
+                        SearchReplaceRowInfo {
+                            kind: "match".to_string(),
+                            path: file.rel.clone(),
+                            line: entry.found.line + 1,
+                            checked: entry.checked,
+                            selected: index == panel.selected,
+                            preview: format!(
+                                "{}{}{}",
+                                &text[..entry.found.start_byte],
+                                panel.replacement_for(&entry.found),
+                                &text[entry.found.end_byte..]
+                            ),
+                        }
+                    }
+                })
+                .collect();
+            SearchReplaceInfo {
+                find: panel.find.text().to_string(),
+                replace: panel.replace.text().to_string(),
+                files: panel.files.text().to_string(),
+                focus: panel.focus.as_str().to_string(),
+                regex: panel.regex,
+                case_sensitive: panel.case_sensitive,
+                whole_word: panel.whole_word,
+                searching: panel.searching,
+                error: panel.error.clone(),
+                total_matches: panel.total_matches(),
+                checked_matches: panel.checked_matches(),
+                rows,
+            }
+        });
 
     // Project decorations into the snapshot. Phase-05 Step F: each stored
     // decoration holds a source-version `char_offset`; we project it through
@@ -1035,6 +1110,8 @@ pub(crate) fn create_snapshot_with_dimensions(
             let source = match dec.source {
                 DecorationSource::InlayHint => "inlay_hint",
                 DecorationSource::Diagnostic => "diagnostic",
+                DecorationSource::CodeLens => "code_lens",
+                DecorationSource::Fold => "fold",
             }
             .to_string();
             let placement = match dec.placement {
@@ -1063,7 +1140,9 @@ pub(crate) fn create_snapshot_with_dimensions(
         registers,
         marks,
         picker,
+        search_replace,
         hover_info: editor.hover_info().map(|s| s.to_string()),
+        completion: create_completion_info(editor),
         ai_chat: create_ai_chat_snapshot(editor),
         decorations,
         view: create_view_snapshot(editor, dimensions),
@@ -1244,6 +1323,23 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
                         end_line,
                         comment,
                     ),
+                    ovim_core::editor::CodeExplanationPageView::Diff {
+                        title,
+                        old_path,
+                        new_path,
+                        comment,
+                    } => (
+                        "diff".to_string(),
+                        Some(title),
+                        format!(
+                            "{} → {}",
+                            old_path.as_deref().unwrap_or("/dev/null"),
+                            new_path.as_deref().unwrap_or("/dev/null"),
+                        ),
+                        0,
+                        0,
+                        comment,
+                    ),
                 };
                 CodeExplanationSnapshot {
                     current: view.current,
@@ -1299,13 +1395,47 @@ fn create_snapshot_light(editor: &Editor, dimensions: Option<(u16, u16)>) -> Edi
         registers: HashMap::new(),
         marks: HashMap::new(),
         picker: None,
+        search_replace: None,
         hover_info: editor.hover_info().map(|s| s.to_string()),
+        completion: create_completion_info(editor),
         ai_chat: create_ai_chat_snapshot(editor),
         // Lightweight snapshot deliberately omits decorations to keep polling
         // cheap; callers that need them should hit the full `/v1/snapshot`.
         decorations: Vec::new(),
         view: create_view_snapshot(editor, dimensions),
     }
+}
+
+fn create_completion_info(editor: &Editor) -> Option<ovim::api::CompletionInfo> {
+    use ovim_core::editor::{
+        completion_documentation_markdown, completion_item_is_deprecated, completion_row_text,
+    };
+    let menu = editor.completion_menu();
+    if !menu.is_visible() {
+        return None;
+    }
+    Some(ovim::api::CompletionInfo {
+        selected: menu.selected_index(),
+        total: menu.len(),
+        documentation: menu
+            .selected_item()
+            .and_then(completion_documentation_markdown),
+        snippet_active: editor.snippet_active(),
+        items: menu
+            .iter()
+            .take(50)
+            .map(|item| {
+                let text = completion_row_text(item);
+                ovim::api::CompletionItemInfo {
+                    label: item.label.clone(),
+                    detail: Some(text.label_suffix).filter(|s| !s.is_empty()),
+                    description: Some(text.description).filter(|s| !s.is_empty()),
+                    kind: item.kind.map(|kind| format!("{kind:?}")),
+                    deprecated: completion_item_is_deprecated(item),
+                }
+            })
+            .collect(),
+    })
 }
 
 fn create_buffer_info(editor: &Editor) -> BufferInfo {
@@ -1327,5 +1457,46 @@ fn create_buffer_info(editor: &Editor) -> BufferInfo {
         content,
         line_count,
         file_path,
+    }
+}
+
+#[cfg(test)]
+mod completion_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_lists_the_open_completion_menu_in_display_order() {
+        let mut editor = Editor::with_content("obj.");
+        assert!(create_snapshot(&editor).completion.is_none());
+
+        let item = |label: &str, sort: &str| lsp_types::CompletionItem {
+            label: label.to_string(),
+            sort_text: Some(sort.to_string()),
+            kind: Some(lsp_types::CompletionItemKind::METHOD),
+            label_details: Some(lsp_types::CompletionItemLabelDetails {
+                detail: Some("()".to_string()),
+                description: Some("String".to_string()),
+            }),
+            tags: Some(vec![lsp_types::CompletionItemTag::DEPRECATED]),
+            ..Default::default()
+        };
+        editor.completion_menu_mut().show(
+            vec![item("second", "2"), item("first", "1")],
+            4,
+            String::new(),
+        );
+        let completion = create_snapshot(&editor).completion.expect("menu is open");
+        assert_eq!(completion.total, 2);
+        assert_eq!(completion.selected, 0);
+        assert!(!completion.snippet_active);
+        let first = &completion.items[0];
+        assert_eq!(first.label, "first");
+        assert_eq!(first.detail.as_deref(), Some("()"));
+        assert_eq!(first.description.as_deref(), Some("String"));
+        assert_eq!(first.kind.as_deref(), Some("Method"));
+        assert!(first.deprecated);
+
+        editor.hide_completion_menu();
+        assert!(create_snapshot(&editor).completion.is_none());
     }
 }

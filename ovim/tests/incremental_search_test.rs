@@ -5,33 +5,30 @@ use helpers::EditorTest;
 fn test_incremental_search() {
     let mut test = EditorTest::new("hello world\nfoo bar\nhello again\n");
 
-    // Start search
+    // nvim --clean: `/hel<CR>` from (0,0) lands on (2,0) -- the match under the
+    // cursor is skipped, and the preview of each typed character starts from the
+    // same place.
     test.keys("/");
 
-    // Type 'h' - should jump to first 'hello'
+    // Type 'h' - the next 'h' after the cursor is the one on line 2
     test.keys("h");
-    eprintln!("After /h: cursor {:?}", test.cursor());
-    assert_eq!(test.cursor(), (0, 0)); // First 'hello' at line 0, col 0
+    assert_eq!(test.cursor(), (2, 0));
 
-    // Type 'e' - should still match 'hello'
+    // Type 'e' - still the same match
     test.keys("e");
-    eprintln!("After /he: cursor {:?}", test.cursor());
-    assert_eq!(test.cursor(), (0, 0)); // Still first 'hello'
+    assert_eq!(test.cursor(), (2, 0));
 
-    // Type 'l' - should still match 'hello'
+    // Type 'l' - still the same match
     test.keys("l");
-    eprintln!("After /hel: cursor {:?}", test.cursor());
-    assert_eq!(test.cursor(), (0, 0)); // Still first 'hello'
+    assert_eq!(test.cursor(), (2, 0));
 
     // Press Enter to confirm
     test.keys("<Enter>");
-    eprintln!("After Enter: cursor {:?}", test.cursor());
-    assert_eq!(test.cursor(), (0, 0)); // Stays at match
+    assert_eq!(test.cursor(), (2, 0)); // Stays at match
 
-    // Press n to find next
+    // nvim --clean: n wraps around to the first 'hel'
     test.keys("n");
-    eprintln!("After n: cursor {:?}", test.cursor());
-    assert_eq!(test.cursor(), (2, 0)); // Next 'hello' on line 2
+    assert_eq!(test.cursor(), (0, 0));
 }
 
 #[test]

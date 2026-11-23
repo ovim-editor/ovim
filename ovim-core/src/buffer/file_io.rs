@@ -18,6 +18,15 @@ fn normalize_decoded_content(content: String) -> String {
     }
 }
 
+/// Decode before inspecting line endings: UTF-16 code units may contain CR/LF
+/// bytes that are not line breaks, and its real CRLF pairs have intervening NULs.
+fn decode_file_content(bytes: &[u8]) -> Result<(String, FileEncoding, LineEnding)> {
+    let (encoding, bom_offset) = FileEncoding::detect(bytes);
+    let content = encoding.decode(bytes, bom_offset)?;
+    let line_ending = LineEnding::detect(content.as_bytes());
+    Ok((normalize_decoded_content(content), encoding, line_ending))
+}
+
 /// Normalizes a path to an absolute, canonical form.
 ///
 /// CRITICAL: This function MUST be deterministic and stable across the file lifecycle.
@@ -78,34 +87,14 @@ impl Buffer {
             .await
             .context(format!("Failed to read file: {}", path_str))?;
 
-        // Detect encoding (checks BOM first, then uses chardetng)
-        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
-
-        // Detect line ending style (on decoded bytes, after BOM)
-        let line_ending = LineEnding::detect(&bytes[bom_offset..]);
-
-        // Decode file content using detected encoding
-        let content = encoding.decode(&bytes, bom_offset).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to decode file '{}' as {:?}: {}\n\
-                 This file may be a binary file or corrupted.",
-                path_str,
-                encoding,
-                e
+        let (content, encoding, line_ending) = decode_file_content(&bytes).with_context(|| {
+            format!(
+                "Failed to decode file '{}'. This file may be binary or corrupted",
+                path_str
             )
         })?;
 
-        // Note: File encoding is handled transparently - don't print to stderr
-        // This avoids interrupting user output
-        let _ = encoding; // Suppress unused variable warning if not used below
-
-        // Normalize all CR variants to LF for internal representation.
-        // The save path converts back for CRLF/CR files. Mixed files are
-        // saved as LF-only because their per-line style cannot be represented
-        // once normalized into the rope.
-        let content = normalize_decoded_content(content);
-
-        let mut buffer = Self {
+        let buffer = Self {
             id: super::next_buffer_id(),
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, GraphemeCol::ZERO),
@@ -119,6 +108,10 @@ impl Buffer {
             cached_highlights: None,
             forced_highlights: None,
             highlight_version: 0,
+            highlight_projection_generation: 0,
+            highlight_range_cache: std::sync::Mutex::new(
+                super::highlight_index::HighlightRangeCache::default(),
+            ),
             pending_rehighlight: false,
             fold_manager: FoldManager::new(),
             git_status: GitStatus::new(),
@@ -126,24 +119,25 @@ impl Buffer {
             change_manager: ChangeManager::new(),
             file_mtime,
             read_only,
+            modifiable: true,
+            refused_edit: false,
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
             injection_cache: None,
             recording: None,
             edit_log: crate::edit_log::EditLog::new(),
+            text_index: std::sync::Mutex::new(crate::text_index::TextIndexCache::default()),
+            line_changes: crate::text_index::LineChangeLog::default(),
             display_name: None,
             indent_options: None,
+            local_marks: Default::default(),
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
         // This makes file loading instant even for large files
-        // Syntax highlighting will be triggered later when the buffer is displayed
-
-        // Load git status eagerly so gutter signs appear on file open.
-        // This is fast (<1ms for typical files via git2) and runs inside
-        // block_in_place, so it won't block the async runtime.
-        buffer.refresh_git_status();
+        // Syntax highlighting will be triggered later when the buffer is displayed.
+        // Git signs arrive from a background refresh once the editor adopts it.
 
         Ok(buffer)
     }
@@ -168,13 +162,9 @@ impl Buffer {
         Ok(())
     }
 
-    /// Saves the buffer to a specific file path (async version)
-    /// Overwrites file in place (open, truncate, write, fsync) to preserve
-    /// permissions, ownership, ACLs, hard links, and extended attributes.
-    /// This is the same strategy Vim and VS Code use for user-edited files.
+    /// Saves the buffer to a specific file path (async version), making it
+    /// the buffer's file. See [`Self::write_contents_to`] for how.
     pub async fn save_as_async<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-
         let path_ref = path.as_ref();
         let path_str_input = path_ref.to_string_lossy();
 
@@ -196,45 +186,7 @@ impl Buffer {
 
         let path_ref = absolute_path.as_path();
         let path_str = path_ref.to_string_lossy().to_string();
-
-        // Get content and convert line endings if needed
-        let content = self.rope.to_string();
-        let content = match self.line_ending {
-            LineEnding::Lf | LineEnding::Mixed => content,
-            LineEnding::Crlf => {
-                // Convert LF to CRLF for Windows files.
-                content.replace('\n', "\r\n")
-            }
-            LineEnding::Cr => {
-                // Convert LF back to classic Mac line endings.
-                content.replace('\n', "\r")
-            }
-        };
-
-        // Encode content back to original encoding
-        let bytes = self.encoding.encode(&content).context(format!(
-            "Failed to encode file content as {:?}",
-            self.encoding
-        ))?;
-
-        // Overwrite in place: open existing file (or create new), truncate, write.
-        // Preserves inode → permissions, ownership, ACLs, hard links, xattrs survive.
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path_ref)
-            .await
-            .context(format!("Failed to open file for writing: {}", path_str))?;
-
-        file.write_all(&bytes)
-            .await
-            .context("Failed to write file content")?;
-
-        // Ensure data reaches disk
-        file.sync_all()
-            .await
-            .context("Failed to sync file to disk")?;
+        self.write_contents_to(path_ref).await?;
 
         // CRITICAL: Only update file_path if it changed (Save As scenario)
         // Preserves URI stability for LSP tracking
@@ -253,6 +205,111 @@ impl Buffer {
             .and_then(|m| m.modified().ok());
 
         Ok(())
+    }
+
+    /// The file bytes: line endings and encoding as loaded.
+    fn file_bytes(&self) -> Result<Vec<u8>> {
+        self.encode_for_file(self.rope.to_string())
+    }
+
+    /// `content` (lines ending in `\n`) with the line endings and encoding
+    /// the buffer was loaded with.
+    fn encode_for_file(&self, content: String) -> Result<Vec<u8>> {
+        let content = match self.line_ending {
+            LineEnding::Lf | LineEnding::Mixed => content,
+            LineEnding::Crlf => content.replace('\n', "\r\n"),
+            LineEnding::Cr => content.replace('\n', "\r"),
+        };
+        self.encoding.encode(&content).context(format!(
+            "Failed to encode file content as {:?}",
+            self.encoding
+        ))
+    }
+
+    /// Overwrite `path` in place (open, truncate, write, fsync), which keeps
+    /// permissions, ownership, ACLs, hard links and extended attributes —
+    /// the strategy Vim and VS Code use for user-edited files.
+    async fn write_contents_to(&self, path: &Path) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        let bytes = self.file_bytes()?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .await
+            .context(format!(
+                "Failed to open file for writing: {}",
+                path.display()
+            ))?;
+        file.write_all(&bytes)
+            .await
+            .context("Failed to write file content")?;
+        file.sync_all()
+            .await
+            .context("Failed to sync file to disk")?;
+        Ok(())
+    }
+
+    /// Write the text to another file without making it the buffer's file
+    /// (vim's `:w {file}` on a named buffer). The buffer stays modified.
+    pub fn write_copy<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = normalize_path(path.as_ref());
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.write_contents_to(&path))
+        })
+    }
+
+    /// Write lines `first..=last` (0-based) to a file, replacing its content
+    /// or appending to it, without making it the buffer's file (vim's
+    /// `:{range}w {file}` and `:w >> {file}`). Every line ends in a line
+    /// break. Returns the number of characters written.
+    pub fn write_lines<P: AsRef<Path>>(
+        &self,
+        path: P,
+        first: usize,
+        last: usize,
+        append: bool,
+    ) -> Result<usize> {
+        use std::io::Write;
+
+        let path = normalize_path(path.as_ref());
+        let mut content = String::new();
+        for index in first..=last {
+            if let Some(line) = self.line_text(index) {
+                content.push_str(&line);
+                content.push('\n');
+            }
+        }
+        let chars = content.chars().count();
+        let bytes = self.encode_for_file(content)?;
+        let mut options = std::fs::OpenOptions::new();
+        if append {
+            options.append(true).create(true);
+        } else {
+            options.write(true).create(true).truncate(true);
+        }
+        let mut file = options.open(&path).context(format!(
+            "Failed to open file for writing: {}",
+            path.display()
+        ))?;
+        // The encoder includes the file's BOM. It belongs only at byte zero,
+        // never between an existing document and the appended lines.
+        let bytes = if append && file.metadata()?.len() > 0 {
+            let bom_len = match self.encoding {
+                FileEncoding::Utf8Bom => 3,
+                FileEncoding::Utf16Le | FileEncoding::Utf16Be => 2,
+                _ => 0,
+            };
+            &bytes[bom_len..]
+        } else {
+            &bytes
+        };
+        file.write_all(bytes)
+            .context("Failed to write file content")?;
+        file.sync_all().context("Failed to sync file to disk")?;
+        Ok(chars)
     }
 
     /// Saves the buffer to its file path (blocking wrapper)
@@ -399,8 +456,11 @@ impl Buffer {
 
         let path = Path::new(file_path);
         if !path.exists() {
-            // File was deleted externally
-            return Ok(true);
+            // Deleted externally - but only a buffer that was loaded from or
+            // saved to that path can lose it. Scratch buffers (`[LspInfo]`) and
+            // brand-new files never had an mtime and were never on disk
+            // (OV-00457: the poll reported "Failed to read file: .../[LspInfo]").
+            return Ok(self.file_mtime.is_some());
         }
 
         let current_mtime = std::fs::metadata(path)
@@ -410,7 +470,9 @@ impl Buffer {
 
         match self.file_mtime {
             Some(stored_mtime) => Ok(current_mtime != stored_mtime),
-            None => Ok(false), // No stored mtime means this is a new buffer
+            // A file appeared after this buffer was given its name. Treat it
+            // as an external change so an ordinary save cannot overwrite it.
+            None => Ok(true),
         }
     }
 
@@ -428,28 +490,18 @@ impl Buffer {
             .await
             .context(format!("Failed to read file: {}", file_path))?;
 
-        // Update mtime
-        self.file_mtime = tokio::fs::metadata(&file_path)
+        let file_mtime = tokio::fs::metadata(&file_path)
             .await
             .ok()
             .and_then(|m| m.modified().ok());
+        let (content, encoding, line_ending) = decode_file_content(&bytes)
+            .with_context(|| format!("Failed to decode file '{}'", file_path))?;
 
-        // Re-detect encoding and line ending
-        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
+        // Commit metadata only after the new text is valid. A failed reload
+        // must preserve the old encoding and remain detectable on the next poll.
+        self.file_mtime = file_mtime;
         self.encoding = encoding;
-        self.line_ending = LineEnding::detect(&bytes[bom_offset..]);
-
-        // Decode using detected encoding (not hardcoded UTF-8)
-        let content = self.encoding.decode(&bytes, bom_offset).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to decode file '{}' as {:?}: {}",
-                file_path,
-                self.encoding,
-                e
-            )
-        })?;
-
-        let content = normalize_decoded_content(content);
+        self.line_ending = line_ending;
 
         // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
@@ -481,27 +533,15 @@ impl Buffer {
         let bytes =
             std::fs::read(&file_path).context(format!("Failed to read file: {}", file_path))?;
 
-        // Update mtime
-        self.file_mtime = std::fs::metadata(&file_path)
+        let file_mtime = std::fs::metadata(&file_path)
             .ok()
             .and_then(|m| m.modified().ok());
+        let (content, encoding, line_ending) = decode_file_content(&bytes)
+            .with_context(|| format!("Failed to decode file '{}'", file_path))?;
 
-        // Re-detect encoding and line ending
-        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
+        self.file_mtime = file_mtime;
         self.encoding = encoding;
-        self.line_ending = LineEnding::detect(&bytes[bom_offset..]);
-
-        // Decode using detected encoding (not hardcoded UTF-8)
-        let content = self.encoding.decode(&bytes, bom_offset).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to decode file '{}' as {:?}: {}",
-                file_path,
-                self.encoding,
-                e
-            )
-        })?;
-
-        let content = normalize_decoded_content(content);
+        self.line_ending = line_ending;
 
         // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
@@ -514,5 +554,157 @@ impl Buffer {
         self.validate_cursor_position();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod external_change_tests {
+    use super::*;
+
+    /// OV-00457: a scratch buffer (`[LspInfo]`) has a path that never exists
+    /// on disk; that is not an "external deletion".
+    #[test]
+    fn scratch_buffer_is_not_reported_as_externally_deleted() {
+        let mut buffer = Buffer::new_from_str("info");
+        buffer.set_file_path("/nonexistent-dir-ovim/[LspInfo]".to_string());
+        assert!(!buffer.check_external_modification().unwrap());
+    }
+
+    #[test]
+    fn a_new_named_buffer_detects_a_file_created_before_its_first_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let mut buffer = Buffer::new_from_str("local\n");
+        buffer.set_file_path(path.to_string_lossy().into_owned());
+
+        assert!(!buffer.check_external_modification().unwrap());
+        std::fs::write(&path, "external\n").unwrap();
+        assert!(buffer.check_external_modification().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_loaded_file_that_vanishes_is_reported_as_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "x\n").unwrap();
+        let buffer = Buffer::load_file(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(buffer.check_external_modification().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod encoding_roundtrip_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn utf16_load_and_save_preserve_real_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("encoded.txt");
+        for encoding in [FileEncoding::Utf16Le, FileEncoding::Utf16Be] {
+            for (text, ending) in [
+                ("one\r\ntwo\r\n", LineEnding::Crlf),
+                ("one\rtwo\r", LineEnding::Cr),
+                ("one\ntwo\n", LineEnding::Lf),
+                // These code units contain CR/LF bytes but are not line breaks.
+                ("Ċč", LineEnding::Lf),
+            ] {
+                let bytes = encoding.encode(text).unwrap();
+                std::fs::write(&path, &bytes).unwrap();
+                let mut buffer = Buffer::load_file_async(&path).await.unwrap();
+                assert_eq!(buffer.encoding(), encoding);
+                assert_eq!(buffer.line_ending(), ending);
+                buffer.save_async().await.unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn both_reload_paths_decode_line_endings_before_normalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reload.txt");
+        for encoding in [FileEncoding::Utf16Le, FileEncoding::Utf16Be] {
+            for asynchronous in [false, true] {
+                std::fs::write(&path, "original\n").unwrap();
+                let mut buffer = Buffer::load_file_async(&path).await.unwrap();
+                let bytes = encoding.encode("café\r\n🦀\r\n").unwrap();
+                std::fs::write(&path, &bytes).unwrap();
+                buffer.set_file_mtime(Some(std::time::UNIX_EPOCH));
+                if asynchronous {
+                    assert!(buffer.reload_if_changed().await.unwrap());
+                } else {
+                    buffer.reload_from_disk().unwrap();
+                }
+                assert_eq!(buffer.rope().to_string(), "café\n🦀\n");
+                assert_eq!(buffer.line_ending(), LineEnding::Crlf);
+                assert_eq!(buffer.encoding(), encoding);
+                buffer.save_async().await.unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn failed_reloads_preserve_the_entire_old_buffer_and_remain_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.txt");
+        for asynchronous in [false, true] {
+            std::fs::write(&path, "original\r\n").unwrap();
+            let mut buffer = Buffer::load_file_async(&path).await.unwrap();
+            buffer.insert_text_at(0, crate::unicode::CharCol::ZERO, "unsaved ");
+            buffer.set_file_mtime(Some(std::time::UNIX_EPOCH));
+            let version = buffer.version();
+            // UTF-16LE BOM followed by an unpaired high surrogate.
+            std::fs::write(&path, [0xff, 0xfe, 0x00, 0xd8]).unwrap();
+            if asynchronous {
+                assert!(buffer.reload_if_changed().await.is_err());
+            } else {
+                assert!(buffer.reload_from_disk().is_err());
+            }
+            assert_eq!(buffer.rope().to_string(), "unsaved original\n");
+            assert_eq!(buffer.encoding(), FileEncoding::Utf8);
+            assert_eq!(buffer.line_ending(), LineEnding::Crlf);
+            assert_eq!(buffer.file_mtime(), Some(std::time::UNIX_EPOCH));
+            assert_eq!(buffer.version(), version);
+            assert!(buffer.is_modified());
+            assert!(buffer.check_external_modification().unwrap());
+            std::fs::write(&path, "fixed\n").unwrap();
+            assert!(buffer.reload_if_changed().await.unwrap());
+            assert_eq!(buffer.rope().to_string(), "fixed\n");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn appending_encoded_lines_writes_a_bom_only_at_the_start_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        for encoding in [
+            FileEncoding::Utf8Bom,
+            FileEncoding::Utf16Le,
+            FileEncoding::Utf16Be,
+        ] {
+            std::fs::write(&source, encoding.encode("next\r\n").unwrap()).unwrap();
+            let buffer = Buffer::load_file_async(&source).await.unwrap();
+            for existing in ["", "first\r\n"] {
+                std::fs::write(&target, encoding.encode(existing).unwrap()).unwrap();
+                buffer.write_lines(&target, 0, 0, true).unwrap();
+                buffer.write_lines(&target, 0, 0, true).unwrap();
+                assert_eq!(
+                    std::fs::read(&target).unwrap(),
+                    encoding
+                        .encode(&format!("{existing}next\r\nnext\r\n"))
+                        .unwrap()
+                );
+            }
+            // An empty destination also needs its initial BOM.
+            std::fs::write(&target, []).unwrap();
+            buffer.write_lines(&target, 0, 0, true).unwrap();
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                encoding.encode("next\r\n").unwrap()
+            );
+        }
     }
 }

@@ -98,14 +98,16 @@ fn find_highlight_at_byte(
     None
 }
 
-/// Calculates the picker overlay area (centered, takes up 80% of screen)
+/// Calculates the picker overlay area (80% width, 60% height, centered).
 pub fn get_picker_area(full_area: Rect) -> Rect {
-    let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
-    let height = ((full_area.height * 60) / 100)
+    let width = ((u32::from(full_area.width) * 80 / 100) as u16)
+        .max(60)
+        .min(full_area.width);
+    let height = ((u32::from(full_area.height) * 60 / 100) as u16)
         .max(15)
         .min(full_area.height);
-    let x = full_area.width.saturating_sub(width) / 2;
-    let y = full_area.height.saturating_sub(height) / 2;
+    let x = full_area.x + full_area.width.saturating_sub(width) / 2;
+    let y = full_area.y + full_area.height.saturating_sub(height) / 2;
 
     Rect::new(x, y, width, height)
 }
@@ -136,6 +138,7 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     frame.render_widget(ratatui::widgets::Clear, picker_area);
     frame.render_widget(Fill::bg(picker_colors::BG), picker_area);
 
+    let custom_title = picker.title().map(|title| format!(" {title} "));
     let mode_name = match picker.mode() {
         crate::editor::PickerMode::FindFiles => " \u{f0224} Find Files ",
         crate::editor::PickerMode::LiveGrep => " \u{f0dae} Live Grep ",
@@ -151,6 +154,7 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
         format!(" {}/{} ", filtered, total)
     };
 
+    let mode_name = custom_title.as_deref().unwrap_or(mode_name);
     let block = Block::default()
         .title_top(Line::from(Span::styled(
             mode_name,
@@ -561,6 +565,103 @@ fn disambiguate_filenames(paths: &[&str]) -> Vec<String> {
     }
 }
 
+/// One workspace-symbol row: `<kind glyph> Name  kind · container      file:line`.
+/// The name keeps priority; the file is right-aligned and shortened from its
+/// start so the file name stays readable.
+fn workspace_symbol_line(
+    picker: &crate::editor::Picker,
+    result: &crate::editor::PickerResult,
+    is_selected: bool,
+    width: usize,
+) -> Line<'static> {
+    let columns = crate::editor::project_nav::symbol_row_columns(result, picker.base_dir());
+    let (text_color, bg_color) = if is_selected {
+        (picker_colors::TEXT_BRIGHT, picker_colors::SELECTED)
+    } else {
+        (picker_colors::TEXT, picker_colors::BG)
+    };
+    let bold = if is_selected {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
+    let glyph_style = Style::default()
+        .fg(if is_selected {
+            picker_colors::GREEN
+        } else {
+            picker_colors::FILENAME
+        })
+        .bg(bg_color)
+        .add_modifier(bold);
+    let muted = Style::default().fg(picker_colors::TEXT_MUTED).bg(bg_color);
+
+    let lead = format!("{} ", columns.glyph);
+    let marker = if is_selected { "\u{25b8} " } else { "  " };
+    let lead_width = UnicodeWidthStr::width(lead.as_str()) + UnicodeWidthStr::width(marker);
+
+    // File column: at most 45% of the row, kept from its end.
+    let file_budget = (width.saturating_sub(lead_width) * 9 / 20).max(12);
+    let file = truncate_start(&columns.file, file_budget);
+    let file_width = UnicodeWidthStr::width(file.as_str());
+    let left_budget = width.saturating_sub(lead_width + file_width + 2);
+
+    let name = truncate_to_width(&result.display, left_budget);
+    let name_width = UnicodeWidthStr::width(name.as_str());
+    let detail_text = match &columns.container {
+        Some(container) => format!("  {} \u{b7} {}", columns.kind, container),
+        None => format!("  {}", columns.kind),
+    };
+    let detail = truncate_to_width(&detail_text, left_budget.saturating_sub(name_width));
+    let detail_width = UnicodeWidthStr::width(detail.as_str());
+
+    let positions = rematch_positions(picker.query(), &name);
+    let mut spans = vec![
+        Span::styled(lead, glyph_style),
+        Span::styled(
+            marker.to_string(),
+            Style::default()
+                .fg(text_color)
+                .bg(bg_color)
+                .add_modifier(bold),
+        ),
+    ];
+    spans.extend(build_highlighted_spans(
+        &name,
+        &positions,
+        text_color,
+        bg_color,
+        is_selected,
+    ));
+    spans.push(Span::styled(detail, muted));
+    let used = lead_width + name_width + detail_width + file_width;
+    let padding = width.saturating_sub(used);
+    spans.push(Span::styled(
+        " ".repeat(padding),
+        Style::default().bg(bg_color),
+    ));
+    spans.push(Span::styled(file, muted));
+    Line::from(spans)
+}
+
+/// Keeps the end of `text` (`…rest/of/path.java:12`).
+fn truncate_start(text: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 1; // the ellipsis
+    for character in text.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + w > max_width {
+            break;
+        }
+        used += w;
+        kept.push(character);
+    }
+    kept.reverse();
+    format!("…{}", kept.into_iter().collect::<String>())
+}
+
 /// Renders the picker results list
 /// Returns the scroll offset used for rendering (needed for mouse hit-testing).
 fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) -> usize {
@@ -585,6 +686,13 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     };
 
     let is_live_grep = matches!(picker.mode(), crate::editor::PickerMode::LiveGrep);
+    let is_symbol_search = picker.is_symbol_search();
+    // Only real paths are shortened from the middle; everything else keeps its
+    // start (a symbol name, a command) and loses its tail.
+    let display_is_path = matches!(
+        picker.mode(),
+        crate::editor::PickerMode::FindFiles | crate::editor::PickerMode::LiveGrep
+    );
 
     // Collect visible results first so we can disambiguate filenames across them
     let visible_entries: Vec<(usize, &crate::editor::PickerResult)> = (scroll_offset
@@ -609,8 +717,16 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
         .map(|(vis_idx, &(actual_idx, result))| {
             let is_selected = actual_idx == selected_idx;
 
+            if is_symbol_search {
+                return workspace_symbol_line(picker, result, is_selected, result_width);
+            }
+
             let max_display_len = result_width.saturating_sub(5);
-            let display = crate::editor::Picker::truncate_path(&result.display, max_display_len);
+            let display = if display_is_path {
+                crate::editor::Picker::truncate_path(&result.display, max_display_len)
+            } else {
+                truncate_to_width(&result.display, max_display_len)
+            };
 
             let icon = if result.line > 0 {
                 "\u{f002}"
@@ -813,12 +929,16 @@ fn render_picker_preview(
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
+    if inner_area.is_empty() {
+        return;
+    }
+
     frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
     // Try to get preview with fallback - show stale preview while new one loads
     // This eliminates the jarring "Loading..." flash when navigating quickly
     let file_path = &result.location;
-    let (preview, _is_stale) = match editor.get_preview_with_fallback(file_path) {
+    let (preview, is_stale) = match editor.get_preview_with_fallback(file_path) {
         Some((p, is_stale)) => (p, is_stale),
         None => {
             // No preview available at all (first time opening picker)
@@ -850,17 +970,19 @@ fn render_picker_preview(
     let max_lines = inner_area.height as usize;
     let total_lines = preview.content.lines().count();
 
-    // Calculate which lines to show
-    let (start_line, end_line) = if result.line > 0 && result.line < total_lines {
-        // For LiveGrep results, center around the matched line
-        let context = max_lines / 2;
-        let start = result.line.saturating_sub(context);
-        let end = (result.line + context).min(total_lines);
-        (start, end)
-    } else {
-        // For file finder, show from the top
-        (0, max_lines.min(total_lines))
-    };
+    // A file result has no target line; grep and LSP locations are zero-based,
+    // so their first line must be highlighted too. A stale file cannot supply
+    // context for the newly selected location.
+    let target_line = (!is_stale
+        && result.line < total_lines
+        && editor.picker().is_some_and(|picker| {
+            matches!(
+                picker.mode(),
+                crate::editor::PickerMode::LiveGrep | crate::editor::PickerMode::LspLocations
+            )
+        }))
+    .then_some(result.line);
+    let visible_lines = preview_line_range(total_lines, max_lines, target_line);
 
     // Skip expensive syntax highlighting during rapid scrolling for responsive feel.
     // Plain text rendering is ~10x faster than syntax-highlighted rendering.
@@ -871,26 +993,35 @@ fn render_picker_preview(
         match crate::syntax::SyntaxHighlighter::new(preview.language.unwrap()) {
             Ok(mut highlighter) => {
                 render_preview_with_syntax(
-                    frame,
                     &mut highlighter,
                     preview,
-                    result,
+                    target_line,
                     &theme,
                     inner_area,
-                    start_line,
-                    end_line,
-                    total_lines,
+                    visible_lines.clone(),
                     &mut lines_to_render,
                 );
             }
             Err(_) => {
                 // Fall back to plain text
-                render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+                render_plain_preview(
+                    &preview.content,
+                    target_line,
+                    inner_area,
+                    visible_lines.clone(),
+                    &mut lines_to_render,
+                );
             }
         }
     } else {
         // Plain text preview (fast path for rapid scrolling or unsupported languages)
-        render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+        render_plain_preview(
+            &preview.content,
+            target_line,
+            inner_area,
+            visible_lines.clone(),
+            &mut lines_to_render,
+        );
     }
 
     let paragraph =
@@ -898,18 +1029,25 @@ fn render_picker_preview(
     frame.render_widget(paragraph, inner_area);
 }
 
+/// Fill the viewport while keeping the target visible, shifting the window at
+/// either end of the file instead of dropping the missing half of the context.
+fn preview_line_range(total_lines: usize, height: usize, target: Option<usize>) -> Range<usize> {
+    let count = height.min(total_lines);
+    let start = target
+        .filter(|&line| line < total_lines)
+        .map(|line| line.saturating_sub(count / 2).min(total_lines - count))
+        .unwrap_or(0);
+    start..start + count
+}
+
 /// Renders preview with syntax highlighting
-#[allow(clippy::too_many_arguments)]
 fn render_preview_with_syntax(
-    _frame: &mut Frame,
     highlighter: &mut crate::syntax::SyntaxHighlighter,
     preview: &crate::editor::PreviewCache,
-    result: &crate::editor::PickerResult,
+    target_line: Option<usize>,
     theme: &crate::syntax::Theme,
     area: Rect,
-    start_line: usize,
-    end_line: usize,
-    total_lines: usize,
+    visible_lines: Range<usize>,
     lines_to_render: &mut Vec<Line<'static>>,
 ) {
     // Parse only once if not already parsed
@@ -918,7 +1056,7 @@ fn render_preview_with_syntax(
     // Check if we need to parse (if any line in our range is not cached)
     {
         let cache = preview.highlighted_lines.borrow();
-        for line_idx in start_line..end_line {
+        for line_idx in visible_lines.clone() {
             if !cache.contains_key(&line_idx) {
                 need_parsing = true;
                 break;
@@ -932,7 +1070,7 @@ fn render_preview_with_syntax(
 
         // Cache highlights for the visible range
         let mut cache = preview.highlighted_lines.borrow_mut();
-        for line_idx in start_line..end_line {
+        for line_idx in visible_lines.clone() {
             cache
                 .entry(line_idx)
                 .or_insert_with(|| highlighter.highlights_for_line(line_idx, &preview.content));
@@ -940,10 +1078,10 @@ fn render_preview_with_syntax(
     }
 
     for (line_idx, line_text) in preview.content.lines().enumerate() {
-        if line_idx < start_line {
+        if line_idx < visible_lines.start {
             continue;
         }
-        if line_idx >= end_line {
+        if line_idx >= visible_lines.end {
             break;
         }
 
@@ -966,8 +1104,7 @@ fn render_preview_with_syntax(
             .cloned()
             .unwrap_or_default();
         let highlights = remap_highlights(&original_highlights, &tab_mapping);
-        let is_target_line =
-            result.line > 0 && result.line < total_lines && line_idx == result.line;
+        let is_target_line = target_line == Some(line_idx);
 
         // Build the line with syntax highlighting
         let mut spans = Vec::new();
@@ -1037,28 +1174,16 @@ fn render_preview_with_syntax(
 /// Renders plain text preview without syntax highlighting
 fn render_plain_preview(
     content: &str,
-    result: &crate::editor::PickerResult,
+    target_line: Option<usize>,
     area: Rect,
+    visible_lines: Range<usize>,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let max_lines = area.height as usize;
-    let total_lines = content.lines().count();
-
-    // Calculate which lines to show
-    let (start_line, end_line) = if result.line > 0 && result.line < total_lines {
-        let context = max_lines / 2;
-        let start = result.line.saturating_sub(context);
-        let end = (result.line + context).min(total_lines);
-        (start, end)
-    } else {
-        (0, max_lines.min(total_lines))
-    };
-
     for (line_idx, line_text) in content.lines().enumerate() {
-        if line_idx < start_line {
+        if line_idx < visible_lines.start {
             continue;
         }
-        if line_idx >= end_line {
+        if line_idx >= visible_lines.end {
             break;
         }
 
@@ -1069,8 +1194,7 @@ fn render_plain_preview(
         let content_width = area.width.saturating_sub(7) as usize;
         let line_text = truncate_to_width(&line_text, content_width);
 
-        let is_target_line =
-            result.line > 0 && result.line < total_lines && line_idx == result.line;
+        let is_target_line = target_line == Some(line_idx);
 
         let line_num = format!("{:>4} \u{2502} ", line_idx + 1);
         let line_num_style = if is_target_line {
@@ -1105,6 +1229,9 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
 
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
+    if inner_area.is_empty() {
+        return;
+    }
 
     frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
@@ -1126,4 +1253,214 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
         height: 1,
     };
     frame.render_widget(paragraph, centered_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn preview_window_fills_available_rows_and_keeps_target_visible() {
+        for total in 0usize..40 {
+            for height in 0..45 {
+                for target in [
+                    None,
+                    Some(0),
+                    Some(1),
+                    Some(total / 2),
+                    Some(total.saturating_sub(1)),
+                    Some(total),
+                    Some(usize::MAX),
+                ] {
+                    let range = preview_line_range(total, height, target);
+                    assert_eq!(range.len(), height.min(total));
+                    assert!(range.end <= total);
+                    if let Some(target) = target.filter(|&line| line < total && height > 0) {
+                        assert!(range.contains(&target), "{range:?}, target {target}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_previews_fill_rows_at_file_boundaries_with_and_without_syntax() {
+        for language in [None, Some(crate::syntax::Language::Rust)] {
+            for height in [1, 2, 7, 8, 25] {
+                for target in [0, 1, 10, 19] {
+                    let mut editor = Editor::default();
+                    editor.set_picker(crate::editor::Picker::new_lsp_locations(
+                        std::path::PathBuf::from("/tmp"),
+                        Vec::new(),
+                    ));
+                    let content = (0..20)
+                        .map(|line| format!("const VALUE_{line}: u32 = {line};\n"))
+                        .collect::<String>();
+                    editor.picker_state.preview_cache.insert(
+                        "preview.rs".into(),
+                        crate::editor::PreviewCache {
+                            content,
+                            highlighted_lines: Default::default(),
+                            language,
+                        },
+                    );
+                    let result = row("preview", "", "preview.rs", target);
+                    let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            render_picker_preview(frame, &mut editor, &result, frame.area())
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let expected = preview_line_range(20, height as usize, Some(target));
+                    for (y, line) in expected.enumerate() {
+                        let text = (0..80)
+                            .map(|x| buffer[(x, y as u16)].symbol())
+                            .collect::<String>();
+                        assert!(
+                            text.contains(&format!("VALUE_{line}:")),
+                            "height={height}, target={target}, row={y}: {text}"
+                        );
+                        assert_eq!(
+                            buffer[(4, y as u16)].fg == picker_colors::GREEN,
+                            line == target
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn file_and_stale_previews_do_not_highlight_a_location() {
+        for stale in [false, true] {
+            let mut editor = Editor::default();
+            let root = std::path::PathBuf::from("/tmp");
+            editor.set_picker(if stale {
+                crate::editor::Picker::new_lsp_locations(root, Vec::new())
+            } else {
+                crate::editor::Picker::new_file_finder(root.clone(), root)
+            });
+            editor.picker_state.preview_cache.insert(
+                "cached.txt".into(),
+                crate::editor::PreviewCache {
+                    content: "first\nsecond\nthird\n".into(),
+                    highlighted_lines: Default::default(),
+                    language: None,
+                },
+            );
+            editor.set_last_shown_preview("cached.txt");
+            let result = row(
+                "preview",
+                "",
+                if stale { "loading.txt" } else { "cached.txt" },
+                1,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+            terminal
+                .draw(|frame| render_picker_preview(frame, &mut editor, &result, frame.area()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..40).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+            assert!(text.contains("first"), "{text}");
+            assert_ne!(buffer[(4, 0)].fg, picker_colors::GREEN);
+        }
+    }
+
+    #[test]
+    fn picker_area_stays_inside_offset_and_large_viewports() {
+        for area in [
+            Rect::new(12, 8, 160, 50),
+            Rect::new(3, 4, 20, 8),
+            Rect::new(0, 0, 2000, 1000),
+        ] {
+            let picker = get_picker_area(area);
+            assert_eq!(picker.intersection(area), picker);
+            assert_eq!(picker.x - area.x, (area.width - picker.width) / 2);
+            assert_eq!(picker.y - area.y, (area.height - picker.height) / 2);
+        }
+    }
+
+    fn row(name: &str, content: &str, path: &str, line: usize) -> crate::editor::PickerResult {
+        crate::editor::PickerResult {
+            display: name.to_string(),
+            location: path.to_string(),
+            line,
+            col: 0,
+            match_positions: Vec::new(),
+            content: Some(content.to_string()),
+        }
+    }
+
+    fn screen(picker: &crate::editor::Picker, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_picker_results(frame, picker, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// OV-00452: rows were only `.../File.java:16:14` because the whole
+    /// display string was path-truncated from the left, cutting the symbol
+    /// name off. Every row must show name, kind, container and file.
+    #[test]
+    fn workspace_symbol_rows_show_name_kind_container_and_file() {
+        let root = std::path::PathBuf::from("/work/proj");
+        let mut picker = crate::editor::Picker::new_workspace_symbols(root);
+        picker.set_results(vec![
+            row(
+                "CustomerService",
+                "class · com.paystream.service",
+                "/work/proj/src/main/java/com/paystream/service/CustomerService.java",
+                18,
+            ),
+            row(
+                "createCustomer",
+                "method · CustomerService",
+                "/work/proj/src/main/java/com/paystream/service/CustomerService.java",
+                22,
+            ),
+        ]);
+        let lines = screen(&picker, 100, 4);
+        assert!(lines[0].contains("CustomerService"), "{}", lines[0]);
+        assert!(
+            lines[0].contains("class · com.paystream.service"),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].contains("CustomerService.java:19"), "{}", lines[0]);
+        assert!(lines[1].contains("createCustomer"), "{}", lines[1]);
+        assert!(
+            lines[1].contains("method · CustomerService"),
+            "{}",
+            lines[1]
+        );
+        assert!(lines[1].contains("CustomerService.java:23"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn narrow_rows_keep_the_name_and_the_file_tail() {
+        let root = std::path::PathBuf::from("/work/proj");
+        let mut picker = crate::editor::Picker::new_workspace_symbols(root);
+        picker.set_results(vec![row(
+            "OrderRepository",
+            "interface · com.example.a.very.long.package.name",
+            "/work/proj/src/main/java/com/example/a/very/long/package/name/OrderRepository.java",
+            7,
+        )]);
+        let line = screen(&picker, 60, 2).remove(0);
+        assert!(line.contains("OrderRepository"), "{line}");
+        assert!(line.contains("OrderRepository.java:8"), "{line}");
+        assert!(line.contains('…'), "the long path is shortened: {line}");
+    }
 }

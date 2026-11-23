@@ -1,8 +1,8 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
 use super::{
-    CompletionMenu, CursorPos, Editor, FileTree, InsertEntryMode, LocationList, Mode,
-    PathCompletionState, QuickfixEntry, QuickfixList,
+    CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry,
+    QuickfixList,
 };
 use crate::unicode::{CharCol, GraphemeCol};
 
@@ -40,199 +40,6 @@ impl Editor {
     /// Selects the previous completion item
     pub fn completion_previous(&mut self) {
         self.completion_menu.select_previous();
-    }
-
-    /// Accepts the currently selected completion from the menu
-    pub fn accept_completion(&mut self) {
-        if let Some(item) = self.completion_menu.selected_item().cloned() {
-            self.accept_completion_item(&item);
-        }
-        self.hide_completion_menu();
-    }
-
-    /// Accepts a completion by index from available_completions (used by picker)
-    pub fn accept_completion_at(&mut self, index: usize) {
-        if let Some(item) = self.lsp.state.available_completions.get(index).cloned() {
-            self.accept_completion_item(&item);
-        }
-        self.lsp.state.available_completions.clear();
-        self.hide_completion_menu();
-    }
-
-    /// Core completion application: uses textEdit range when available,
-    /// falls back to trigger_col..cursor deletion.
-    fn accept_completion_item(&mut self, item: &lsp_types::CompletionItem) {
-        use crate::unicode::CharCol;
-
-        // The item's textEdit range indexes the buffer snapshot the server
-        // responded to. If the buffer has been edited since (user kept
-        // typing while the menu was open — the menu only re-filters locally
-        // during the LSP round trip), applying that range verbatim splices
-        // at shifted offsets: deleted text survives, or the edit eats
-        // neighboring characters. Fall back to trigger_col..cursor
-        // replacement in that case; trigger_col tracks the live buffer
-        // (OV-00327).
-        let ranges_are_current = self
-            .completion_menu
-            .items_buffer_version()
-            .is_some_and(|v| v == self.buffer().version());
-
-        // Extract the main edit: prefer textEdit (with proper range) over
-        // insertText/label (which only knows about the trigger column).
-        let (
-            replace_start_line,
-            replace_start_col,
-            replace_end_line,
-            replace_end_col,
-            text_to_insert,
-        ): (usize, CharCol, usize, CharCol, String) = if let Some(text_edit) =
-            item.text_edit.as_ref().filter(|_| ranges_are_current)
-        {
-            let (range, new_text) = match text_edit {
-                lsp_types::CompletionTextEdit::Edit(edit) => (edit.range, edit.new_text.clone()),
-                lsp_types::CompletionTextEdit::InsertAndReplace(ir) => {
-                    // On accept/confirm, use the replace range (broader)
-                    (ir.replace, ir.new_text.clone())
-                }
-            };
-            let start_line = range.start.line as usize;
-            let start_col = self.utf16_to_col(start_line, range.start.character);
-            let end_line = range.end.line as usize;
-            let end_col = self.utf16_to_col(end_line, range.end.character);
-            (start_line, start_col, end_line, end_col, new_text)
-        } else {
-            // Fallback: delete trigger..cursor and insert insertText/label
-            let cursor_line = self.buffer().cursor().line();
-            let cursor_col = self.buffer().cursor_char_col();
-            // trigger_col is stored as bare usize in CompletionMenu (char col).
-            let trigger_col = CharCol(self.completion_menu.trigger_col());
-            let text = if let Some(ref insert_text) = item.insert_text {
-                insert_text.clone()
-            } else {
-                item.label.clone()
-            };
-            (cursor_line, trigger_col, cursor_line, cursor_col, text)
-        };
-
-        // Normalize CR variants in the LSP-supplied insertion text so the
-        // rope stays LF-only and the cursor-positioning logic below (which
-        // splits on `\n`) sees the canonical form (OV-00251).
-        let text_to_insert = if text_to_insert.contains('\r') {
-            crate::buffer::normalize_for_buffer(&text_to_insert).into_owned()
-        } else {
-            text_to_insert
-        };
-
-        // Collect additional text edits (e.g., auto-imports) before mutating.
-        // Skipped when stale: their ranges target the same outdated snapshot
-        // as the main textEdit (OV-00327).
-        let additional_edits: Vec<lsp_types::TextEdit> = if ranges_are_current {
-            item.additional_text_edits.clone().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col().0;
-        let cursor_before = CursorPos::new(cursor_line, GraphemeCol(cursor_col));
-
-        // Break the insert-mode undo here, Vim-style: finalize whatever the
-        // user typed before accepting completion as its own `Recorded` entry,
-        // then restart the session after completion edits land. Pause/resume
-        // would retain pre-completion edits whose absolute char offsets no
-        // longer match the rope once the completion text is inserted, and
-        // concatenating them with post-completion edits in a single Recorded
-        // corrupts the buffer on undo (and again on redo).
-        let restart_entry_mode: Option<InsertEntryMode> = if self.buffer().is_recording() {
-            let entry_mode = self
-                .buffer()
-                .change_manager()
-                .current_builder
-                .as_ref()
-                .map(|b| b.entry_mode().clone());
-            self.finalize_change_building();
-            entry_mode
-        } else {
-            None
-        };
-
-        let ((), edits) = self.buffer_mut().record(|buf| {
-            // Apply main completion edit
-            if replace_start_line != replace_end_line || replace_start_col != replace_end_col {
-                buf.delete_range(
-                    replace_start_line,
-                    replace_start_col,
-                    replace_end_line,
-                    replace_end_col,
-                );
-            }
-            if !text_to_insert.is_empty() {
-                buf.insert_text_at(replace_start_line, replace_start_col, &text_to_insert);
-            }
-
-            // Position cursor at the end of inserted text
-            let insert_lines: Vec<&str> = text_to_insert.split('\n').collect();
-            let (end_line, end_col): (usize, CharCol) = if insert_lines.len() > 1 {
-                (
-                    replace_start_line + insert_lines.len() - 1,
-                    CharCol(insert_lines.last().map_or(0, |l| l.chars().count())),
-                )
-            } else {
-                (
-                    replace_start_line,
-                    replace_start_col + text_to_insert.chars().count(),
-                )
-            };
-            buf.set_cursor_char_col(end_line, end_col);
-        });
-        if !edits.is_empty() {
-            let cursor_after = self.cursor_position();
-            self.push_recorded_undo(edits, cursor_before, cursor_after);
-        }
-
-        // Apply additional text edits (auto-imports, etc.) in reverse order
-        // to avoid position invalidation
-        if !additional_edits.is_empty() {
-            // Pre-compute UTF-16 → char column conversions before mutating
-            let mut converted: Vec<(usize, CharCol, usize, CharCol, String)> = additional_edits
-                .iter()
-                .map(|edit| {
-                    let sl = edit.range.start.line as usize;
-                    let sc = self.utf16_to_col(sl, edit.range.start.character);
-                    let el = edit.range.end.line as usize;
-                    let ec = self.utf16_to_col(el, edit.range.end.character);
-                    (sl, sc, el, ec, edit.new_text.clone())
-                })
-                .collect();
-            // Sort reverse (bottom-to-top) to avoid position invalidation
-            converted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-
-            let cursor_before = self.cursor_position();
-            let ((), edits) = self.buffer_mut().record(|buf| {
-                for (sl, sc, el, ec, new_text) in &converted {
-                    if sl != el || sc != ec {
-                        buf.delete_range(*sl, *sc, *el, *ec);
-                    }
-                    if !new_text.is_empty() {
-                        let normalized = crate::buffer::normalize_for_buffer(new_text);
-                        buf.insert_text_at(*sl, *sc, normalized.as_ref());
-                    }
-                }
-            });
-            if !edits.is_empty() {
-                let cursor_after = self.cursor_position();
-                self.push_recorded_undo(edits, cursor_before, cursor_after);
-            }
-        }
-
-        // Restart the insert-mode session so any further typing forms a fresh
-        // Recorded entry at post-completion offsets, decoupled from anything
-        // that was finalized above.
-        if let Some(entry_mode) = restart_entry_mode {
-            let cursor_after = self.cursor_position();
-            self.start_change_building(cursor_after);
-            self.set_change_entry_mode(entry_mode);
-        }
     }
 
     /// Gets the inlay hints for the current file
@@ -274,31 +81,18 @@ impl Editor {
 
     /// Opens the file tree explorer at the project root
     pub fn open_file_tree(&mut self) {
-        use crate::language_config::find_project_root;
-        use git2::Repository;
+        use crate::project_root::{find_project_root, vcs_root};
 
-        let file_path = self.buffer().file_path().map(|s| s.to_string());
-
-        let root = if let Some(ref file_path) = file_path {
-            let path = std::path::Path::new(file_path);
-
-            // Try git root first (most reliable for project boundary)
-            if let Ok(repo) = Repository::discover(path) {
-                if let Some(workdir) = repo.workdir() {
-                    workdir.to_path_buf()
-                } else {
-                    // Fallback: use language-specific markers
-                    find_project_root(
-                        path,
-                        &["Cargo.toml".into(), "package.json".into(), ".git".into()],
-                    )
-                }
-            } else {
-                // Not in git repo - use language markers or parent
-                find_project_root(path, &["Cargo.toml".into(), "package.json".into()])
+        let root = match self.buffer().file_path() {
+            Some(file_path) => {
+                let path = std::path::Path::new(file_path);
+                // The repository is the most reliable project boundary;
+                // outside one, the nearest language marker or the directory.
+                vcs_root(path).unwrap_or_else(|| {
+                    find_project_root(path, &["Cargo.toml".into(), "package.json".into()])
+                })
             }
-        } else {
-            std::env::current_dir().unwrap_or_default()
+            None => std::env::current_dir().unwrap_or_default(),
         };
 
         self.ui_panels.file_tree.open(&root);
@@ -406,66 +200,63 @@ impl Editor {
         }
     }
 
-    /// Sets a pending `:make` background job.
-    pub fn set_pending_make(&mut self, pending: super::PendingMake) {
-        self.build.pending_make = Some(pending);
+    /// Recompute signs when pullbase changes, invalidating older background results.
+    pub fn refresh_pullbase_gutters(&mut self) {
+        self.git_refresh_generation = self.git_refresh_generation.wrapping_add(1);
+        let paths: Vec<String> = self
+            .buffers
+            .iter()
+            .filter_map(|buffer| buffer.file_path().map(str::to_string))
+            .collect();
+        for path in paths {
+            self.spawn_git_refresh(&path, false);
+        }
     }
 
-    /// Polls for a completed `:make` job. Returns true if results were applied.
-    pub fn poll_pending_make(&mut self) -> bool {
-        let pending = match self.build.pending_make.take() {
-            Some(p) => p,
-            None => return false,
-        };
-
-        match pending.receiver.try_recv() {
-            Ok(result) => {
-                // Store raw output for :TestOutput / :MakeOutput
-                self.build.last_make_output = Some(result.output.clone());
-
-                let entries = crate::commands::parse_compiler_output(&result.output);
-                let entry_count = entries.len();
-                let title = format!(":make {}", pending.command);
-                self.set_quickfix_list(entries, title);
-
-                if entry_count > 0 {
-                    self.ui_panels.quickfix_list.first();
-                    self.jump_to_quickfix_entry();
-                    self.open_quickfix_window();
-                    self.set_status_message(format!("{} error(s)/warning(s)", entry_count));
-                } else if result.success {
-                    self.close_quickfix_window();
-                    self.set_status_message("Build succeeded — no errors".to_string());
-                } else {
-                    self.set_status_message("Build failed (no parseable errors)".to_string());
-                }
-                true
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                // Still running — put it back
-                self.build.pending_make = Some(pending);
-                false
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.set_status_message("Make job failed (thread panicked)".to_string());
-                true
+    /// Requests gutter signs for a buffer the editor is adopting. Diffing runs
+    /// in the background so large or untracked files never delay opening.
+    pub(crate) fn request_buffer_git_status(&mut self, buffer: &crate::buffer::Buffer) {
+        if let Some(path) = buffer.file_path() {
+            if !super::buffer_manager::is_scratch_path(path) {
+                self.spawn_git_refresh(path, false);
             }
         }
+    }
+
+    /// Requests gutter signs, and blame when it is shown, for the buffer at
+    /// `index` after its text was read from disk again. The reload clears
+    /// both because they refer to lines of the old text.
+    pub(crate) fn refresh_git_state_after_reload(&mut self, index: usize) {
+        let Some(path) = self.buffers.get(index).and_then(|b| b.file_path()) else {
+            return;
+        };
+        if super::buffer_manager::is_scratch_path(path) {
+            return;
+        }
+        let path = path.to_string();
+        self.spawn_git_refresh(&path, self.options.blame);
+    }
+
+    /// True while a background git refresh has not been drained yet.
+    pub fn git_refresh_pending(&self) -> bool {
+        self.git_refresh_in_flight > 0
     }
 
     /// Drains completed background git refresh results. Returns true if any applied.
     pub fn poll_git_refresh(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.git_refresh_rx.try_recv() {
+            self.git_refresh_in_flight = self.git_refresh_in_flight.saturating_sub(1);
+            if result.generation != self.git_refresh_generation {
+                continue;
+            }
             // Apply to the buffer whose file path matches the refresh result.
             let matching = self
                 .buffers
                 .iter()
                 .position(|b| b.file_path() == Some(&result.path));
             if let Some(idx) = matching {
-                if let Some(status) = result.status {
-                    self.buffers[idx].set_git_status(status);
-                }
+                self.buffers[idx].set_git_status(result.status);
                 if let Some(blame) = result.blame {
                     self.buffers[idx].set_git_blame(blame);
                 }
@@ -476,11 +267,25 @@ impl Editor {
     }
 
     /// Spawns a background git status (and optionally blame) refresh for `path`.
-    pub fn spawn_git_refresh(&self, path: &str, blame_enabled: bool) {
+    pub fn spawn_git_refresh(&mut self, path: &str, blame_enabled: bool) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let path = path.to_string();
         let tx = self.git_refresh_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let status = crate::git::GitStatus::from_file(&path).ok();
+        let generation = self.git_refresh_generation;
+        let global = self.options.pullbase.clone();
+        let overrides = self.options.pullbase_paths.clone();
+        self.git_refresh_in_flight += 1;
+        runtime.spawn_blocking(move || {
+            // A failed refresh clears the signs instead of leaving stale ones.
+            let status = crate::native_diff::pullbase_for_path(
+                std::path::Path::new(&path),
+                global.as_deref(),
+                &overrides,
+            )
+            .and_then(|branch| crate::git::GitStatus::from_file_with_pullbase(&path, branch))
+            .unwrap_or_default();
             let blame = if blame_enabled {
                 crate::git::GitBlame::from_file(&path)
                     .ok()
@@ -489,6 +294,7 @@ impl Editor {
                 None
             };
             let _ = tx.blocking_send(super::GitRefreshResult {
+                generation,
                 path,
                 status,
                 blame,
@@ -716,12 +522,7 @@ impl Editor {
         let running = self.get_running_lsp_servers();
         self.lsp.ui.lsp_manager_panel = Some(super::LspManagerPanel::new(running));
         self.mode = Mode::LspManager;
-        // Ensure install channel exists
-        if self.lsp.ui.install_progress_tx.is_none() {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            self.lsp.ui.install_progress_tx = Some(tx);
-            self.lsp.ui.install_progress_rx = Some(rx);
-        }
+        self.ensure_install_channel();
     }
 
     pub fn close_lsp_manager(&mut self) {
@@ -729,34 +530,50 @@ impl Editor {
         self.mode = Mode::Normal;
     }
 
+    fn ensure_install_channel(&mut self) {
+        if self.lsp.ui.install_progress_tx.is_none() {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            self.lsp.ui.install_progress_tx = Some(tx);
+            self.lsp.ui.install_progress_rx = Some(rx);
+        }
+    }
+
     /// Trigger LSP server install for a language.
     /// Enqueues a pending install request to be picked up by the event loop.
     pub fn request_lsp_install(&mut self, language_id: &str) {
+        if let Err(message) = self.queue_lsp_install(language_id, false) {
+            self.set_status_message(message);
+        }
+    }
+
+    /// Bring the server ovim installed for a language up to date. The outcome
+    /// arrives on the status bar.
+    pub fn request_lsp_update(&mut self, language_id: &str) -> Result<String, String> {
+        self.queue_lsp_install(language_id, true)
+    }
+
+    /// Queue an install or an update; returns the server command on success.
+    fn queue_lsp_install(&mut self, language_id: &str, update: bool) -> Result<String, String> {
         use super::lsp_manager_panel::{InstallStatus, PendingInstallRequest};
         use crate::language_config::LanguageRegistry;
 
         let Some(registry) = LanguageRegistry::try_get() else {
-            self.set_status_message("Language registry not initialized".to_string());
-            return;
+            return Err("Language registry not initialized".to_string());
         };
 
         let Some(lang) = registry.get_by_id(language_id) else {
-            self.set_status_message(format!("Unknown language: {language_id}"));
-            return;
+            return Err(format!("Unknown language: {language_id}"));
         };
 
         let Some(lsp) = &lang.lsp else {
-            self.set_status_message(format!("No LSP configured for {}", lang.name));
-            return;
+            return Err(format!("No LSP configured for {}", lang.name));
         };
 
         let Some(auto_install) = &lsp.auto_install else {
-            if let Some(hint) = &lsp.install_hint {
-                self.set_status_message(hint.clone());
-            } else {
-                self.set_status_message(format!("No install method for {}", lang.name));
-            }
-            return;
+            return Err(match &lsp.install_hint {
+                Some(hint) => hint.clone(),
+                None => format!("No install method for {}", lang.name),
+            });
         };
 
         // Set installing status in panel
@@ -768,12 +585,15 @@ impl Editor {
         }
 
         // Queue the request for the event loop to spawn
+        self.ensure_install_channel();
         self.lsp.ui.pending_installs.push(PendingInstallRequest {
             language_id: language_id.to_string(),
             language_name: lang.name.clone(),
             auto_install_config: auto_install.clone(),
             lsp_command: lsp.command.clone(),
+            update,
         });
+        Ok(lsp.command.clone())
     }
 
     /// Trigger LSP server uninstall for a language
@@ -830,7 +650,9 @@ impl Editor {
         };
 
         let mut updated = false;
+        let mut notes = Vec::new();
         while let Ok(progress) = rx.try_recv() {
+            notes.extend(progress.note.clone());
             if let Some(panel) = &mut self.lsp.ui.lsp_manager_panel {
                 panel
                     .active_installs
@@ -843,6 +665,9 @@ impl Editor {
                 }
             }
             updated = true;
+        }
+        if let Some(note) = notes.pop() {
+            self.set_lsp_status(note);
         }
         updated
     }

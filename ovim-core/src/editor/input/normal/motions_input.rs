@@ -41,15 +41,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // K - debug evaluate (when stopped) or LSP hover
         KeyCode::Char('K') => {
             if editor.is_debug_stopped() {
-                // Evaluate word under cursor via DAP.
-                let word = editor
-                    .buffer()
-                    .word_under_cursor()
-                    .map(|(w, _, _)| w)
-                    .unwrap_or_default();
-                if !word.is_empty() {
-                    editor.dap_manager_mut().pending_action =
-                        Some(crate::dap::PendingDebugAction::Evaluate { expression: word });
+                // Evaluate the expression under the cursor via DAP (`user.name`
+                // when on `name`) and show it, with its children, in the hover popup.
+                match editor.debug_expression_at_cursor() {
+                    Some(expression) => {
+                        editor
+                            .dap_manager_mut()
+                            .queue(crate::dap::PendingDebugAction::EvaluateHover { expression });
+                    }
+                    None => editor.set_status_message("No expression under the cursor"),
                 }
             } else {
                 editor.request_hover();
@@ -69,18 +69,21 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             }
             Ok(true)
         }
-        KeyCode::Char('$') => {
+        KeyCode::Home => {
+            editor.buffer_mut().cursor_mut().set_col(GraphemeCol::ZERO);
+            editor.clear_count();
+            Ok(true)
+        }
+        KeyCode::Char('$') | KeyCode::End => {
             let count = editor.effective_count();
             let line_idx = editor.buffer().cursor().line();
             let max_line = editor.buffer().line_count().saturating_sub(1);
             let target_line = (line_idx + count - 1).min(max_line);
-            if let Some(line) = editor.buffer().line_text(target_line) {
-                let line_len = line.chars().count();
-                let col = if line_len > 0 { line_len - 1 } else { 0 };
-                let cursor = editor.buffer_mut().cursor_mut();
-                cursor.set_position(target_line, GraphemeCol(col));
-                cursor.update_desired_col(GraphemeCol(usize::MAX));
-            }
+            let line_len = editor.buffer().line_index(target_line).grapheme_count();
+            let col = line_len.saturating_sub(1);
+            let cursor = editor.buffer_mut().cursor_mut();
+            cursor.set_position(target_line, GraphemeCol(col));
+            cursor.update_desired_col(GraphemeCol(usize::MAX));
             editor.clear_count();
             Ok(true)
         }
@@ -90,14 +93,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             // `19|` → col('.') == 19, `99|` → col('.') == 26 (OV-00338).
             let count = editor.effective_count();
             let line_idx = editor.buffer().cursor().line();
-            if let Some(line) = editor.buffer().line_text(line_idx) {
-                let line_len = line.chars().count();
-                let max_col = line_len.saturating_sub(1);
-                let col = count.saturating_sub(1).min(max_col);
-                let cursor = editor.buffer_mut().cursor_mut();
-                cursor.set_col(GraphemeCol(col));
-                cursor.update_desired_col(GraphemeCol(col));
-            }
+            let line_len = editor.buffer().line_index(line_idx).grapheme_count();
+            let max_col = line_len.saturating_sub(1);
+            let col = count.saturating_sub(1).min(max_col);
+            let cursor = editor.buffer_mut().cursor_mut();
+            cursor.set_col(GraphemeCol(col));
+            cursor.update_desired_col(GraphemeCol(col));
             editor.clear_count();
             Ok(true)
         }
@@ -182,14 +183,18 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         KeyCode::Char('H') => {
             let offset = editor.effective_count().saturating_sub(1);
             let scroll_offset = editor.scroll_offset();
-            Motions::move_to_screen_top(editor.buffer_mut(), scroll_offset, offset);
+            editor.record_jump_if_moved(|editor| {
+                Motions::move_to_screen_top(editor.buffer_mut(), scroll_offset, offset)
+            });
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('M') => {
             let scroll_offset = editor.scroll_offset();
             let viewport_height = editor.viewport_height();
-            Motions::move_to_screen_middle(editor.buffer_mut(), scroll_offset, viewport_height);
+            editor.record_jump_if_moved(|editor| {
+                Motions::move_to_screen_middle(editor.buffer_mut(), scroll_offset, viewport_height)
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -197,12 +202,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let offset = editor.effective_count().saturating_sub(1);
             let scroll_offset = editor.scroll_offset();
             let viewport_height = editor.viewport_height();
-            Motions::move_to_screen_bottom(
-                editor.buffer_mut(),
-                scroll_offset,
-                viewport_height,
-                offset,
-            );
+            editor.record_jump_if_moved(|editor| {
+                Motions::move_to_screen_bottom(
+                    editor.buffer_mut(),
+                    scroll_offset,
+                    viewport_height,
+                    offset,
+                )
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -213,20 +220,22 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             } else {
                 max_line
             };
-            editor.add_jump();
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol::ZERO);
-            Motions::first_non_blank(editor.buffer_mut());
-            editor.add_jump();
+            editor.record_jump_if_moved(|editor| {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, GraphemeCol::ZERO);
+                Motions::first_non_blank(editor.buffer_mut());
+            });
             editor.clear_count();
             Ok(true)
         }
 
         // Jump to matching bracket
         KeyCode::Char('%') => {
-            Motions::jump_to_matching_bracket(editor.buffer_mut());
+            editor.record_jump_if_moved(|editor| {
+                Motions::jump_to_matching_bracket(editor.buffer_mut())
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -234,13 +243,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Paragraph motions
         KeyCode::Char('}') => {
             let count = editor.effective_count();
-            Motions::paragraph_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::paragraph_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('{') => {
             let count = editor.effective_count();
-            Motions::paragraph_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::paragraph_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -248,13 +261,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Sentence motions
         KeyCode::Char(')') => {
             let count = editor.effective_count();
-            Motions::sentence_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::sentence_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('(') => {
             let count = editor.effective_count();
-            Motions::sentence_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::sentence_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -271,11 +288,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
         // Search word under cursor
         KeyCode::Char('*') => {
-            search_word_forward(editor);
+            search_word(editor, true);
             Ok(true)
         }
         KeyCode::Char('#') => {
-            search_word_backward(editor);
+            search_word(editor, false);
             Ok(true)
         }
 
@@ -384,7 +401,7 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
 
         // Window commands prefix
         KeyCode::Char('w') => {
-            editor.set_pending_command('W');
+            editor.set_input_state(crate::editor::InputState::WindowCommand);
             Ok(true)
         }
 
@@ -406,57 +423,64 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
     }
 }
 
-/// Search for word under cursor (forward)
-fn search_word_forward(editor: &mut Editor) {
-    if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
-        let pattern = format!(r"\b{}\b", regex::escape(&word));
-        let mut search = Search::new_with_options(
-            pattern,
-            true,
-            editor.options.ignorecase,
-            editor.options.smartcase,
-        );
-        let cursor = editor.buffer().cursor();
-
-        if let Some((line, col, _)) = search.find_next(
-            editor.buffer(),
-            cursor.line(),
-            GraphemeCol(cursor.col().0 + 1),
-        ) {
+/// `*` / `#`: search `[count]` times for the word under or after the cursor,
+/// starting from the beginning of that word.
+fn search_word(editor: &mut Editor, forward: bool) {
+    let count = editor.effective_count();
+    editor.clear_count();
+    let Some((word, start)) = word_at_or_after_cursor(editor) else {
+        return;
+    };
+    let pattern = crate::search_pattern::whole_word(&word);
+    let mut search = Search::new_with_options(
+        pattern,
+        forward,
+        editor.options.ignorecase,
+        editor.options.smartcase,
+    );
+    let line = editor.buffer().cursor().line();
+    if let Some((line, col)) = editor.step_search(&mut search, (line, start), count) {
+        editor.record_jump_if_moved(|editor| {
             editor
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(line, GraphemeCol(col));
-        }
-        editor.set_current_search(search);
+        });
     }
+    // `*` and `#` set the last search pattern too (`:s//x/` and `n` use it).
+    editor
+        .registers_mut()
+        .set_last_search(search.pattern().to_string());
+    editor.set_current_search(search);
 }
 
-/// Search for word under cursor (backward)
-fn search_word_backward(editor: &mut Editor) {
-    if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
-        let pattern = format!(r"\b{}\b", regex::escape(&word));
-        let mut search = Search::new_with_options(
-            pattern,
-            false,
-            editor.options.ignorecase,
-            editor.options.smartcase,
-        );
-        let cursor = editor.buffer().cursor();
-
-        let search_col = if cursor.col().0 > 0 {
-            cursor.col().0 - 1
-        } else {
-            0
-        };
-        if let Some((line, col, _)) =
-            search.find_next(editor.buffer(), cursor.line(), GraphemeCol(search_col))
-        {
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
-        }
-        editor.set_current_search(search);
+/// The keyword under the cursor, or the first one after it on the line, with
+/// the grapheme column it starts at.
+pub(super) fn word_at_or_after_cursor(editor: &Editor) -> Option<(String, usize)> {
+    let cursor = editor.buffer().cursor();
+    let index = editor.buffer().line_index(cursor.line());
+    let is_word = |grapheme: usize| {
+        index
+            .grapheme_first_char(GraphemeCol(grapheme))
+            .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+    };
+    let len = index.grapheme_count();
+    let mut start = cursor.col().0;
+    if start >= len {
+        return None;
     }
+    if is_word(start) {
+        while start > 0 && is_word(start - 1) {
+            start -= 1;
+        }
+    } else {
+        start = (start..len).find(|&grapheme| is_word(grapheme))?;
+    }
+    let mut end = start;
+    while end < len && is_word(end) {
+        end += 1;
+    }
+    let chars =
+        index.grapheme_to_char(GraphemeCol(start)).0..index.grapheme_to_char(GraphemeCol(end)).0;
+    Some((index.slice_chars(chars), start))
 }

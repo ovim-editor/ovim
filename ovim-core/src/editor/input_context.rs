@@ -1,11 +1,10 @@
 //! Input context for editor command parsing.
 //!
 //! This module contains the InputContext struct, which holds all input-related
-//! state for command parsing, including counts, operators, pending commands,
-//! registers, and the input state machine.
+//! state for command parsing: count, register, the input state machine
+//! (pending operator / prefix / character argument) and mapping keys.
 
 use crate::editor::input_state::InputState;
-use crate::editor::operators::Operator;
 use crate::KeyEvent;
 
 /// Context for input state machine (counts, operators, pending commands).
@@ -19,21 +18,11 @@ pub struct InputContext {
     /// Count prefix for commands (e.g., 5j means move down 5 lines)
     pub count: Option<usize>,
 
-    /// Pending operator (e.g., d for delete, waiting for motion)
-    /// Note: This is being phased out in favor of input_state which embeds
-    /// the operator in its state variants (OperatorPending, AwaitingChar, etc.)
-    pub pending_operator: Option<Operator>,
-
-    /// Pending command character (e.g., 'g' waiting for second character)
-    /// Note: This is being phased out in favor of input_state which has
-    /// explicit states like GPrefix, ZPrefix, BracketPrefix, etc.
-    pub pending_command: Option<char>,
-
     /// Pending register selection (e.g., 'a' from "a for next operation)
     pub pending_register: Option<char>,
 
-    /// Input state machine for Normal mode (new architecture)
-    /// This will eventually replace pending_command, pending_operator, etc.
+    /// What a multi-key sequence is waiting for (pending operator, prefix
+    /// key, character argument, leader keys).
     pub input_state: InputState,
 
     /// Leader key (default: space)
@@ -44,6 +33,12 @@ pub struct InputContext {
 
     /// Original key events that produced pending_mapping_sequence
     pub pending_mapping_events: Vec<KeyEvent>,
+
+    /// How deeply ex command lines are nested right now (see `Editor::nested`)
+    pub(super) ex_line_depth: usize,
+
+    /// How deeply `:normal` commands are nested right now
+    pub(super) normal_depth: usize,
 }
 
 impl InputContext {
@@ -51,36 +46,14 @@ impl InputContext {
     pub fn new() -> Self {
         Self {
             count: None,
-            pending_operator: None,
-            pending_command: None,
             pending_register: None,
             input_state: InputState::Normal,
             leader_key: ' ', // default space
             pending_mapping_sequence: String::new(),
             pending_mapping_events: Vec::new(),
+            ex_line_depth: 0,
+            normal_depth: 0,
         }
-    }
-
-    /// Resets all pending input state (count, operator, command, register).
-    /// This is typically called after executing a command or on Escape.
-    pub fn reset(&mut self) {
-        self.count = None;
-        self.pending_operator = None;
-        self.pending_command = None;
-        self.pending_register = None;
-        self.input_state.reset();
-        self.pending_mapping_sequence.clear();
-        self.pending_mapping_events.clear();
-    }
-
-    /// Returns true if any input is currently pending.
-    pub fn has_pending_input(&self) -> bool {
-        self.count.is_some()
-            || self.pending_operator.is_some()
-            || self.pending_command.is_some()
-            || self.pending_register.is_some()
-            || !self.input_state.is_normal()
-            || !self.pending_mapping_sequence.is_empty()
     }
 }
 
@@ -98,76 +71,10 @@ mod tests {
     fn test_new_context() {
         let ctx = InputContext::new();
         assert_eq!(ctx.count, None);
-        assert_eq!(ctx.pending_operator, None);
-        assert_eq!(ctx.pending_command, None);
         assert_eq!(ctx.pending_register, None);
         assert_eq!(ctx.input_state, InputState::Normal);
         assert_eq!(ctx.leader_key, ' ');
         assert!(ctx.pending_mapping_sequence.is_empty());
         assert!(ctx.pending_mapping_events.is_empty());
-    }
-
-    #[test]
-    fn test_default() {
-        let ctx = InputContext::default();
-        assert_eq!(ctx.count, None);
-    }
-
-    #[test]
-    fn test_reset() {
-        let mut ctx = InputContext::new();
-        ctx.count = Some(5);
-        ctx.pending_operator = Some(Operator::Delete);
-        ctx.pending_command = Some('g');
-        ctx.pending_register = Some('a');
-        ctx.input_state = InputState::OperatorPending {
-            operator: Operator::Delete,
-        };
-        ctx.pending_mapping_sequence = "jk".to_string();
-        ctx.pending_mapping_events = vec![KeyEvent::new(
-            crate::KeyCode::Char('j'),
-            crate::Modifiers::NONE,
-        )];
-
-        ctx.reset();
-
-        assert_eq!(ctx.count, None);
-        assert_eq!(ctx.pending_operator, None);
-        assert_eq!(ctx.pending_command, None);
-        assert_eq!(ctx.pending_register, None);
-        assert_eq!(ctx.input_state, InputState::Normal);
-        assert!(ctx.pending_mapping_sequence.is_empty());
-        assert!(ctx.pending_mapping_events.is_empty());
-    }
-
-    #[test]
-    fn test_has_pending_input() {
-        let mut ctx = InputContext::new();
-        assert!(!ctx.has_pending_input());
-
-        ctx.count = Some(5);
-        assert!(ctx.has_pending_input());
-
-        ctx.reset();
-        ctx.pending_operator = Some(Operator::Delete);
-        assert!(ctx.has_pending_input());
-
-        ctx.reset();
-        ctx.pending_command = Some('g');
-        assert!(ctx.has_pending_input());
-
-        ctx.reset();
-        ctx.pending_register = Some('a');
-        assert!(ctx.has_pending_input());
-
-        ctx.reset();
-        ctx.input_state = InputState::OperatorPending {
-            operator: Operator::Delete,
-        };
-        assert!(ctx.has_pending_input());
-
-        ctx.reset();
-        ctx.pending_mapping_sequence = "jk".to_string();
-        assert!(ctx.has_pending_input());
     }
 }

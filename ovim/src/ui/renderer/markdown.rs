@@ -41,7 +41,7 @@ pub enum MarkdownElement {
     /// Inline code (`code`)
     InlineCode(String),
     /// Link (`[label](destination)`).
-    Link(String),
+    Link { label: String, destination: String },
     /// Image (`![alt](source)`). Terminal previews use a compact text substitute.
     Image(String),
     /// Code block with optional language
@@ -98,6 +98,14 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
             continue;
         }
 
+        if in_code_block {
+            if !code_block_content.is_empty() {
+                code_block_content.push('\n');
+            }
+            code_block_content.push_str(line);
+            continue;
+        }
+
         if let Some(separator) = lines.peek().copied() {
             let headers = split_table_row(line);
             let separators = split_table_row(separator);
@@ -123,14 +131,6 @@ pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
                 elements.push(MarkdownElement::Table { headers, rows });
                 continue;
             }
-        }
-
-        if in_code_block {
-            if !code_block_content.is_empty() {
-                code_block_content.push('\n');
-            }
-            code_block_content.push_str(line);
-            continue;
         }
 
         if let Some((opener, closer, mut content)) = math_block.take() {
@@ -385,10 +385,12 @@ fn parse_link_or_image(chars: &[char], start: usize) -> Option<(MarkdownElement,
                 depth -= 1;
                 if depth == 0 {
                     let label = chars[label_start..close_bracket].iter().collect::<String>();
+                    let destination = chars[destination_start..index].iter().collect::<String>();
+                    let destination = markdown_destination(&destination);
                     let element = if is_image {
                         MarkdownElement::Image(label)
                     } else {
-                        MarkdownElement::Link(label)
+                        MarkdownElement::Link { label, destination }
                     };
                     return Some((element, index + 1));
                 }
@@ -457,7 +459,6 @@ fn render_code_line_with_highlights(
     line: &str,
     highlights: &[(Range<usize>, HighlightGroup)],
     theme: &Theme,
-    max_width: usize,
 ) -> Line<'static> {
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -481,20 +482,12 @@ fn render_code_line_with_highlights(
 
     // Highlight ranges are BYTE offsets relative to the line start (see
     // `highlights_for_all_lines`), so group lookups use grapheme byte
-    // positions, and truncation counts display columns (wide glyphs = 2).
-    let budget = max_width.saturating_sub(2);
-    let mut used = 0usize;
-    let mut truncated = false;
+    // positions. Preserve the full line for the caller’s style-aware wrapping.
     let mut run_group: Option<HighlightGroup> = None;
     let mut run_text = String::new();
     let mut run_started = false;
 
     for (byte_idx, grapheme) in line.grapheme_indices(true) {
-        let width = crate::display::grapheme_display_width(grapheme);
-        if used + width > budget {
-            truncated = true;
-            break;
-        }
         let group = highlights
             .iter()
             .find(|(range, _)| range.contains(&byte_idx))
@@ -508,20 +501,11 @@ fn render_code_line_with_highlights(
         run_started = true;
         run_group = group;
         run_text.push_str(grapheme);
-        used += width;
     }
     if !run_text.is_empty() {
         spans.push(Span::styled(run_text, style_for(run_group)));
     }
 
-    if truncated {
-        spans.push(Span::styled(
-            "...",
-            Style::default()
-                .fg(colors::CODE_BLOCK_FG)
-                .bg(colors::CODE_BLOCK_BG),
-        ));
-    }
     spans.push(Span::styled(
         " ",
         Style::default().bg(colors::CODE_BLOCK_BG),
@@ -544,39 +528,96 @@ fn table_border(left: char, join: char, right: char, widths: &[usize]) -> Line<'
     Line::from(Span::styled(border, Style::default().fg(colors::BORDER)))
 }
 
-fn table_cell_spans(
+/// A link's byte range in an unwrapped rendered line.
+#[derive(Debug, Clone)]
+pub(super) struct MarkdownLink {
+    pub row: usize,
+    pub bytes: Range<usize>,
+    pub destination: String,
+}
+
+fn markdown_destination(source: &str) -> String {
+    let source = source.trim();
+    let destination = if let Some(source) = source.strip_prefix('<') {
+        source
+            .split_once('>')
+            .map_or(source, |(destination, _)| destination)
+    } else {
+        source.split_whitespace().next().unwrap_or("")
+    };
+    let mut output = String::new();
+    let mut chars = destination.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
+            output.push(chars.next().unwrap());
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn append_link(
+    spans: &mut Vec<Span<'static>>,
+    links: &mut Vec<MarkdownLink>,
+    row: usize,
+    label: &str,
+    destination: &str,
+) {
+    let start = spans.iter().map(|span| span.content.len()).sum();
+    let text = format!("{} ↗", link_label(label));
+    links.push(MarkdownLink {
+        row,
+        bytes: start..start + text.len(),
+        destination: destination.to_string(),
+    });
+    spans.push(Span::styled(
+        link_label(label).to_string(),
+        Style::default()
+            .fg(colors::LINK)
+            .add_modifier(Modifier::UNDERLINED),
+    ));
+    spans.push(Span::styled(
+        " ↗",
+        Style::default()
+            .fg(colors::MUTED)
+            .add_modifier(Modifier::ITALIC),
+    ));
+}
+
+fn append_table_cell_spans(
     cell: &str,
     text_style: Style,
     bold_style: Style,
     code_style: Style,
-) -> Vec<Span<'static>> {
+    spans: &mut Vec<Span<'static>>,
+    links: &mut Vec<MarkdownLink>,
+    row: usize,
+) {
     let mut elements = Vec::new();
     parse_inline_elements(cell, &mut elements);
-    elements
-        .into_iter()
-        .filter_map(|element| match element {
-            MarkdownElement::Text(text) => Some(Span::styled(text, text_style)),
-            MarkdownElement::Bold(text) => Some(Span::styled(text, bold_style)),
-            MarkdownElement::Italic(text) => Some(Span::styled(
-                text,
-                text_style.add_modifier(Modifier::ITALIC),
-            )),
-            MarkdownElement::InlineCode(code) => Some(Span::styled(code, code_style)),
-            MarkdownElement::Link(label) => Some(Span::styled(
-                format!("{} ↗", link_label(&label)),
-                Style::default()
-                    .fg(colors::LINK)
-                    .add_modifier(Modifier::UNDERLINED),
-            )),
-            MarkdownElement::Image(alt) => Some(Span::styled(
+    for element in elements {
+        let span = match element {
+            MarkdownElement::Text(text) => Span::styled(text, text_style),
+            MarkdownElement::Bold(text) => Span::styled(text, bold_style),
+            MarkdownElement::Italic(text) => {
+                Span::styled(text, text_style.add_modifier(Modifier::ITALIC))
+            }
+            MarkdownElement::InlineCode(code) => Span::styled(code, code_style),
+            MarkdownElement::Link { label, destination } => {
+                append_link(spans, links, row, &label, &destination);
+                continue;
+            }
+            MarkdownElement::Image(alt) => Span::styled(
                 format!("Image: {}", image_label(&alt)),
                 Style::default()
                     .fg(colors::MUTED)
                     .add_modifier(Modifier::ITALIC),
-            )),
-            _ => None,
-        })
-        .collect()
+            ),
+            _ => continue,
+        };
+        spans.push(span);
+    }
 }
 
 fn table_cell_width(cell: &str) -> usize {
@@ -589,7 +630,7 @@ fn table_cell_width(cell: &str) -> usize {
             | MarkdownElement::Bold(text)
             | MarkdownElement::Italic(text)
             | MarkdownElement::InlineCode(text) => UnicodeWidthStr::width(text.as_str()),
-            MarkdownElement::Link(label) => UnicodeWidthStr::width(link_label(label)) + 2,
+            MarkdownElement::Link { label, .. } => UnicodeWidthStr::width(link_label(label)) + 2,
             MarkdownElement::Image(alt) => {
                 UnicodeWidthStr::width(image_label(alt)) + "Image: ".len()
             }
@@ -621,6 +662,8 @@ fn render_table(
     text_style: Style,
     bold_style: Style,
     code_style: Style,
+    links: &mut Vec<MarkdownLink>,
+    first_row: usize,
 ) -> Vec<Line<'static>> {
     if headers.is_empty() {
         return Vec::new();
@@ -643,7 +686,15 @@ fn render_table(
         let mut lines = vec![table_border('┌', '┬', '┐', &widths)];
         let mut header_spans = vec![Span::styled("│ ", Style::default().fg(colors::BORDER))];
         for (index, header) in headers.iter().enumerate() {
-            header_spans.extend(table_cell_spans(header, bold_style, bold_style, code_style));
+            append_table_cell_spans(
+                header,
+                bold_style,
+                bold_style,
+                code_style,
+                &mut header_spans,
+                links,
+                first_row + lines.len(),
+            );
             let padding = widths[index].saturating_sub(table_cell_width(header));
             header_spans.push(Span::styled(
                 format!(
@@ -660,7 +711,15 @@ fn render_table(
             let mut spans = vec![Span::styled("│ ", Style::default().fg(colors::BORDER))];
             for (index, width) in widths.iter().enumerate() {
                 let cell = row.get(index).map_or("", String::as_str);
-                spans.extend(table_cell_spans(cell, text_style, bold_style, code_style));
+                append_table_cell_spans(
+                    cell,
+                    text_style,
+                    bold_style,
+                    code_style,
+                    &mut spans,
+                    links,
+                    first_row + lines.len(),
+                );
                 let padding = width.saturating_sub(table_cell_width(cell));
                 spans.push(Span::styled(
                     format!(
@@ -682,14 +741,26 @@ fn render_table(
     let mut lines = Vec::new();
     for (row_index, row) in rows.iter().enumerate() {
         for (column, header) in headers.iter().enumerate() {
-            let mut spans = table_cell_spans(header, bold_style, bold_style, code_style);
+            let mut spans = Vec::new();
+            append_table_cell_spans(
+                header,
+                bold_style,
+                bold_style,
+                code_style,
+                &mut spans,
+                links,
+                first_row + lines.len(),
+            );
             spans.push(Span::styled(": ", text_style));
-            spans.extend(table_cell_spans(
+            append_table_cell_spans(
                 row.get(column).map_or("", String::as_str),
                 text_style,
                 bold_style,
                 code_style,
-            ));
+                &mut spans,
+                links,
+                first_row + lines.len(),
+            );
             lines.push(Line::from(spans));
         }
         if row_index + 1 < rows.len() {
@@ -699,12 +770,22 @@ fn render_table(
     lines
 }
 
-/// Convert parsed markdown elements to styled ratatui Lines
+/// Convert parsed markdown elements to styled ratatui Lines.
+/// Text is preserved in full; callers wrap the styled lines to their viewport.
 pub fn render_markdown(
     elements: &[MarkdownElement],
     max_width: usize,
     theme: Option<&Theme>,
 ) -> Vec<Line<'static>> {
+    render_markdown_with_links(elements, max_width, theme).0
+}
+
+pub(super) fn render_markdown_with_links(
+    elements: &[MarkdownElement],
+    max_width: usize,
+    theme: Option<&Theme>,
+) -> (Vec<Line<'static>>, Vec<MarkdownLink>) {
+    let mut links = Vec::new();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
 
@@ -716,9 +797,6 @@ pub fn render_markdown(
     let code_style = Style::default()
         .fg(colors::CODE_SPAN_FG)
         .bg(colors::CODE_SPAN_BG);
-    let link_style = Style::default()
-        .fg(colors::LINK)
-        .add_modifier(Modifier::UNDERLINED);
     let muted_style = Style::default()
         .fg(colors::MUTED)
         .add_modifier(Modifier::ITALIC);
@@ -751,9 +829,14 @@ pub fn render_markdown(
             MarkdownElement::InlineCode(code) => {
                 current_spans.push(Span::styled(code.clone(), code_style));
             }
-            MarkdownElement::Link(label) => {
-                current_spans.push(Span::styled(link_label(label).to_string(), link_style));
-                current_spans.push(Span::styled(" ↗", muted_style));
+            MarkdownElement::Link { label, destination } => {
+                append_link(
+                    &mut current_spans,
+                    &mut links,
+                    lines.len(),
+                    label,
+                    destination,
+                );
             }
             MarkdownElement::Image(alt) => {
                 current_spans.push(Span::styled("Image: ", muted_style));
@@ -776,25 +859,16 @@ pub fn render_markdown(
                     // Try to render with syntax highlighting
                     if let (Some(hl), Some(theme)) = (&highlights, theme) {
                         if let Some(line_hl) = hl.get(line_idx) {
-                            lines.push(render_code_line_with_highlights(
-                                code_line, line_hl, theme, max_width,
-                            ));
+                            lines.push(render_code_line_with_highlights(code_line, line_hl, theme));
                             continue;
                         }
                     }
 
                     // Fallback: plain green style
-                    let available = max_width.saturating_sub(2);
-                    let truncated = if UnicodeWidthStr::width(code_line) > available {
-                        let prefix = crate::ui::renderer::helpers::truncate_to_width(
-                            code_line,
-                            max_width.saturating_sub(5),
-                        );
-                        format!(" {prefix}... ")
-                    } else {
-                        format!(" {} ", code_line)
-                    };
-                    lines.push(Line::from(Span::styled(truncated, code_block_style)));
+                    lines.push(Line::from(Span::styled(
+                        format!(" {code_line} "),
+                        code_block_style,
+                    )));
                 }
             }
             MarkdownElement::Table { headers, rows } => {
@@ -803,7 +877,14 @@ pub fn render_markdown(
                     current_spans.clear();
                 }
                 lines.extend(render_table(
-                    headers, rows, max_width, text_style, bold_style, code_style,
+                    headers,
+                    rows,
+                    max_width,
+                    text_style,
+                    bold_style,
+                    code_style,
+                    &mut links,
+                    lines.len(),
                 ));
             }
             MarkdownElement::DisplayMath(math) => {
@@ -852,12 +933,44 @@ pub fn render_markdown(
         lines.push(Line::from(current_spans));
     }
 
-    lines
+    (lines, links)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_destinations_survive_titles_parentheses_and_escapes() {
+        for (source, expected) in [
+            (
+                r#"[Guide](https://example.com/a_(b) "Title")"#,
+                "https://example.com/a_(b)",
+            ),
+            (r"[Source](src/main.rs:42:3)", "src/main.rs:42:3"),
+            (r#"[Source](<my file.rs:2> "Title")"#, "my file.rs:2"),
+            (
+                r"[Guide](https://example.com/a\(b\))",
+                "https://example.com/a(b)",
+            ),
+        ] {
+            let elements = parse_markdown(source);
+            let (_, links) = render_markdown_with_links(&elements, 80, None);
+            assert_eq!(links.len(), 1, "{source}");
+            assert_eq!(links[0].destination, expected);
+        }
+    }
+
+    #[test]
+    fn table_syntax_inside_code_fences_stays_code_and_has_no_links() {
+        let source =
+            "```markdown\n| A | B |\n| --- | --- |\n| [Guide](https://example.com) | Text |\n```";
+        let elements = parse_markdown(source);
+        assert!(
+            matches!(elements.as_slice(), [MarkdownElement::CodeBlock { code, .. }] if code.contains("[Guide](https://example.com)"))
+        );
+        assert!(render_markdown_with_links(&elements, 80, None).1.is_empty());
+    }
 
     #[test]
     fn test_parse_bold() {
@@ -1129,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_narrow_unicode_code_block_does_not_panic() {
+    fn test_narrow_unicode_code_block_preserves_content() {
         let elements = parse_markdown("```text\nlet greeting = \"hei 👋 verden\";\n```");
         let lines = render_markdown(&elements, 12, None);
         assert!(!lines.is_empty());
@@ -1138,6 +1251,6 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(rendered.contains("..."));
+        assert_eq!(rendered, " let greeting = \"hei 👋 verden\"; ");
     }
 }

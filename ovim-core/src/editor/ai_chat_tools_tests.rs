@@ -3,8 +3,8 @@ use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
 use crate::ai::path_policy::canonicalize_or_normalize;
 use crate::ai::skills::{SkillCatalog, ACTIVATED_SKILL_MARKER};
 use crate::ai::{FileScope, ToolApprovalMode};
-use crate::editor::ai_tool_execution::find_enclosing_symbol;
 use crate::editor::ai_tool_path::normalize_path;
+use crate::editor::outline::enclosing_path;
 use std::fs;
 
 fn set_active_profile_project_scope(editor: &mut Editor) {
@@ -14,65 +14,80 @@ fn set_active_profile_project_scope(editor: &mut Editor) {
     }
 }
 
+#[test]
+fn remote_read_diff_result_remains_complete_json() {
+    let mut editor = Editor::default();
+    editor
+        .ai_state
+        .config
+        .profiles
+        .get_mut("local")
+        .unwrap()
+        .provider = crate::ai::AiProviderKind::Codex;
+    let call = ToolCallInfo {
+        id: "read-diff".into(),
+        name: "read_diff".into(),
+        arguments: serde_json::json!({}),
+    };
+    let page = serde_json::json!({
+        "snapshot_id": "diff_example",
+        "blocks": [{"content": "x".repeat(24_000)}],
+        "next_cursor": "opaque-cursor",
+    });
+    let formatted = editor
+        .format_tool_result_with_target(&call, &crate::ai::ToolResult::Success(page.to_string()));
+    let parsed: serde_json::Value = serde_json::from_str(&formatted).unwrap();
+    assert_eq!(parsed["next_cursor"], "opaque-cursor");
+    assert_eq!(
+        parsed["blocks"][0]["content"].as_str().unwrap().len(),
+        24_000
+    );
+}
+
 fn make_symbol(
     name: &str,
-    kind: lsp_types::SymbolKind,
-    start_line: u32,
-    end_line: u32,
-    children: Option<Vec<lsp_types::DocumentSymbol>>,
-) -> lsp_types::DocumentSymbol {
-    #[allow(deprecated)]
-    lsp_types::DocumentSymbol {
+    kind: &str,
+    start_line: usize,
+    end_line: usize,
+    children: Vec<crate::navigation_types::OutlineSymbol>,
+) -> crate::navigation_types::OutlineSymbol {
+    crate::navigation_types::OutlineSymbol {
         name: name.to_string(),
+        kind: kind.to_string(),
         detail: None,
-        kind,
-        tags: None,
-        deprecated: None,
-        range: lsp_types::Range {
-            start: lsp_types::Position::new(start_line, 0),
-            end: lsp_types::Position::new(end_line, 0),
-        },
-        selection_range: lsp_types::Range {
-            start: lsp_types::Position::new(start_line, 0),
-            end: lsp_types::Position::new(start_line, 10),
-        },
+        start_line,
+        end_line,
         children,
+        selection: None,
     }
 }
 
 #[test]
-fn find_enclosing_symbol_finds_deepest() {
+fn enclosing_path_finds_deepest_symbol_last() {
     let symbols = vec![make_symbol(
         "MyStruct",
-        lsp_types::SymbolKind::STRUCT,
-        10,
-        50,
-        Some(vec![
-            make_symbol("new", lsp_types::SymbolKind::FUNCTION, 15, 25, None),
-            make_symbol("update", lsp_types::SymbolKind::FUNCTION, 30, 45, None),
-        ]),
+        "struct",
+        11,
+        51,
+        vec![
+            make_symbol("new", "function", 16, 26, vec![]),
+            make_symbol("update", "function", 31, 46, vec![]),
+        ],
     )];
+    let names = |line: usize| -> Vec<&str> {
+        enclosing_path(&symbols, line)
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect()
+    };
 
-    // Cursor inside `new` function
-    let result = find_enclosing_symbol(&symbols, 20);
-    assert_eq!(result.unwrap().name, "new");
-
-    // Cursor inside `update` function
-    let result = find_enclosing_symbol(&symbols, 35);
-    assert_eq!(result.unwrap().name, "update");
-
-    // Cursor inside struct but outside any function
-    let result = find_enclosing_symbol(&symbols, 48);
-    assert_eq!(result.unwrap().name, "MyStruct");
-
-    // Cursor outside all symbols
-    let result = find_enclosing_symbol(&symbols, 5);
-    assert!(result.is_none());
-}
-
-#[test]
-fn find_enclosing_symbol_empty() {
-    assert!(find_enclosing_symbol(&[], 10).is_none());
+    // 0-based cursor lines: inside `new`, inside `update`, in the struct
+    // but outside any function, outside every symbol.
+    assert_eq!(names(20), ["MyStruct", "new"]);
+    assert_eq!(names(35), ["MyStruct", "update"]);
+    assert_eq!(names(48), ["MyStruct"]);
+    assert!(names(5).is_empty());
+    assert!(enclosing_path(&[], 10).is_empty());
 }
 
 #[test]
@@ -255,6 +270,43 @@ fn read_buffer_requires_approval_before_reading_non_visible_unnamed_content() {
             )
         }
     }
+}
+
+#[test]
+fn read_buffer_authorization_follows_the_selected_chat_profile() {
+    let mut editor = Editor::default();
+    let mut allowed = editor.ai_state.config.profiles["local"].clone();
+    allowed.name = "chat_reader".into();
+    allowed.tools = vec!["read_buffer".into()];
+    let mut denied = allowed.clone();
+    denied.name = "chat_denied".into();
+    denied.tools = vec!["workspace_context".into()];
+    editor
+        .ai_state
+        .config
+        .profiles
+        .insert(allowed.name.clone(), allowed);
+    editor
+        .ai_state
+        .config
+        .profiles
+        .insert(denied.name.clone(), denied);
+    editor.open_ai_chat(ChatOpts::default()).unwrap();
+    let call = ToolCallInfo {
+        id: "selected-profile-read".into(),
+        name: "read_buffer".into(),
+        arguments: serde_json::json!({"buffer_id": editor.buffer().id()}),
+    };
+    assert!(editor.ai_select_chat_profile("chat_reader"));
+    assert!(matches!(
+        editor.dispatch_tool_call_with_approval(&call, None),
+        ToolDispatchOutcome::Completed(ToolResult::Success(_))
+    ));
+    assert!(editor.ai_select_chat_profile("chat_denied"));
+    assert!(
+        matches!(editor.dispatch_tool_call_with_approval(&call, None),
+        ToolDispatchOutcome::Completed(ToolResult::Error(message)) if message.contains("unavailable"))
+    );
 }
 
 #[test]
@@ -464,6 +516,108 @@ async fn same_revision_mutations_conflict_deterministically() {
     }
     assert!(editor.buffer().rope().to_string().starts_with("first\n"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ai_edit_keeps_external_file_content_when_auto_save_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("main.rs");
+    fs::write(&file, "original\n").unwrap();
+
+    let mut editor = Editor::default();
+    editor.open_file(&file).unwrap();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .buffer_was_clean_at_chat_start
+    );
+    crate::commands::execute_command(&mut editor, "s/original/LOCAL/");
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+
+    fs::write(&file, "external change\n").unwrap();
+    editor
+        .buffer_mut()
+        .set_file_mtime(Some(std::time::UNIX_EPOCH));
+    let call = ToolCallInfo {
+        id: "conflicting-auto-save".into(),
+        name: "edit_range".into(),
+        arguments: serde_json::json!({
+            "start_line": 1,
+            "end_line": 1,
+            "new_text": "AGENT",
+            "expected_revision": editor.buffer().version(),
+        }),
+    };
+
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+            assert!(output.contains("not auto-saved"), "{output}");
+            assert!(output.contains("file changed on disk"), "{output}");
+        }
+        _ => panic!("expected an in-memory edit with refused auto-save"),
+    }
+    assert_eq!(fs::read_to_string(&file).unwrap(), "external change\n");
+    assert_eq!(editor.buffer().rope().to_string(), "AGENT\n");
+    assert!(editor.is_modified());
+    editor.undo();
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ai_write_file_reports_external_change_without_overwriting_it() {
+    let dir = tempfile::tempdir().unwrap();
+    git2::Repository::init(dir.path()).unwrap();
+    let file = dir.path().join("main.rs");
+    fs::write(&file, "original\n").unwrap();
+
+    let mut editor = Editor::default();
+    editor.open_file(&file).unwrap();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    set_active_profile_project_scope(&mut editor);
+    editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+    crate::commands::execute_command(&mut editor, "s/original/LOCAL/");
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+
+    fs::write(&file, "external change\n").unwrap();
+    editor
+        .buffer_mut()
+        .set_file_mtime(Some(std::time::UNIX_EPOCH));
+    let call = ToolCallInfo {
+        id: "conflicting-write".into(),
+        name: "write_file_at_path".into(),
+        arguments: serde_json::json!({
+            "path": file,
+            "content": "AGENT\n",
+            "expected_revision": editor.buffer().version(),
+        }),
+    };
+
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            assert!(error.contains("file changed on disk"), "{error}");
+        }
+        _ => panic!("expected a save conflict"),
+    }
+    assert_eq!(fs::read_to_string(&file).unwrap(), "external change\n");
+    assert_eq!(editor.buffer().rope().to_string(), "AGENT\n");
+    assert!(editor.is_modified());
+    editor.undo();
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+}
+
 #[test]
 fn edit_range_with_other_path_requires_approval_in_sensitive_mode() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -721,6 +875,119 @@ fn write_file_at_path_creates_missing_file() {
         assert!(content.contains("pub fn generated() {}"));
         assert!(target.parent().unwrap().is_dir());
     });
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn new_file_through_outside_symlink_requires_approval_before_preparing_buffer() {
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), project.path().join("linked")).unwrap();
+    git2::Repository::init(project.path()).unwrap();
+    let anchor = project.path().join("main.txt");
+    fs::write(&anchor, "project anchor\n").unwrap();
+    let mut editor = Editor::default();
+    editor.open_file(&anchor).unwrap();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    set_active_profile_project_scope(&mut editor);
+    editor.ai_state.no_repo_session_allowed_root = Some(project.path().to_path_buf());
+    editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+    let original_buffers = editor.buffers.len();
+    let original_target = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
+
+    for name in ["create_file", "write_file_at_path", "open_file"] {
+        let call = ToolCallInfo {
+            id: format!("symlink-{name}"),
+            name: name.into(),
+            arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "approved\n", "expected_revision": 0, "create": true}),
+        };
+        let request = match editor.dispatch_tool_call_with_approval(&call, None) {
+            ToolDispatchOutcome::ApprovalRequired(request) => request,
+            ToolDispatchOutcome::Completed(result) => {
+                panic!("{name} must ask before creating outside: {result:?}")
+            }
+        };
+        assert_eq!(
+            request.requested_path,
+            outside
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("nested/new.txt")
+        );
+        assert_eq!(editor.buffers.len(), original_buffers);
+        assert_eq!(
+            editor.ai_state.chat.as_ref().unwrap().active_buffer_id,
+            original_target
+        );
+        assert!(!outside.path().join("nested").exists());
+    }
+
+    let call = ToolCallInfo {
+        id: "approved-symlink-create".into(),
+        name: "create_file".into(),
+        arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "approved\n", "expected_revision": 0}),
+    };
+    assert!(matches!(
+        editor
+            .dispatch_tool_call_with_approval(&call, Some(&outside.path().canonicalize().unwrap())),
+        ToolDispatchOutcome::Completed(ToolResult::Success(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(outside.path().join("nested/new.txt")).unwrap(),
+        "approved\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn new_file_through_inside_symlink_stays_in_project() {
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join("real")).unwrap();
+    std::os::unix::fs::symlink(project.path().join("real"), project.path().join("linked")).unwrap();
+    git2::Repository::init(project.path()).unwrap();
+    let anchor = project.path().join("main.txt");
+    fs::write(&anchor, "project anchor\n").unwrap();
+    let mut editor = Editor::default();
+    editor.open_file(&anchor).unwrap();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    set_active_profile_project_scope(&mut editor);
+    editor.ai_state.no_repo_session_allowed_root = Some(project.path().to_path_buf());
+    editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+    let call = ToolCallInfo {
+        id: "inside-symlink-create".into(),
+        name: "create_file".into(),
+        arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "inside\n", "expected_revision": 0}),
+    };
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+        ToolDispatchOutcome::Completed(result) => panic!("inside symlink write failed: {result:?}"),
+        ToolDispatchOutcome::ApprovalRequired(req) => {
+            panic!("unexpected approval: {}", req.message)
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(project.path().join("real/nested/new.txt")).unwrap(),
+        "inside\n"
+    );
+    assert_eq!(
+        editor.active_chat_target_absolute_path().unwrap(),
+        project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("real/nested/new.txt")
+    );
 }
 
 #[test]
@@ -1584,8 +1851,12 @@ fn bash_tool_executes_shell_composition_after_policy() {
                 ..Default::default()
             })
             .expect("open chat");
-        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+        // Auto mode refuses synchronous shell dispatch (it reviews programs
+        // through Terra first), so exercise the shell body after an explicit
+        // one-shot approval instead.
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
         editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+        let approved_root = dir.path().to_path_buf();
 
         let tool_call = ToolCallInfo {
             id: "call_bash".to_string(),
@@ -1595,7 +1866,7 @@ fn bash_tool_executes_shell_composition_after_policy() {
             }),
         };
 
-        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+        match editor.dispatch_tool_call_with_approval(&tool_call, Some(&approved_root)) {
             ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
                 assert!(ok.contains("beta"), "{ok}");
             }
@@ -1626,8 +1897,9 @@ fn bash_tool_executes_simple_program_in_project_root() {
                 ..Default::default()
             })
             .expect("open chat");
-        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
         editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+        let approved_root = dir.path().to_path_buf();
 
         let tool_call = ToolCallInfo {
             id: "call_bash_pwd".to_string(),
@@ -1637,7 +1909,7 @@ fn bash_tool_executes_simple_program_in_project_root() {
             }),
         };
 
-        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+        match editor.dispatch_tool_call_with_approval(&tool_call, Some(&approved_root)) {
             ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
                 assert!(ok.contains("succeeded"), "{ok}");
             }
@@ -1758,11 +2030,12 @@ fn project_tools_work_from_unnamed_buffer_when_project_root_is_known() {
         }
     }
 
-    for tool_call in [ToolCallInfo {
+    let tool_call = ToolCallInfo {
         id: "call_strok_intro".to_string(),
         name: "strok_vector".to_string(),
         arguments: serde_json::json!({"operation": "intro"}),
-    }] {
+    };
+    {
         match editor.dispatch_tool_call_with_approval(&tool_call, None) {
             ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
                 assert!(
@@ -1932,7 +2205,7 @@ async fn completed_bash_tool_batch_does_not_block_editor_polling() {
         .chat
         .as_ref()
         .unwrap()
-        .pending_shell_execution
+        .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
         .is_some()
     {
         editor.poll_pending_ai_chat_job();
@@ -1984,32 +2257,61 @@ async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
     let (result_tx, result_rx) =
         tokio::sync::oneshot::channel::<super::super::ai_chat_state::ShellExecutionObservation>();
     drop(result_tx);
+    // An abandoned output reader may retain its sender after cancellation.
+    // Completion follows the result channel, and must still retain queued tail output.
+    let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(64);
+    progress_tx
+        .try_send(super::super::ai_chat_state::ShellProgressEvent::Output {
+            stream: super::super::ai_chat_state::ShellOutputStream::Stdout,
+            bytes: b"tail output".to_vec(),
+        })
+        .unwrap();
     let task = tokio::spawn(async {});
     if let Some(chat) = editor.ai_state.chat.as_mut() {
-        chat.pending_shell_execution = Some(super::super::ai_chat_state::PendingShellExecution {
-            tool_call: shell_call,
-            continuation: super::super::ai_chat_state::ToolExecutionContinuation::Batch {
-                runtime_tool: None,
-                runtime_turn: None,
-                remaining_tool_calls: vec![follow_up],
-                model_name: "test".into(),
-            },
-            receiver: result_rx,
-            progress: tokio::sync::mpsc::unbounded_channel().1,
-            task,
-            kill: std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default()),
-        });
+        chat.shell_transcripts.insert(
+            shell_call.id.clone(),
+            super::super::ai_chat_state::ShellTranscript::new(
+                shell_call.clone(),
+                "interrupted".into(),
+                std::path::PathBuf::from("."),
+            ),
+        );
+        assert!(chat
+            .park(super::super::ai_chat_state::PendingShellExecution {
+                tool_call: shell_call,
+                continuation: super::super::ai_chat_state::ToolExecutionContinuation::Batch {
+                    runtime_tool: None,
+                    runtime_turn: None,
+                    remaining_tool_calls: vec![follow_up],
+                    model_name: "test".into(),
+                },
+                receiver: result_rx,
+                progress: progress_rx,
+                task,
+                kill: std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default()),
+            })
+            .is_ok());
         chat.waiting = true;
     }
 
     assert!(editor.poll_pending_ai_chat_job());
+    assert!(
+        progress_tx.is_closed(),
+        "completion must release abandoned readers"
+    );
 
     let chat = editor.ai_state.chat.as_ref().unwrap();
+    assert_eq!(
+        chat.shell_transcripts["shell-1"].retained_bytes,
+        b"tail output".len()
+    );
     assert!(
         !chat.waiting,
         "unknown batch shell outcome must not re-arm the waiting spinner"
     );
-    assert!(chat.pending_shell_execution.is_none());
+    assert!(chat
+        .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
+        .is_none());
     assert!(chat.pending_job.is_none());
     assert!(!editor.ai_chat_has_pending_work());
 
@@ -2073,14 +2375,14 @@ async fn run_batch_shell_to_completion(yolo: bool) -> String {
             .chat
             .as_ref()
             .unwrap()
-            .pending_tool_approval
+            .parked_as::<crate::editor::ai_chat_state::PendingToolApproval>()
             .is_some());
         assert!(editor
             .ai_state
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
             .is_none());
         assert!(editor.ai_chat_resolve_pending_tool_approval(true, false));
     }
@@ -2090,9 +2392,9 @@ async fn run_batch_shell_to_completion(yolo: bool) -> String {
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
             .is_some(),
-        "batch shell must park on pending_shell_execution"
+        "batch shell must park on a shell execution"
     );
     assert!(
         started.elapsed() < std::time::Duration::from_millis(500),
@@ -2105,7 +2407,7 @@ async fn run_batch_shell_to_completion(yolo: bool) -> String {
         .chat
         .as_ref()
         .unwrap()
-        .pending_shell_execution
+        .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
         .is_some()
     {
         editor.poll_pending_ai_chat_job();

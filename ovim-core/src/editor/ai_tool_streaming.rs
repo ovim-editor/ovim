@@ -1,4 +1,5 @@
 use crate::ai::chat_types::{ChatMessage, ChatRole, StreamChunk};
+use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::skills::{ACTIVATED_SKILL_MARKER, ACTIVATE_SKILL_TOOL};
 use crate::ai::stream_ai_chat_with_codex_session;
 use crate::ai::tools::builtins::ProjectDiagnosticFile;
@@ -8,7 +9,6 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::ai_chat_state::PendingAiChatJob;
-use super::ai_tool_execution::{find_enclosing_symbol, symbol_kind_label};
 use super::ai_tool_path::to_relative_path_for_boundary;
 use super::Editor;
 
@@ -171,6 +171,7 @@ impl Editor {
                 "For Ollama specifically: emit structured tool calls, not raw JSON in content."
             }
             crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::ClaudeCode
             | crate::ai::AiProviderKind::CodexAppServer
             | crate::ai::AiProviderKind::OpenAi
             | crate::ai::AiProviderKind::Anthropic => {
@@ -199,19 +200,16 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no active chat session"))?;
 
-        let profile_name = chat
-            .opts
-            .profile
-            .clone()
-            .unwrap_or_else(|| self.ai_state.active_profile.clone());
+        let profile_name = self.ai_chat_effective_profile();
         let mut profile = self
-            .ai_state
-            .config
-            .resolve_profile(&profile_name)
-            .ok_or_else(|| anyhow::anyhow!("No AI profile '{}' configured", profile_name))?
-            .clone();
+            .ai_chat_resolved_profile()
+            .ok_or_else(|| anyhow::anyhow!("No AI profile '{}' configured", profile_name))?;
         if let Some(effort) = chat.reasoning_effort_override.as_ref() {
             profile.reasoning_effort = Some(effort.clone());
+        }
+
+        if profile.provider.owns_agent_loop() {
+            return self.spawn_external_agent(profile);
         }
 
         let model_name = profile.model.clone();
@@ -289,7 +287,7 @@ impl Editor {
         let stable_system_prompt = system_prompt.clone();
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
         let editor_state_budget = if remote_provider { 2500 } else { 8000 };
-        let editor_state = self.build_editor_state_context(editor_state_budget);
+        let editor_state = self.build_provider_editor_state(editor_state_budget, remote_provider);
         let system_prompt = system_prompt.map(|sp| format!("{sp}\n\n{editor_state}"));
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
         let working_file_path = self.buffers[self.current_buffer_index]
@@ -413,29 +411,7 @@ impl Editor {
                 branch_generation,
                 steer_tx,
             });
-            chat.pending_tool_approval = None;
-            chat.pending_auto_mode_classification = None;
-            if let Some(pending) = chat.pending_shell_execution.take() {
-                // Aborting a started `spawn_blocking` task does not stop it; the
-                // command itself must be killed or it keeps mutating the
-                // workspace after the UI has moved on.
-                pending.kill.cancel();
-                pending.task.abort();
-                // Retire the transcript too, exactly as the user-cancel path
-                // does. Skipping this leaves the row rendering as `running` for
-                // the rest of the session and keeps its retained output out of
-                // the LRU, so eviction can never reclaim it.
-                chat.retire_shell_transcript(
-                    &pending.tool_call.id,
-                    super::ai_chat_state::ShellTranscriptPhase::Interrupted,
-                );
-            }
-            if let Some(pending) = chat.pending_background_tool.take() {
-                pending.task.abort();
-            }
-            if let Some(pending) = chat.pending_subagent_control.take() {
-                pending.task.abort();
-            }
+            chat.abandon_parked_tool();
             chat.streaming_content = Some(String::new());
             chat.streaming_thinking = None;
             chat.streaming_provider_state.clear();
@@ -565,29 +541,12 @@ impl Editor {
 
     /// Clear all streaming state and mark the chat as no longer waiting.
     pub(crate) fn clear_streaming_state(&mut self) {
+        self.abort_editor_mcp_walkthrough();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = false;
+            chat.external_agent = None;
             chat.pending_job = None;
-            chat.pending_tool_approval = None;
-            chat.pending_auto_mode_classification = None;
-            if let Some(pending) = chat.pending_shell_execution.take() {
-                // Aborting a started `spawn_blocking` task does not stop it; the
-                // command itself must be killed or it keeps mutating the
-                // workspace after the UI has moved on.
-                pending.kill.cancel();
-                pending.task.abort();
-                // Retire the transcript too, exactly as the user-cancel path
-                // does. Skipping this leaves the row rendering as `running` for
-                // the rest of the session and keeps its retained output out of
-                // the LRU, so eviction can never reclaim it.
-                chat.retire_shell_transcript(
-                    &pending.tool_call.id,
-                    super::ai_chat_state::ShellTranscriptPhase::Interrupted,
-                );
-            }
-            if let Some(pending) = chat.pending_background_tool.take() {
-                pending.task.abort();
-            }
+            chat.abandon_parked_tool();
             chat.streaming_content = None;
             chat.streaming_thinking = None;
             chat.streaming_provider_state.clear();
@@ -598,6 +557,18 @@ impl Editor {
                 chat.viewport.pinned_base_total_rows = None;
                 chat.history.selected_node_id = None;
             }
+        }
+    }
+
+    /// The editor snapshot as a provider receives it. Chat messages are
+    /// redacted for remote providers; the snapshot carries file content and
+    /// diagnostics and needs the same treatment.
+    pub(crate) fn build_provider_editor_state(&self, budget_chars: usize, remote: bool) -> String {
+        let state = self.build_editor_state_context(budget_chars);
+        if remote {
+            redact_high_risk_tokens(&state)
+        } else {
+            state
         }
     }
 
@@ -663,17 +634,25 @@ impl Editor {
         out.push_str(&cursor_line);
         remaining = remaining.saturating_sub(cursor_line.len());
 
-        // --- Enclosing scope (if LSP symbols available) ---
-        if let Some(sym) = find_enclosing_symbol(
-            &self.lsp.state.available_document_symbols,
-            cursor.line() as u32,
-        ) {
-            let kind = symbol_kind_label(sym.kind);
-            let start = sym.range.start.line + 1;
-            let end = sym.range.end.line + 1;
+        // A file the sensitive-path policy blocks (.env, keys) never has its
+        // content, selection, or diagnostics put in front of a provider.
+        let withheld = buf.file_path().and_then(|path| {
+            sensitive_path_reason(&self.absolutize_path(std::path::Path::new(path)))
+        });
+        if let Some(reason) = withheld {
+            out.push_str(&format!(
+                "\nContent withheld ({reason}). Ask the user before reading this file with a tool.\n"
+            ));
+            return out;
+        }
+
+        // --- Enclosing scope (from the outline, when it exists) ---
+        if let Some(sym) =
+            super::outline::enclosing_path(self.outline_symbols(), cursor.line()).pop()
+        {
             let scope_line = format!(
                 "Enclosing: {} {} (lines {}-{})\n",
-                kind, sym.name, start, end
+                sym.kind, sym.name, sym.start_line, sym.end_line
             );
             if scope_line.len() <= remaining {
                 out.push_str(&scope_line);
@@ -867,6 +846,69 @@ mod tests {
         editor
     }
 
+    fn editor_on_file(name: &str, text: &str) -> (Editor, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        let mut editor = Editor::default();
+        editor.buffer_mut().replace_all(text);
+        editor.set_file_path(path.to_string_lossy().into_owned());
+        editor.set_viewport_height(20);
+        (editor, directory)
+    }
+
+    #[test]
+    fn editor_state_withholds_content_of_files_the_sensitive_path_policy_blocks() {
+        for name in [".env", ".env.production", "server.pem", "id_ed25519"] {
+            let (mut editor, _directory) = editor_on_file(
+                name,
+                "DATABASE_URL=postgres://u:pw@db/prod\nTOKEN=abcdefgh12345678\n",
+            );
+            editor.ai_state.active_selection = Some(crate::editor::ai_state::AiSelectionSnapshot {
+                buffer_id: editor.buffer().id(),
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 12,
+                start_char: 0,
+                end_char: 12,
+                anchor_line: 0,
+                selected_text: "DATABASE_URL".into(),
+                selection_mode: crate::mode::Mode::Visual,
+            });
+            let context = editor.build_editor_state_context(2_500);
+            assert!(context.contains("File: "), "{name}: {context}");
+            assert!(context.contains("Content withheld"), "{name}: {context}");
+            assert!(!context.contains("DATABASE_URL"), "{name}: {context}");
+            assert!(!context.contains("abcdefgh12345678"), "{name}: {context}");
+            assert!(!context.contains("### Visible code"), "{name}: {context}");
+            assert!(!context.contains("### Selection"), "{name}: {context}");
+        }
+    }
+
+    #[test]
+    fn editor_state_for_ordinary_files_still_shows_code() {
+        let (editor, _directory) = editor_on_file("main.rs", "fn main() {}\n");
+        let context = editor.build_editor_state_context(2_500);
+        assert!(context.contains("### Visible code"));
+        assert!(context.contains("fn main() {}"));
+        assert!(!context.contains("Content withheld"));
+    }
+
+    #[test]
+    fn remote_providers_get_a_redacted_editor_snapshot() {
+        let (editor, _directory) = editor_on_file(
+            "settings.rs",
+            "const API_KEY = \"sk-live-supersecret-value\";\n// Authorization: Bearer abcdef0123456789\n",
+        );
+        let remote = editor.build_provider_editor_state(2_500, true);
+        assert!(!remote.contains("sk-live-supersecret-value"), "{remote}");
+        assert!(!remote.contains("abcdef0123456789"), "{remote}");
+        assert!(remote.contains("[REDACTED"), "{remote}");
+        // A local model keeps the code intact; nothing leaves the machine.
+        let local = editor.build_provider_editor_state(2_500, false);
+        assert!(local.contains("sk-live-supersecret-value"), "{local}");
+    }
+
     #[test]
     fn editor_state_does_not_center_on_cursor_outside_viewport_excerpt() {
         let mut editor = editor_with_numbered_lines(1_100);
@@ -960,7 +1002,7 @@ mod tests {
             arguments: serde_json::json!({ "command": "sleep 60" }),
         };
         let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let (_progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_progress_tx, progress_rx) = tokio::sync::mpsc::channel(64);
         let kill = Arc::new(ShellKillHandle::default());
         let task = tokio::spawn(async {});
 
@@ -973,26 +1015,28 @@ mod tests {
             );
             transcript.phase = ShellTranscriptPhase::Running;
             chat.shell_transcripts.insert(call.id.clone(), transcript);
-            chat.pending_shell_execution = Some(PendingShellExecution {
-                tool_call: call.clone(),
-                continuation: ToolExecutionContinuation::Batch {
-                    runtime_tool: None,
-                    runtime_turn: None,
-                    remaining_tool_calls: Vec::new(),
-                    model_name: "test-model".into(),
-                },
-                receiver: result_rx,
-                progress: progress_rx,
-                task,
-                kill: kill.clone(),
-            });
+            assert!(chat
+                .park(PendingShellExecution {
+                    tool_call: call.clone(),
+                    continuation: ToolExecutionContinuation::Batch {
+                        runtime_tool: None,
+                        runtime_turn: None,
+                        remaining_tool_calls: Vec::new(),
+                        model_name: "test-model".into(),
+                    },
+                    receiver: result_rx,
+                    progress: progress_rx,
+                    task,
+                    kill: kill.clone(),
+                })
+                .is_ok());
         }
 
         editor.clear_streaming_state();
 
         let chat = editor.ai_state.chat.as_ref().expect("chat");
         assert!(
-            chat.pending_shell_execution.is_none(),
+            chat.parked().is_none(),
             "the pending execution should have been taken"
         );
         let transcript = chat

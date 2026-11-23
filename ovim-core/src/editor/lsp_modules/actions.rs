@@ -12,10 +12,21 @@ use crate::editor::lsp_state::AvailableCodeAction;
 use anyhow::Result;
 
 fn fallback_code_action_character(
+    line: u32,
     current_character: u32,
     diagnostics: &[lsp_types::Diagnostic],
 ) -> Option<u32> {
-    let min_start = diagnostics.iter().map(|d| d.range.start.character).min()?;
+    let min_start = diagnostics
+        .iter()
+        .filter(|d| crate::lsp::diagnostic_covers_line(d, line as usize))
+        .map(|d| {
+            if d.range.start.line == line {
+                d.range.start.character
+            } else {
+                0 // A continuation covers this line from its first column.
+            }
+        })
+        .min()?;
     if min_start == current_character {
         None
     } else {
@@ -180,7 +191,7 @@ impl Editor {
                     // Some servers only return quickfixes when the request position
                     // intersects the diagnostic span, not just the diagnostic line.
                     if let Some(fallback_character) =
-                        fallback_code_action_character(ctx.character, &diagnostics)
+                        fallback_code_action_character(ctx.line, ctx.character, &diagnostics)
                     {
                         let retry = if ctx.server_ids.len() > 1 {
                             ctx.lsp
@@ -453,7 +464,7 @@ impl Editor {
                 Ok(tokens) => {
                     let legend = ctx
                         .lsp
-                        .get_semantic_tokens_legend(&ctx.language_id)
+                        .get_semantic_tokens_legend(&ctx.uri, &ctx.language_id)
                         .await
                         .ok()
                         .flatten();
@@ -524,18 +535,29 @@ mod tests {
     #[test]
     fn fallback_code_action_character_uses_min_diagnostic_start() {
         let diags = vec![diagnostic(12, 16), diagnostic(4, 8), diagnostic(7, 9)];
-        assert_eq!(fallback_code_action_character(20, &diags), Some(4));
+        assert_eq!(fallback_code_action_character(10, 20, &diags), Some(4));
     }
 
     #[test]
     fn fallback_code_action_character_none_when_cursor_already_at_min_start() {
         let diags = vec![diagnostic(4, 8), diagnostic(10, 12)];
-        assert_eq!(fallback_code_action_character(4, &diags), None);
+        assert_eq!(fallback_code_action_character(10, 4, &diags), None);
     }
 
     #[test]
     fn fallback_code_action_character_none_with_no_diagnostics() {
-        assert_eq!(fallback_code_action_character(5, &[]), None);
+        assert_eq!(fallback_code_action_character(10, 5, &[]), None);
+    }
+
+    #[test]
+    fn code_action_retry_uses_the_covered_columns_on_a_continuation_line() {
+        let mut diag = diagnostic(12, 0);
+        diag.range.end.line = 13;
+        let diags = [diag];
+        assert_eq!(fallback_code_action_character(10, 20, &diags), Some(12));
+        assert_eq!(fallback_code_action_character(11, 4, &diags), Some(0));
+        assert_eq!(fallback_code_action_character(11, 0, &diags), None);
+        assert_eq!(fallback_code_action_character(13, 4, &diags), None);
     }
 
     #[test]

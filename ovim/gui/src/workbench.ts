@@ -276,3 +276,17 @@ export const projectBrowserState = (
         acknowledgeRevision: undefined,
     };
 };
+
+/** Ctrl+Tab follows the visible workbench order, including source and browser tabs. */
+export const adjacentWorkbenchTab = (
+    tabs: readonly WorkbenchTabReference[],
+    selection: WorkbenchSelection,
+    backwards: boolean,
+) => {
+    const current = tabs.findIndex(
+        (tab) => tab.id === workbenchSelectionId(selection),
+    );
+    return tabs.length && current >= 0
+        ? (current + (backwards ? -1 : 1) + tabs.length) % tabs.length
+        : -1;
+};

@@ -3,20 +3,11 @@
 use anyhow::{bail, Context, Result};
 use git2::{Delta, Diff, DiffFindOptions, DiffOptions, Oid, Patch, Repository, Tree};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiffReview {
-    pub root: PathBuf,
-    pub spec: String,
-    pub display_spec: String,
-    pub files: Vec<DiffFile>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,55 +23,12 @@ pub struct DiffFile {
 pub fn worktree_root(path: &Path) -> Result<PathBuf> {
     let repo = Repository::discover(path)
         .with_context(|| format!("{} is not inside a Git worktree", path.display()))?;
-    repo.workdir()
+    let root = repo
+        .workdir()
         .map(Path::to_path_buf)
         .or_else(|| repo.path().parent().map(Path::to_path_buf))
-        .context("Could not resolve the Git worktree")
-}
-
-pub fn review(path: &Path, spec: Option<&str>) -> Result<DiffReview> {
-    let repo = Repository::discover(path)
-        .with_context(|| format!("{} is not inside a Git worktree", path.display()))?;
-    let root = worktree_root(path)?;
-    let spec = normalize_spec(spec);
-    let diff = build_diff(&repo, &spec, None)?;
-    let files = summarize(&diff)?;
-    Ok(DiffReview {
-        root,
-        display_spec: spec.replace("WORKTREE", "working tree"),
-        spec,
-        files,
-    })
-}
-
-pub fn file_patch(path: &Path, spec: Option<&str>, requested_path: &str) -> Result<String> {
-    if requested_path.is_empty() || Path::new(requested_path).is_absolute() {
-        bail!("Choose a changed file from the comparison");
-    }
-    let repo = Repository::discover(path)
-        .with_context(|| format!("{} is not inside a Git worktree", path.display()))?;
-    let spec = normalize_spec(spec);
-    let diff = build_diff(&repo, &spec, Some(requested_path))?;
-    let files = summarize(&diff)?;
-    if !files.iter().any(|file| file.path == requested_path) {
-        bail!("{requested_path} is not changed in {spec}");
-    }
-
-    let mut output = Vec::new();
-    output.extend_from_slice(format!("comparison: {spec}\nfile: {requested_path}\n\n").as_bytes());
-    for index in 0..diff.deltas().len() {
-        let Some(mut patch) = Patch::from_diff(&diff, index)? else {
-            continue;
-        };
-        output.extend_from_slice(patch.to_buf()?.as_ref());
-        if output.len() > MAX_PATCH_BYTES {
-            bail!("The diff for {requested_path} exceeds the 4 MiB display limit");
-        }
-    }
-    if output.is_empty() {
-        bail!("No textual patch is available for {requested_path}");
-    }
-    Ok(String::from_utf8_lossy(&output).into_owned())
+        .context("Could not resolve the Git worktree")?;
+    std::fs::canonicalize(root).context("Could not canonicalize the Git worktree")
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +39,7 @@ pub fn file_patch(path: &Path, spec: Option<&str>, requested_path: &str) -> Resu
 const DEFAULT_BRANCH_CANDIDATES: &[&str] = &["main", "master", "develop", "trunk"];
 
 /// How the comparison base of a branch review was chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BaseKind {
     /// The repository's default branch (merge-base with HEAD).
@@ -105,12 +53,12 @@ pub enum BaseKind {
 }
 
 /// The base a branch review compares the working tree against.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewBase {
     /// Human-readable name, e.g. `origin/main`, `main`, or `HEAD`.
     pub name: String,
-    /// Comparison spec accepted by [`review`] and [`review_patch`].
+    /// Comparison spec accepted by [`review_patch`].
     pub spec: String,
     pub kind: BaseKind,
     /// `(remote, branch)` when the base is a remote-tracking ref.
@@ -162,6 +110,68 @@ impl ReviewBase {
     }
 }
 
+/// Whether a configured pull base is a branch name (not a revision expression).
+pub fn valid_pullbase(branch: &str) -> bool {
+    !branch.starts_with('-') && git2::Reference::is_valid_name(&format!("refs/heads/{branch}"))
+}
+
+/// Normalize an override directory at configuration time, including home expansion.
+pub fn pullbase_directory(path: &str) -> Result<std::path::PathBuf> {
+    anyhow::ensure!(!path.is_empty(), "pullbase path cannot be empty");
+    let expanded = shellexpand::tilde(path);
+    let path = Path::new(expanded.as_ref())
+        .canonicalize()
+        .with_context(|| format!("Cannot resolve pullbase path '{path}'"))?;
+    anyhow::ensure!(path.is_dir(), "pullbase path must be a directory");
+    Ok(path)
+}
+
+/// Select the most specific override against the repository root, independent
+/// of which source directory was used to open the review.
+pub fn pullbase_for_path<'a>(
+    path: &Path,
+    global: Option<&'a str>,
+    overrides: &'a std::collections::BTreeMap<std::path::PathBuf, String>,
+) -> Result<Option<&'a str>> {
+    let repo = Repository::discover(path)?;
+    let root = repo
+        .workdir()
+        .context("Diff review requires a Git worktree")?
+        .canonicalize()?;
+    Ok(overrides
+        .iter()
+        .filter(|(directory, _)| root.starts_with(directory))
+        .max_by_key(|(directory, _)| directory.components().count())
+        .map(|(_, branch)| branch.as_str())
+        .or(global))
+}
+
+/// Resolve a configured branch, preserving remote metadata for base fetching.
+pub fn resolve_pullbase(path: &Path, branch: Option<&str>) -> Result<ReviewBase> {
+    let Some(branch) = branch else {
+        return resolve_base(path);
+    };
+    anyhow::ensure!(valid_pullbase(branch), "pullbase must be a branch name");
+    let repo = Repository::discover(path)?;
+    // Prefer a local branch with this exact name, then a remote-tracking branch.
+    let reference = repo
+        .find_reference(&format!("refs/heads/{branch}"))
+        .or_else(|_| repo.find_reference(&format!("refs/remotes/{branch}")))
+        .with_context(|| format!("Pull base branch '{branch}' was not found"))?;
+    reference.peel_to_commit()?;
+    let mut base = ReviewBase::explicit(branch);
+    if let Some(name) = reference
+        .name()
+        .and_then(|name| name.strip_prefix("refs/remotes/"))
+    {
+        if let Some((remote, branch)) = name.split_once('/') {
+            base.remote = Some((remote.to_string(), branch.to_string()));
+            (base.fetched_ago, base.ever_fetched) = fetch_age(&repo);
+        }
+    }
+    Ok(base)
+}
+
 /// Resolves the best base to review the current branch against.
 ///
 /// The default branch is discovered from the remote's advertised HEAD, then
@@ -172,7 +182,11 @@ impl ReviewBase {
 pub fn resolve_base(path: &Path) -> Result<ReviewBase> {
     let repo = Repository::discover(path)
         .with_context(|| format!("{} is not inside a Git worktree", path.display()))?;
-    let head_oid = resolve_commit_oid(&repo, "HEAD").context("The repository has no commits")?;
+    if head_is_unborn(&repo) {
+        // Nothing to compare with yet: the review shows everything as added.
+        return Ok(ReviewBase::head());
+    }
+    let head_oid = resolve_commit_oid(&repo, "HEAD")?;
     let head_branch = repo
         .head()
         .ok()
@@ -309,7 +323,7 @@ fn fetch_age(repo: &Repository) -> (Option<Duration>, bool) {
 }
 
 /// Kind of a line in a rendered patch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PatchLineKind {
     /// `diff --git`, `index`, `---`, `+++`, rename/mode lines
@@ -324,7 +338,7 @@ pub enum PatchLineKind {
 }
 
 /// Source mapping for one line of a rendered patch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchLine {
     pub kind: PatchLineKind,
@@ -340,7 +354,7 @@ pub struct PatchLine {
 
 /// A full branch review: summary plus a unified patch with per-line source
 /// mapping, ready to be shown in a buffer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPatch {
     pub root: PathBuf,
@@ -349,6 +363,9 @@ pub struct ReviewPatch {
     pub base: ReviewBase,
     /// Short OID of the merge-base used, when the spec has one.
     pub merge_base: Option<String>,
+    /// Full commit OID of the left side actually used to build the patch.
+    #[serde(default)]
+    pub comparison_base_oid: String,
     /// Commits on HEAD that are not on the base.
     pub ahead: usize,
     /// Commits on the base that are not on HEAD.
@@ -369,6 +386,16 @@ impl ReviewPatch {
         self.files.iter().map(|file| file.deletions).sum()
     }
 }
+
+pub mod context;
+mod custom;
+pub mod store;
+pub(crate) mod walkthrough;
+pub use custom::{
+    review_display_snapshot, review_snapshot, ChangeBlock, ChangeRef, CustomReview, DiffPairing,
+    FrozenSource, ReviewSection, ReviewSectionLine, ReviewSnapshot, SourceFileSnapshot,
+    SourceWindow,
+};
 
 /// Builds the full review patch for `base`.
 pub fn review_patch(path: &Path, base: &ReviewBase) -> Result<ReviewPatch> {
@@ -399,8 +426,11 @@ pub fn review_patch(path: &Path, base: &ReviewBase) -> Result<ReviewPatch> {
         _ => (None, 0, 0),
     };
 
-    let diff = build_diff(&repo, &base.spec, None)?;
-    let files = summarize(&diff)?;
+    let (diff, comparison_base_oid) = build_diff(&repo, &base.spec)?;
+    // A sparse checkout leaves files out of the working tree that the diff
+    // then reports as deleted.
+    let sparse = crate::git::ops::skip_worktree_paths(&repo)?;
+    let files = summarize(&diff, &sparse)?;
     let file_index: HashMap<&str, usize> = files
         .iter()
         .enumerate()
@@ -427,6 +457,9 @@ pub fn review_patch(path: &Path, base: &ReviewBase) -> Result<ReviewPatch> {
             .path()
             .or_else(|| delta.old_file().path())
             .and_then(Path::to_str);
+        if path.is_some_and(|path| sparse.contains(Path::new(path))) {
+            return true;
+        }
         current_file = path.and_then(|path| file_index.get(path).copied());
 
         match line.origin() {
@@ -526,6 +559,7 @@ pub fn review_patch(path: &Path, base: &ReviewBase) -> Result<ReviewPatch> {
         head,
         base: base.clone(),
         merge_base,
+        comparison_base_oid: comparison_base_oid.to_string(),
         ahead,
         behind,
         files,
@@ -546,16 +580,7 @@ fn short_oid(oid: &Oid) -> String {
     hex[..7.min(hex.len())].to_string()
 }
 
-fn normalize_spec(spec: Option<&str>) -> String {
-    let spec = spec.map(str::trim).filter(|spec| !spec.is_empty());
-    spec.unwrap_or("HEAD...WORKTREE").to_string()
-}
-
-fn build_diff<'repo>(
-    repo: &'repo Repository,
-    spec: &str,
-    pathspec: Option<&str>,
-) -> Result<Diff<'repo>> {
+fn build_diff<'repo>(repo: &'repo Repository, spec: &str) -> Result<(Diff<'repo>, Oid)> {
     let mut options = DiffOptions::new();
     options
         .include_untracked(true)
@@ -565,32 +590,42 @@ fn build_diff<'repo>(
         // libgit2 defaults to c/ i/ w/ prefixes; use git's familiar a/ b/.
         .old_prefix("a")
         .new_prefix("b");
-    if let Some(path) = pathspec {
-        options.pathspec(path).disable_pathspec_match(true);
-    }
 
-    let mut diff = if let Some(base) = spec.strip_suffix("...WORKTREE") {
-        let base_tree = merge_base_tree(repo, base.trim())?;
-        repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut options))?
+    let (mut diff, comparison_base_oid) = if let Some(base) = spec.strip_suffix("...WORKTREE") {
+        let (base_tree, oid) = worktree_base(repo, base.trim(), true)?;
+        (
+            repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut options))?,
+            oid,
+        )
     } else if let Some(base) = spec.strip_suffix("..WORKTREE") {
-        let base_tree = resolve_tree(repo, base.trim())?;
-        repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut options))?
+        let (base_tree, oid) = worktree_base(repo, base.trim(), false)?;
+        (
+            repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut options))?,
+            oid,
+        )
     } else if let Some((left, right)) = spec.split_once("...") {
         let left = resolve_commit_oid(repo, left.trim())?;
         let right = resolve_commit_oid(repo, right.trim())?;
         let base = repo.merge_base(left, right)?;
         let base_tree = repo.find_commit(base)?.tree()?;
         let right_tree = repo.find_commit(right)?.tree()?;
-        repo.diff_tree_to_tree(Some(&base_tree), Some(&right_tree), Some(&mut options))?
+        (
+            repo.diff_tree_to_tree(Some(&base_tree), Some(&right_tree), Some(&mut options))?,
+            base,
+        )
     } else if let Some((left, right)) = spec.split_once("..") {
-        let left_tree = resolve_tree(repo, left.trim())?;
+        let left = resolve_commit_oid(repo, left.trim())?;
+        let left_tree = repo.find_commit(left)?.tree()?;
         let right_tree = resolve_tree(repo, right.trim())?;
-        repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
+        (
+            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?,
+            left,
+        )
     } else {
         bail!("Use a comparison such as HEAD...WORKTREE, main...WORKTREE, or main..feature")
     };
     diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
-    Ok(diff)
+    Ok((diff, comparison_base_oid))
 }
 
 fn resolve_commit_oid(repo: &Repository, reference: &str) -> Result<Oid> {
@@ -607,14 +642,38 @@ fn resolve_tree<'repo>(repo: &'repo Repository, reference: &str) -> Result<Tree<
         .with_context(|| format!("Could not read the tree for {reference}"))
 }
 
-fn merge_base_tree<'repo>(repo: &'repo Repository, base: &str) -> Result<Tree<'repo>> {
+/// True before the first commit, when `HEAD` names a branch with no commit.
+pub(crate) fn head_is_unborn(repo: &Repository) -> bool {
+    matches!(repo.head(), Err(error) if error.code() == git2::ErrorCode::UnbornBranch)
+}
+
+/// The tree (and the commit it belongs to) a working tree comparison starts
+/// from. Before the first commit `HEAD` resolves to nothing: the base is then
+/// the empty tree, and the commit is the zero id.
+fn worktree_base<'repo>(
+    repo: &'repo Repository,
+    base: &str,
+    merge_base: bool,
+) -> Result<(Tree<'repo>, Oid)> {
+    if base == "HEAD" && head_is_unborn(repo) {
+        let empty = repo.find_tree(repo.treebuilder(None)?.write()?)?;
+        return Ok((empty, Oid::zero()));
+    }
+    if merge_base {
+        return merge_base_tree(repo, base);
+    }
+    let oid = resolve_commit_oid(repo, base)?;
+    Ok((repo.find_commit(oid)?.tree()?, oid))
+}
+
+fn merge_base_tree<'repo>(repo: &'repo Repository, base: &str) -> Result<(Tree<'repo>, Oid)> {
     let base = resolve_commit_oid(repo, base)?;
     let head = resolve_commit_oid(repo, "HEAD")?;
     let oid = repo.merge_base(base, head).unwrap_or(base);
-    Ok(repo.find_commit(oid)?.tree()?)
+    Ok((repo.find_commit(oid)?.tree()?, oid))
 }
 
-fn summarize(diff: &Diff<'_>) -> Result<Vec<DiffFile>> {
+fn summarize(diff: &Diff<'_>, sparse: &HashSet<PathBuf>) -> Result<Vec<DiffFile>> {
     let mut files = Vec::with_capacity(diff.deltas().len());
     for (index, delta) in diff.deltas().enumerate() {
         let path = delta
@@ -624,6 +683,9 @@ fn summarize(diff: &Diff<'_>) -> Result<Vec<DiffFile>> {
             .and_then(Path::to_str)
             .context("A changed path is not valid UTF-8")?
             .to_string();
+        if sparse.contains(Path::new(&path)) {
+            continue;
+        }
         let old_path = delta
             .old_file()
             .path()
@@ -668,37 +730,6 @@ fn status_name(status: Delta) -> &'static str {
 mod tests {
     use super::*;
     use std::fs;
-
-    fn commit(repo: &Repository, path: &Path, content: &str) {
-        fs::write(path, content).unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("file.txt")).unwrap();
-        index.write().unwrap();
-        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-        let signature = git2::Signature::now("Ovim", "ovim@example.com").unwrap();
-        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
-            .unwrap();
-    }
-
-    #[test]
-    fn summarizes_and_renders_worktree_changes() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = Repository::init(temp.path()).unwrap();
-        let file = temp.path().join("file.txt");
-        commit(&repo, &file, "one\ntwo\n");
-        fs::write(&file, "one\nchanged\nthree\n").unwrap();
-        fs::write(temp.path().join("new.txt"), "new\n").unwrap();
-
-        let review = review(temp.path(), None).unwrap();
-        assert_eq!(review.spec, "HEAD...WORKTREE");
-        assert_eq!(review.files.len(), 2);
-        assert!(review.files.iter().any(|file| file.path == "new.txt"));
-
-        let patch = file_patch(temp.path(), None, "file.txt").unwrap();
-        assert!(patch.contains("comparison: HEAD...WORKTREE"));
-        assert!(patch.contains("-two"));
-        assert!(patch.contains("+changed"), "{patch}");
-    }
 
     /// Stages everything and commits on the current HEAD branch.
     fn commit_all(repo: &Repository, message: &str) -> Oid {
@@ -828,6 +859,60 @@ mod tests {
     }
 
     #[test]
+    fn review_before_the_first_commit_compares_against_the_empty_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join("staged.txt"), "staged\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("staged.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(temp.path().join("untracked.txt"), "untracked\n").unwrap();
+
+        // The automatic base and the explicit `HEAD` of the status list.
+        for base in [
+            resolve_base(temp.path()).unwrap(),
+            ReviewBase::explicit("HEAD"),
+        ] {
+            let snapshot = review_display_snapshot(temp.path(), &base).unwrap();
+            let paths: Vec<&str> = snapshot
+                .patch
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect();
+            assert_eq!(paths, ["staged.txt", "untracked.txt"]);
+            assert!(snapshot.patch.text.contains("+staged"));
+        }
+    }
+
+    #[test]
+    fn review_patch_ignores_files_a_sparse_checkout_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = repo_on_main(temp.path());
+        fs::write(temp.path().join("sparse.txt"), "sparse\n").unwrap();
+        commit_all(&repo, "add sparse");
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("sparse.txt"), 0).unwrap();
+        entry.flags_extended |= 1 << 14;
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+        fs::remove_file(temp.path().join("sparse.txt")).unwrap();
+        fs::write(temp.path().join("a.txt"), "one\nchanged\nthree\n").unwrap();
+
+        let base = resolve_base(temp.path()).unwrap();
+        let patch = review_patch(temp.path(), &base).unwrap();
+        assert_eq!(
+            patch
+                .files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt"]
+        );
+        assert!(!patch.text.contains("sparse.txt"), "{}", patch.text);
+    }
+
+    #[test]
     fn review_patch_maps_every_line_to_its_source() {
         let temp = tempfile::tempdir().unwrap();
         let repo = repo_on_main(temp.path());
@@ -896,15 +981,5 @@ mod tests {
             (new_file_line.file, new_file_line.new_line),
             (Some(1), Some(1))
         );
-    }
-
-    #[test]
-    fn rejects_files_outside_the_comparison() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = Repository::init(temp.path()).unwrap();
-        let file = temp.path().join("file.txt");
-        commit(&repo, &file, "one\n");
-        let error = file_patch(temp.path(), None, "other.txt").unwrap_err();
-        assert!(error.to_string().contains("not changed"));
     }
 }

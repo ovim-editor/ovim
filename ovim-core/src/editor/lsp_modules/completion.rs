@@ -3,16 +3,137 @@
 //! This module handles code completion requests and application.
 //! Completions are typically triggered by Ctrl+N or automatically in insert mode.
 
+use super::super::completion::CompletionAnchor;
+use super::super::lsp_state::CompletionIntent;
 use super::super::Editor;
-use crate::lsp::uri_from_file_path;
-use crate::unicode::{byte_offset_for_grapheme, grapheme_at_index, grapheme_indices};
+use crate::lsp::{uri_from_file_path, CompletionTrigger};
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+/// Status shown while a completion request is in flight.
+pub(in crate::editor) const REQUESTING_STATUS: &str = "Requesting completions...";
 
 impl Editor {
     /// Request completion at current cursor position
     pub fn request_completion(&mut self) {
-        self.lsp.intents.completion = true;
+        self.lsp.intents.completion_due = None;
+        self.lsp.intents.completion = Some(CompletionIntent::Invoked);
+    }
+
+    /// Asks for completion for `intent`. Typing-driven requests wait for the
+    /// configured `autocompletedelay` so a burst of keystrokes costs one
+    /// request; trigger characters are answered immediately.
+    fn schedule_completion(&mut self, intent: CompletionIntent) {
+        let delay = self.options.autocomplete_delay_ms;
+        if delay == 0 || matches!(intent, CompletionIntent::Typed(_)) {
+            self.lsp.intents.completion_due = None;
+            self.lsp.intents.completion = Some(intent);
+        } else {
+            self.lsp.intents.completion_due =
+                Some((Instant::now() + Duration::from_millis(delay), intent));
+        }
+    }
+
+    /// Moves a debounced request to the intent queue once it is due. Returns
+    /// true when one became due.
+    pub(crate) fn promote_due_completion(&mut self) -> bool {
+        let Some((due, intent)) = self.lsp.intents.completion_due else {
+            return false;
+        };
+        if Instant::now() < due {
+            return false;
+        }
+        self.lsp.intents.completion_due = None;
+        if self.mode() == crate::mode::Mode::Insert {
+            self.lsp.intents.completion = Some(intent);
+        }
+        true
+    }
+
+    /// Insert-mode hook, run right after `c` was inserted: keeps an open menu
+    /// filtered, or starts one (identifier typing / server trigger character).
+    pub(crate) fn completion_after_typed_char(&mut self, c: char) {
+        let ident = is_completion_keyword_char(c);
+        if self.completion_menu.has_session() {
+            if ident {
+                let prefix = self.completion_prefix_from_trigger_col();
+                self.completion_menu.filter(&prefix);
+                if self.completion_menu.is_incomplete() {
+                    self.schedule_completion(CompletionIntent::Incomplete);
+                }
+                return;
+            }
+            // A character that is not part of the word closes the menu; it
+            // may still open a new one (`foo.` after `foo`).
+            self.hide_completion_menu();
+        }
+        if !self.options.autocomplete {
+            return;
+        }
+        if ident {
+            // A request already on its way will be answered for the same word;
+            // its answer is rebased over what was typed since (see
+            // `completion_typed_since`), so asking again would only cancel it.
+            if self.lsp.slots.completion.is_pending() {
+                return;
+            }
+            if self.has_completion_trigger_prefix(self.options.autocomplete_min_chars) {
+                self.schedule_completion(CompletionIntent::Identifier);
+            }
+        } else {
+            self.schedule_completion(CompletionIntent::Typed(c));
+        }
+    }
+
+    /// Insert-mode hook, run right after Backspace removed a character.
+    pub(crate) fn completion_after_backspace(&mut self) {
+        if !self.completion_menu.has_session() {
+            return;
+        }
+        let cursor_col = self.buffer().cursor_char_col().0;
+        if cursor_col < self.completion_menu.trigger_col() {
+            // Deleted past where the word began: nothing to complete.
+            self.hide_completion_menu();
+            return;
+        }
+        let prefix = self.completion_prefix_from_trigger_col();
+        self.completion_menu.filter(&prefix);
+        if self.completion_menu.is_incomplete() {
+            self.schedule_completion(CompletionIntent::Incomplete);
+        }
+    }
+
+    /// Whether the response of a request made at `anchor` still describes the
+    /// text under the cursor: nothing changed, or the user only typed
+    /// identifier characters at the request position (returns the count).
+    pub(crate) fn completion_typed_since(&self, anchor: &CompletionAnchor) -> Option<usize> {
+        let cursor = self.buffer().cursor();
+        if cursor.line() != anchor.line || self.buffer().line_count() != anchor.line_count {
+            return None;
+        }
+        let now: Vec<char> = self
+            .buffer()
+            .line_text(anchor.line)
+            .unwrap_or_default()
+            .chars()
+            .collect();
+        let then: Vec<char> = anchor.line_text.chars().collect();
+        let cursor_col = self.buffer().cursor_char_col().0;
+        if cursor_col < anchor.col || now.len() < then.len() {
+            return None;
+        }
+        let typed = now.len() - then.len();
+        if cursor_col != anchor.col + typed
+            || now[..anchor.col] != then[..anchor.col]
+            || now[anchor.col + typed..] != then[anchor.col..]
+            || !now[anchor.col..anchor.col + typed]
+                .iter()
+                .all(|c| is_completion_keyword_char(*c))
+        {
+            return None;
+        }
+        Some(typed)
     }
 
     pub(crate) fn completion_trigger_context(&self) -> (usize, String) {
@@ -20,13 +141,27 @@ impl Editor {
         let line_idx = cursor.line();
         let cursor_col = cursor.col();
 
-        let line_text = self
-            .buffer()
-            .line_text(line_idx)
-            .unwrap_or_default()
-            .to_string();
+        completion_trigger_context_from_index(&self.buffer().line_index(line_idx), cursor_col.0)
+    }
 
-        completion_trigger_context_from_line(&line_text, cursor_col.0)
+    /// Trigger decisions need only two identifier scalars, not an allocated
+    /// prefix extending back to the beginning of a potentially enormous line.
+    pub(crate) fn has_completion_trigger_prefix(&self, min_chars: usize) -> bool {
+        let cursor = self.buffer().cursor();
+        let index = self.buffer().line_index(cursor.line());
+        let mut col = cursor.col().0.min(index.grapheme_count());
+        let mut chars = 0;
+        while col > 0 && chars < min_chars {
+            col -= 1;
+            let Some(grapheme) = index.grapheme_at(crate::unicode::GraphemeCol(col)) else {
+                break;
+            };
+            if !grapheme.chars().all(is_completion_keyword_char) {
+                break;
+            }
+            chars += grapheme.chars().count();
+        }
+        chars >= min_chars
     }
 
     /// Derives the completion prefix from textEdit ranges when available.
@@ -52,18 +187,10 @@ impl Editor {
 
             // Sanity: trigger_col must be at or before cursor
             if trigger_col <= cursor_col {
-                let line_text = self
+                let prefix = self
                     .buffer()
-                    .line_text(line_idx)
-                    .unwrap_or_default()
-                    .to_string();
-
-                // Extract prefix using char indices
-                let prefix: String = line_text
-                    .chars()
-                    .skip(trigger_col.0)
-                    .take(cursor_col.0 - trigger_col.0)
-                    .collect();
+                    .line_index(line_idx)
+                    .slice_chars(trigger_col.0..cursor_col.0);
                 return (trigger_col.0, prefix);
             }
         }
@@ -83,32 +210,33 @@ impl Editor {
             return String::new();
         }
 
-        let line_text = self
-            .buffer()
-            .line_text(self.buffer().cursor().line())
-            .unwrap_or_default()
-            .to_string();
-
-        // Extract prefix using char indices
-        line_text
-            .chars()
-            .skip(trigger_col)
-            .take(cursor_col.0 - trigger_col)
-            .collect()
+        self.buffer()
+            .line_index(self.buffer().cursor().line())
+            .slice_chars(trigger_col..cursor_col.0)
     }
 
     /// Implementation of completion request
-    pub(in crate::editor) async fn completion_impl(&mut self) -> Result<bool> {
+    pub(in crate::editor) async fn completion_impl(
+        &mut self,
+        intent: CompletionIntent,
+    ) -> Result<bool> {
+        // Typing-driven requests are speculative: they must never leave a
+        // status message behind when there is simply nothing to ask.
+        let explicit = intent == CompletionIntent::Invoked;
         let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
-                self.set_lsp_status("LSP not available".to_string());
+                if explicit {
+                    self.set_lsp_status("LSP not available".to_string());
+                }
                 return Ok(false);
             }
         };
 
         let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
-            self.set_lsp_status("Save file first to use completion".to_string());
+            if explicit {
+                self.set_lsp_status("Save file first to use completion".to_string());
+            }
             return Ok(false);
         };
 
@@ -118,7 +246,9 @@ impl Editor {
             match std::env::current_dir() {
                 Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    if explicit {
+                        self.set_lsp_status("Failed to resolve file path".to_string());
+                    }
                     return Ok(false);
                 }
             }
@@ -126,46 +256,54 @@ impl Editor {
 
         let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
 
-        let cursor = self.buffer().cursor();
-        let line = cursor.line() as u32;
-        let col = cursor.col().0;
-        let character = self.col_to_utf16(cursor.line(), col);
-        let raw_trigger_char = {
-            let line_text = self
-                .buffer()
-                .line_text(cursor.line())
-                .unwrap_or_default()
-                .to_string();
-            if col > 0 {
-                if col >= 2 {
-                    let g1 = grapheme_at_index(&line_text, col.saturating_sub(1));
-                    let g2 = grapheme_at_index(&line_text, col.saturating_sub(2));
-                    if g2 == Some(":") && g1 == Some(":") {
-                        Some(':')
-                    } else if g2 == Some("-") && g1 == Some(">") {
-                        Some('>')
-                    } else {
-                        match g1 {
-                            Some(".") => Some('.'),
-                            _ => None,
-                        }
-                    }
-                } else {
-                    match grapheme_at_index(&line_text, col.saturating_sub(1)) {
-                        Some(".") => Some('.'),
-                        _ => None,
-                    }
-                }
-            } else {
-                None
-            }
-        };
+        let cursor_line = self.buffer().cursor().line();
+        let line = cursor_line as u32;
+        let col = self.buffer().cursor().col().0;
+        let character = self.col_to_utf16(cursor_line, col);
 
         let language_id = match self.language_id_for_path(&file_path) {
             Some(id) => id,
             None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
+                if explicit {
+                    self.set_lsp_status("Language not supported for LSP".to_string());
+                }
                 return Ok(false);
+            }
+        };
+
+        // Resolve the server group responsible for this document.
+        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
+
+        // No LSP servers registered yet — server may still be initializing.
+        if server_ids.is_empty() {
+            // Only set "waiting" status if there isn't already a more specific
+            // error (e.g., "LSP: rust-analyzer not found in PATH").
+            if explicit && !self.lsp_status().starts_with("LSP:") {
+                self.set_lsp_status("LSP: waiting for server...".to_string());
+            }
+            return Err(anyhow!("No LSP servers ready for {}", language_id));
+        }
+
+        // A typed non-identifier character only asks when a server says it is
+        // a trigger character (advertised, or the per-language fallback for
+        // servers that have not reported capabilities yet).
+        let trigger = match intent {
+            CompletionIntent::Invoked | CompletionIntent::Identifier => CompletionTrigger::Invoked,
+            CompletionIntent::Incomplete => CompletionTrigger::Incomplete,
+            CompletionIntent::Typed(typed) => {
+                let advertised: HashSet<char> = lsp
+                    .completion_trigger_characters_for_servers(&server_ids)
+                    .await
+                    .into_iter()
+                    .collect();
+                let fallback = crate::lsp::fallback_completion_trigger_characters(&language_id);
+                if advertised.contains(&typed)
+                    || (fallback.contains(&typed) && self.typed_fallback_trigger_complete(typed))
+                {
+                    CompletionTrigger::Character(typed)
+                } else {
+                    return Ok(false);
+                }
             }
         };
 
@@ -175,20 +313,17 @@ impl Editor {
         // was sent from the background task, overwriting newer content.
         self.ensure_lsp_document_synced().await;
 
-        // Resolve the server group responsible for this document.
-        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
-
-        // No LSP servers registered yet — server may still be initializing.
-        if server_ids.is_empty() {
-            // Only set "waiting" status if there isn't already a more specific
-            // error (e.g., "LSP: rust-analyzer not found in PATH").
-            if !self.lsp_status().starts_with("LSP:") {
-                self.set_lsp_status("LSP: waiting for server...".to_string());
-            }
-            return Err(anyhow!("No LSP servers ready for {}", language_id));
-        }
-
         let buffer_version_usize = self.buffer().version();
+        let anchor = CompletionAnchor {
+            line: cursor_line,
+            col: self.buffer().cursor_char_col().0,
+            line_text: self
+                .buffer()
+                .line_text(cursor_line)
+                .unwrap_or_default()
+                .to_string(),
+            line_count: self.buffer().line_count(),
+        };
 
         // Spawn completion request in background (non-blocking).
         // Document sync already happened above via ensure_lsp_document_synced().
@@ -197,29 +332,22 @@ impl Editor {
         let language_id = language_id.to_string();
         let file_path_for_task = file_path.clone();
         let task = tokio::spawn(async move {
-            let mut supported_triggers: HashSet<char> = lsp
-                .completion_trigger_characters_for_servers(&server_ids)
-                .await
-                .into_iter()
-                .collect();
-            for ch in crate::lsp::fallback_completion_trigger_characters(&language_id) {
-                supported_triggers.insert(*ch);
-            }
-            let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
-
             let result = if server_ids.len() > 1 {
-                lsp.completion_multi(&uri, line, character, &server_ids, trigger_char)
+                lsp.completion_multi(&uri, line, character, &server_ids, trigger)
                     .await
             } else {
-                lsp.completion(&uri, line, character, &language_id, trigger_char)
+                lsp.completion(&uri, line, character, &language_id, trigger)
                     .await
             };
-            let task_result = result.map(|items| crate::editor::lsp_slot::CompletionResult {
-                items,
+            let task_result = result.map(|outcome| crate::editor::lsp_slot::CompletionResult {
+                items: outcome.items,
+                is_incomplete: outcome.is_incomplete,
+                anchor,
                 file_path: file_path_for_task,
                 buffer_version: buffer_version_usize,
                 synced_content: None,
                 synced_lsp_version: None,
+                sources: outcome.sources,
             });
 
             let _ = tx.send(task_result);
@@ -227,17 +355,146 @@ impl Editor {
 
         self.lsp.slots.completion.fire(task, rx);
 
-        self.set_lsp_status("Requesting completions...".to_string());
+        if explicit {
+            self.set_lsp_status(REQUESTING_STATUS.to_string());
+        }
         Ok(true)
     }
-}
 
-fn filter_supported_trigger(trigger: Option<char>, supported: &HashSet<char>) -> Option<char> {
-    let ch = trigger?;
-    if supported.contains(&ch) {
-        Some(ch)
-    } else {
-        None
+    /// Asks the server to resolve the selected item's lazily-computed fields
+    /// (documentation) once per item, when the server supports it.
+    pub(in crate::editor) async fn request_completion_resolve(&mut self) {
+        let Some(item) = self.completion_menu.selected_item() else {
+            return;
+        };
+        if item.documentation.is_some() {
+            return;
+        }
+        let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
+            return;
+        };
+        let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
+            return;
+        };
+        let Some(language_id) = self.language_id_for_path(&file_path) else {
+            return;
+        };
+        let mut server_ids =
+            lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
+        // The server that produced the item is the one that can resolve it.
+        if let Some(origin) = self
+            .lsp
+            .state
+            .completion_sources
+            .get(&crate::editor::completion::item_key(item))
+        {
+            server_ids = vec![origin.clone()];
+        }
+        if !lsp.any_supports_completion_resolve(&server_ids).await {
+            return;
+        }
+        let generation = self.completion_menu.generation();
+        let Some((source_index, item)) = self.completion_menu.take_unresolved_selection() else {
+            return;
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = lsp
+                .resolve_completion_item(&server_ids, item)
+                .await
+                .map(|item| crate::editor::lsp_slot::CompletionResolveResult {
+                    source_index,
+                    menu_generation: generation,
+                    item,
+                });
+            let _ = tx.send(result);
+        });
+        self.lsp.slots.completion_resolve.fire(task, rx);
+    }
+
+    /// Merges a `completionItem/resolve` answer into the open menu.
+    pub(in crate::editor) fn poll_completion_resolve_slot(&mut self) -> bool {
+        let Some(result) = self
+            .lsp
+            .slots
+            .completion_resolve
+            .poll_with_timeout(Duration::from_secs(10))
+        else {
+            return false;
+        };
+        let Ok(result) = result else {
+            return false;
+        };
+        if result.menu_generation != self.completion_menu.generation() {
+            return false;
+        }
+        self.completion_menu
+            .apply_resolved(result.source_index, result.item);
+        self.mark_dirty();
+        true
+    }
+
+    /// Runs the `command` of accepted completion items: client-side editor
+    /// commands locally, everything else through `workspace/executeCommand`.
+    pub(in crate::editor) async fn run_pending_completion_command(&mut self) {
+        if self.lsp.state.pending_completion_commands.is_empty() {
+            return;
+        }
+        let commands = std::mem::take(&mut self.lsp.state.pending_completion_commands);
+        for command in commands {
+            match command.command.as_str() {
+                "editor.action.triggerParameterHints" => {
+                    self.lsp.intents.signature_help = true;
+                }
+                "editor.action.triggerSuggest" => self.request_completion(),
+                _ => {
+                    let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
+                        continue;
+                    };
+                    let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
+                        continue;
+                    };
+                    let Some(language_id) = self.language_id_for_path(&file_path) else {
+                        continue;
+                    };
+                    let Some(uri) = crate::lsp::uri_from_file_path(&file_path) else {
+                        continue;
+                    };
+                    self.ensure_lsp_document_synced().await;
+                    tokio::spawn(async move {
+                        let _ = lsp
+                            .execute_command(command.command, command.arguments, &uri, &language_id)
+                            .await;
+                    });
+                }
+            }
+        }
+    }
+
+    /// Ends the completion session and forgets any request still on its way.
+    pub fn dismiss_completion(&mut self) {
+        self.completion_menu.hide();
+        self.lsp.slots.completion.cancel();
+        self.lsp.slots.completion_resolve.cancel();
+        self.lsp.intents.completion = None;
+        self.lsp.intents.completion_due = None;
+    }
+
+    /// Fallback trigger characters are single characters, but `::` and `->`
+    /// only mean something as a pair: a lone `:` or `>` is not a trigger.
+    fn typed_fallback_trigger_complete(&self, typed: char) -> bool {
+        let cursor_col = self.buffer().cursor().col().0;
+        let line = self.buffer().line_index(self.buffer().cursor().line());
+        let before = |back: usize| {
+            cursor_col
+                .checked_sub(back)
+                .and_then(|col| line.grapheme_at(crate::unicode::GraphemeCol(col)))
+        };
+        match typed {
+            ':' => before(2).as_deref() == Some(":"),
+            '>' => before(2).as_deref() == Some("-"),
+            _ => true,
+        }
     }
 }
 
@@ -252,24 +509,31 @@ fn is_completion_keyword_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '-'
 }
 
-fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (usize, String) {
-    let cursor_byte = byte_offset_for_grapheme(line_text, cursor_col).unwrap_or(line_text.len());
-    let before_cursor = &line_text[..cursor_byte.min(line_text.len())];
-
-    let mut start_byte = before_cursor.len();
-    let graphemes: Vec<(usize, &str)> = grapheme_indices(before_cursor).collect();
-    for (byte_offset, grapheme) in graphemes.into_iter().rev() {
-        let is_ident = grapheme.chars().all(is_completion_keyword_char);
-        if !is_ident {
+fn completion_trigger_context_from_index(
+    index: &crate::text_index::LineIndex,
+    cursor_col: usize,
+) -> (usize, String) {
+    let mut start = cursor_col.min(index.grapheme_count());
+    let end = index.grapheme_to_char(crate::unicode::GraphemeCol(start)).0;
+    while start > 0 {
+        let Some(grapheme) = index.grapheme_at(crate::unicode::GraphemeCol(start - 1)) else {
+            break;
+        };
+        if !grapheme.chars().all(is_completion_keyword_char) {
             break;
         }
-        start_byte = byte_offset;
+        start -= 1;
     }
+    let start = index.grapheme_to_char(crate::unicode::GraphemeCol(start)).0;
+    (start, index.slice_chars(start..end))
+}
 
-    let trigger_col = line_text[..start_byte.min(line_text.len())].chars().count();
-    let trigger_prefix = line_text[start_byte.min(cursor_byte)..cursor_byte].to_string();
-
-    (trigger_col, trigger_prefix)
+#[cfg(test)]
+fn completion_trigger_context_from_line(text: &str, cursor_col: usize) -> (usize, String) {
+    completion_trigger_context_from_index(
+        &crate::text_index::LineIndex::from_text(text),
+        cursor_col,
+    )
 }
 
 /// Returns the most common `textEdit.range.start.character` (UTF-16) across

@@ -1,8 +1,12 @@
+import { CONTEXT_MIN_WIDTH, CONTEXT_MAX_WIDTH } from "./contextDockLayout";
 import type { GuiSnapshot } from "./types";
+import { EXPLORER_MIN_WIDTH, EXPLORER_MAX_WIDTH } from "./explorerLayout";
 
 export type WorkbenchLayoutPreference = {
+    explorerWidth?: number;
+    contextWidth?: number;
     activeDock: "explorer" | "context";
-    activeContextPanel: "ai" | "tests" | "debug" | "diff";
+    activeContextPanel: "ai" | "tests" | "debug" | "run" | "terminal";
 };
 
 export const workspaceLayoutIdentity = (
@@ -31,18 +35,49 @@ export const readWorkbenchLayout = (
 ): WorkbenchLayoutPreference | undefined => {
     if (!storage) return undefined;
     try {
-        const parsed = JSON.parse(
+        const stored = JSON.parse(
             storage.getItem(storageKey(workspace)) ?? "",
-        ) as Partial<WorkbenchLayoutPreference> | undefined;
+        ) as
+            | (Omit<
+                  Partial<WorkbenchLayoutPreference>,
+                  "activeContextPanel"
+              > & {
+                  activeContextPanel?: string;
+              })
+            | undefined;
+        const parsed: typeof stored =
+            stored?.activeContextPanel === "diff"
+                ? {
+                      ...stored,
+                      activeDock: "explorer",
+                      activeContextPanel: "ai",
+                  }
+                : stored;
         if (
             !parsed ||
             !["explorer", "context"].includes(parsed.activeDock ?? "") ||
-            !["ai", "tests", "debug", "diff"].includes(
+            !["ai", "tests", "debug", "run", "terminal"].includes(
                 parsed.activeContextPanel ?? "",
             )
         )
             return undefined;
-        return parsed as WorkbenchLayoutPreference;
+        return {
+            activeDock: parsed.activeDock!,
+            activeContextPanel:
+                parsed.activeContextPanel as WorkbenchLayoutPreference["activeContextPanel"],
+            ...(typeof parsed.contextWidth === "number" &&
+            Number.isFinite(parsed.contextWidth) &&
+            parsed.contextWidth >= CONTEXT_MIN_WIDTH &&
+            parsed.contextWidth <= CONTEXT_MAX_WIDTH
+                ? { contextWidth: parsed.contextWidth }
+                : {}),
+            ...(typeof parsed.explorerWidth === "number" &&
+            Number.isFinite(parsed.explorerWidth) &&
+            parsed.explorerWidth >= EXPLORER_MIN_WIDTH &&
+            parsed.explorerWidth <= EXPLORER_MAX_WIDTH
+                ? { explorerWidth: parsed.explorerWidth }
+                : {}),
+        };
     } catch {
         return undefined;
     }

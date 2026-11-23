@@ -8,7 +8,7 @@
 #   - Same language ID → user config overrides
 #   - New language ID → user config adds
 #
-# See: code-docs/DESIGN.md for design details
+# See: user-docs/LANGUAGE_SUPPORT.md
 
 # ============================================================================
 # Rust
@@ -59,10 +59,12 @@ fallback_commands = [
     "~/.local/share/pnpm/typescript-language-server"
 ]
 root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
-install_hint = "Install with: npm install -g typescript-language-server typescript"
+install_hint = "Install with: npm install -g typescript-language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
+# typescript@6 is pinned: typescript-language-server drives tsserver.js,
+# which TypeScript 7.x (the native port) no longer ships.
+method = { type = "npm", packages = ["typescript-language-server", "typescript@6"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -89,10 +91,12 @@ fallback_commands = [
     "~/.local/share/pnpm/typescript-language-server"
 ]
 root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
-install_hint = "Install with: npm install -g typescript-language-server typescript"
+install_hint = "Install with: npm install -g typescript-language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
+# typescript@6 is pinned: typescript-language-server drives tsserver.js,
+# which TypeScript 7.x (the native port) no longer ships.
+method = { type = "npm", packages = ["typescript-language-server", "typescript@6"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -116,10 +120,12 @@ fallback_commands = [
     "~/.npm-global/bin/typescript-language-server"
 ]
 root_markers = ["package.json", "node_modules", ".git"]
-install_hint = "Install with: npm install -g typescript-language-server typescript"
+install_hint = "Install with: npm install -g typescript-language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
+# typescript@6 is pinned: typescript-language-server drives tsserver.js,
+# which TypeScript 7.x (the native port) no longer ships.
+method = { type = "npm", packages = ["typescript-language-server", "typescript@6"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -165,20 +171,23 @@ extensions = ["java"]
 grammar = "tree-sitter-java"
 official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
 
-# Note: Java has complex auto-download logic in src/lsp_init/java.rs
-# This config is for reference. Phase 2 will continue using java.rs
-# until the auto-download system is generalized in Phase 3+
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
-install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
 args = ["dap"]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
 
 # ============================================================================
 # Kotlin
@@ -191,22 +200,28 @@ extensions = ["kt", "kts"]
 filenames = ["build.gradle.kts", "settings.gradle.kts"]
 
 [language.syntax]
-# Kotlin highlighting is currently best-effort; we reuse the Java grammar until
-# we add a dedicated Kotlin grammar crate.
-grammar = "tree-sitter-java"
-official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
+# fwcd's Kotlin grammar (crate tree-sitter-kotlin-sg); highlight query in
+# src/syntax/queries/kotlin.scm. Covers .kt and .kts.
+grammar = "tree-sitter-kotlin-sg"
+file = { path = "src/syntax/queries/kotlin.scm" }
 
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
 ]
 root_markers = ["settings.gradle.kts", "settings.gradle", "pom.xml", "build.gradle.kts", "build.gradle"]
-install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
 args = ["dap"]
 root_markers = ["settings.gradle.kts", "settings.gradle", "pom.xml", "build.gradle.kts", "build.gradle"]
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
 
 # ============================================================================
 # Groovy / Gradle (Groovy DSL)
@@ -227,12 +242,18 @@ command = "hyperion-lsp"
 fallback_commands = [
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
-install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
 args = ["dap"]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
 
 # ============================================================================
 # Scala / SBT
@@ -253,12 +274,18 @@ command = "hyperion-lsp"
 fallback_commands = [
 ]
 root_markers = ["build.sbt", "settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
-install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
 args = ["dap"]
 root_markers = ["build.sbt", "settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
+outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
 
 # ============================================================================
 # Markdown (Syntax only - no LSP needed for most use cases)
@@ -557,7 +584,7 @@ root_markers = ["build.zig", "build.zig.zon"]
 install_hint = "Download from: https://github.com/zigtools/zls/releases"
 
 [language.lsp.auto_install]
-method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}-{os}*", install_path = "~/.local/bin/zls", binary_name = "zls" }
+method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}-{os}*", install_path = "~/.local/share/ovim/lsp/zls/bin", binary_name = "zls" }
 
 # ============================================================================
 # Lua
@@ -698,7 +725,7 @@ root_markers = [".terraform", "main.tf", "terraform.tf", ".git"]
 install_hint = "Download from: https://releases.hashicorp.com/terraform-ls/ or brew install hashicorp/tap/terraform-ls"
 
 [language.lsp.auto_install]
-method = { type = "github", repo = "hashicorp/terraform-ls", asset_pattern = "terraform-ls_*_{os}_{arch}.zip", install_path = "~/.local/bin/terraform-ls", binary_name = "terraform-ls" }
+method = { type = "github", repo = "hashicorp/terraform-ls", asset_pattern = "terraform-ls_*_{os}_{arch}.zip", install_path = "~/.local/share/ovim/lsp/terraform-ls/bin", binary_name = "terraform-ls" }
 
 # ============================================================================
 # HCL (HashiCorp Configuration Language)
@@ -744,6 +771,30 @@ file = { path = "src/syntax/queries/wgsl.scm" }
 
 # WGSL syntax highlighting is built in. No language server is configured by
 # default; users can add one with a language override if desired.
+
+# ============================================================================
+# Properties and INI configuration files
+# ============================================================================
+
+[[language]]
+id = "properties"
+name = "Java Properties"
+extensions = ["properties", "prefs"]
+
+[language.syntax]
+grammar = "tree-sitter-properties"
+official = { crate = "tree_sitter_properties", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "ini"
+name = "INI"
+extensions = ["ini"]
+filenames = [".editorconfig", ".gitconfig", ".gitmodules"]
+path_filenames = [".git/config", ".git/config.worktree"]
+
+[language.syntax]
+grammar = "tree-sitter-ini"
+file = { path = "src/syntax/queries/ini.scm" }
 
 # ============================================================================
 # Companion LSP Servers

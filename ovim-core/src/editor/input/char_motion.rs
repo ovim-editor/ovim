@@ -17,6 +17,8 @@ use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::GraphemeCol;
 
+use super::normal::{apply_between, Reach};
+
 /// Handles the second key in a character motion sequence.
 ///
 /// Called when the editor is in `InputState::AwaitingChar` state.
@@ -31,10 +33,15 @@ pub fn handle_char_motion(
     // Handle Escape - cancel the motion
     if key.code == KeyCode::Esc {
         editor.reset_input_state();
-        editor.clear_pending_operator();
         editor.clear_count();
         return Ok(());
     }
+
+    // `r<CR>` replaces the characters with a line break
+    let key = match (motion, key.code) {
+        (CharMotion::Replace, KeyCode::Enter) => KeyEvent::new(KeyCode::Char('\n'), key.modifiers),
+        _ => key,
+    };
 
     // We need a character to proceed
     let KeyCode::Char(target) = key.code else {
@@ -47,20 +54,20 @@ pub fn handle_char_motion(
 
     match motion {
         CharMotion::Find | CharMotion::Till | CharMotion::FindBack | CharMotion::TillBack => {
-            handle_char_find(editor, motion, target, count, operator);
+            handle_char_find(editor, motion, target, count, operator)?;
         }
         CharMotion::Replace => handle_replace_char(editor, target, count)?,
         CharMotion::Mark => handle_set_mark(editor, target),
         CharMotion::JumpMarkLine => {
             if operator.is_some() {
-                handle_mark_operator(editor, target, operator, true);
+                handle_mark_operator(editor, target, operator, true)?;
             } else {
                 handle_jump_mark_line(editor, target);
             }
         }
         CharMotion::JumpMarkExact => {
             if operator.is_some() {
-                handle_mark_operator(editor, target, operator, false);
+                handle_mark_operator(editor, target, operator, false)?;
             } else {
                 handle_jump_mark_exact(editor, target);
             }
@@ -69,7 +76,6 @@ pub fn handle_char_motion(
 
     // Clear state
     editor.reset_input_state();
-    editor.clear_pending_operator();
     editor.clear_count();
 
     Ok(())
@@ -97,8 +103,11 @@ fn handle_set_mark(editor: &mut Editor, target: char) {
 
 /// Resolves a mark character to a `(line, col)` position, if set.
 fn resolve_mark(editor: &Editor, target: char) -> Option<(usize, usize)> {
-    if target.is_ascii_lowercase() {
-        editor.nav.marks.get_mark(target).map(|m| (m.line, m.col))
+    if crate::editor::mark_jump::is_local_mark(target) {
+        editor.local_mark(target)
+    } else if matches!(target, '\'' | '`') {
+        let mark = editor.context_mark_position();
+        Some((mark.line, mark.col))
     } else {
         // Only local marks supported with operators for now.
         // Global marks (A-Z) involve file switching.
@@ -114,44 +123,34 @@ fn handle_mark_operator(
     target: char,
     operator: Option<Operator>,
     line_wise: bool,
-) {
+) -> Result<()> {
     let Some(op) = operator else {
-        return;
+        return Ok(());
     };
     let Some((mark_line, mark_col)) = resolve_mark(editor, target) else {
-        return;
+        return Ok(());
     };
 
-    let cursor_line = editor.buffer().cursor().line();
-    let cursor_col = editor.buffer().cursor().col().0;
-    let cursor_before = CursorPos::new(cursor_line, GraphemeCol(cursor_col));
-
-    if line_wise {
-        let start_line = cursor_line.min(mark_line);
-        let end_line = cursor_line.max(mark_line);
-        apply_linewise_operator(editor, op, start_line, end_line);
+    // Vim treats backtick mark motions as exclusive.
+    let reach = if line_wise {
+        Reach::Linewise
     } else {
-        // Order start/end so start <= end
-        let (start, end) =
-            if cursor_line < mark_line || (cursor_line == mark_line && cursor_col <= mark_col) {
-                ((cursor_line, cursor_col), (mark_line, mark_col))
-            } else {
-                ((mark_line, mark_col), (cursor_line, cursor_col))
-            };
-
-        // Vim treats backtick mark motions as exclusive
-        let range = OperatorRange::exclusive(start, end);
-        apply_charwise_operator(editor, op, cursor_before, range, None);
-    }
+        Reach::Exclusive
+    };
+    let cursor_before = editor.cursor_position();
+    let target = CursorPos::new(mark_line, GraphemeCol(mark_col));
+    apply_between(editor, op, cursor_before, target, reach)
 }
 
 fn handle_jump_mark_line(editor: &mut Editor, target: char) {
     if target == '\'' {
-        editor.jump_back();
+        editor.jump_to_context_mark(true);
         return;
     }
 
-    if !(target.is_ascii_lowercase() || target.is_ascii_uppercase() || matches!(target, '.' | '^'))
+    if !(target.is_ascii_lowercase()
+        || target.is_ascii_uppercase()
+        || matches!(target, '<' | '>' | '.' | '^'))
     {
         return;
     }
@@ -162,13 +161,13 @@ fn handle_jump_mark_line(editor: &mut Editor, target: char) {
 
 fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
     if target == '`' {
-        editor.jump_back();
+        editor.jump_to_context_mark(false);
         return;
     }
 
     if !(target.is_ascii_lowercase()
         || target.is_ascii_uppercase()
-        || matches!(target, '.' | '^' | '[' | ']'))
+        || matches!(target, '<' | '>' | '.' | '^' | '[' | ']'))
     {
         return;
     }
@@ -189,22 +188,36 @@ fn handle_char_find(
     target: char,
     count: usize,
     operator: Option<Operator>,
-) {
+) -> Result<()> {
     let start = editor.cursor_position();
 
     let moved = motion.execute(editor.buffer_mut(), target, count);
     if !moved {
-        return;
+        return Ok(());
     }
 
     // Store for ; and , repeat
     editor.set_last_find(target, motion.find_type(), motion.direction());
 
     let Some(op) = operator else {
-        return;
+        return Ok(());
     };
 
     let end = editor.cursor_position();
+
+    // Operators other than delete/change/yank work on the generic range.
+    if !matches!(op, Operator::Delete | Operator::Change | Operator::Yank) {
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(start.line, start.col);
+        let reach = if motion.is_backward() {
+            Reach::Exclusive
+        } else {
+            Reach::Inclusive
+        };
+        return apply_between(editor, op, start, end, reach);
+    }
 
     // For backward motions the cursor moved before start, so swap the range.
     // Backward F/T are EXCLUSIVE in vim: the original cursor character is
@@ -224,16 +237,28 @@ fn handle_char_find(
     };
 
     apply_charwise_operator(editor, op, start, range, Some(repeat));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Operator application
 // ---------------------------------------------------------------------------
 
+/// Delete phase for a change that cannot be repeated (its motion is a mark,
+/// which the change itself consumes): replaying it does nothing.
+pub(super) fn unrepeatable_delete() -> RepeatAction {
+    RepeatAction::DeleteCharMotion {
+        target: '\0',
+        forward: true,
+        till: false,
+        count: 1,
+    }
+}
+
 /// A character-wise text range for operator application.
 /// Stored as grapheme-space `(line, col)` pairs; `apply_charwise_operator`
 /// converts to char space against the live line text (OV-00299).
-struct OperatorRange {
+pub(super) struct OperatorRange {
     start: (usize, usize),
     /// The end column, always stored as exclusive (one past last char to affect).
     end_col_exclusive: (usize, usize),
@@ -252,7 +277,7 @@ impl OperatorRange {
     /// Exclusive range — the end position is already one past the last character.
     /// Used by backtick mark motions. Accepts grapheme-space tuples directly
     /// because the backtick-mark caller still works in raw usize cols.
-    fn exclusive(start: (usize, usize), end: (usize, usize)) -> Self {
+    pub(super) fn exclusive(start: (usize, usize), end: (usize, usize)) -> Self {
         Self {
             start,
             end_col_exclusive: end,
@@ -265,7 +290,7 @@ impl OperatorRange {
 /// `repeat` controls the `.` repeat action: `Some(action)` sets it on
 /// delete, or wraps it in `PendingChangeRepeat` on change. `None` skips
 /// repeat registration (used by mark operators).
-fn apply_charwise_operator(
+pub(super) fn apply_charwise_operator(
     editor: &mut Editor,
     operator: Operator,
     cursor_before: CursorPos,
@@ -330,14 +355,8 @@ fn apply_charwise_operator(
                 None
             };
 
-            let delete_action = repeat.unwrap_or(RepeatAction::DeleteCharMotion {
-                target: '\0',
-                forward: true,
-                till: false,
-                count: 1,
-            });
             editor.set_pending_change_repeat(PendingChangeRepeat {
-                delete_action,
+                delete_action: repeat.unwrap_or_else(unrepeatable_delete),
                 linewise: false,
                 delete_token,
             });
@@ -371,7 +390,7 @@ fn apply_charwise_operator(
 }
 
 /// Applies a line-wise operator (delete/change/yank) to a range of lines.
-fn apply_linewise_operator(
+pub(super) fn apply_linewise_operator(
     editor: &mut Editor,
     operator: Operator,
     start_line: usize,
@@ -436,6 +455,11 @@ fn apply_linewise_operator(
             if !deleted.is_empty() {
                 editor.delete_to_register_with_type(deleted, RegisterType::Line);
             }
+            editor.set_pending_change_repeat(PendingChangeRepeat {
+                delete_action: unrepeatable_delete(),
+                linewise: false,
+                delete_token: None,
+            });
             editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
         }

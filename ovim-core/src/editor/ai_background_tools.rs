@@ -77,20 +77,17 @@ impl Editor {
             ));
         };
 
-        let chat = self
-            .ai_state
-            .chat
-            .as_mut()
-            .expect("active chat checked above");
-        debug_assert!(chat.pending_background_tool.is_none());
-        chat.pending_background_tool = Some(PendingBackgroundTool {
+        if self.park_ai_turn(PendingBackgroundTool {
             tool_call: call,
             continuation,
             receiver,
             task,
-        });
-        chat.waiting = true;
-        self.set_status_message(status);
+        }) {
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.waiting = true;
+            }
+            self.set_status_message(status);
+        }
         Ok(())
     }
 
@@ -181,8 +178,7 @@ mod tests {
             .chat
             .as_mut()
             .unwrap()
-            .pending_background_tool
-            .take()
+            .take_parked_as::<PendingBackgroundTool>()
             .unwrap();
         let outcome = pending.receiver.await.unwrap();
         match outcome.result {

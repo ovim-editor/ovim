@@ -8,6 +8,34 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// A selectable profile/model pair shared by both chat interfaces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AiChatModelOption {
+    pub id: String,
+    pub label: String,
+    pub provider: String,
+    pub model: String,
+}
+
+/// A provider-defined permission mode exposed by the shared chat controls.
+/// The ID is the exact value passed to the provider runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct AiPermissionModeOption {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    /// A mode that disables the provider's approval prompts. Pickers never
+    /// offer it, it is enabled only by an explicit, repeated command, and it
+    /// applies to the current chat without being remembered.
+    pub requires_confirmation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiPermissionModes {
+    pub default: &'static str,
+    pub options: &'static [AiPermissionModeOption],
+}
+
 #[derive(Debug, Clone)]
 pub struct AiProfileConfig {
     pub name: String,
@@ -32,6 +60,81 @@ pub struct AiProfileConfig {
     pub verbosity: Option<String>,
     pub syntax_check: Option<bool>,
     pub retry: RetryPolicy,
+}
+
+impl AiProfileConfig {
+    fn permission_capability(&self) -> Option<&'static AiPermissionModes> {
+        match self.provider {
+            AiProviderKind::ClaudeCode => Some(&super::claude_code::PERMISSION_CAPABILITY),
+            _ => None,
+        }
+    }
+
+    pub fn permission_modes(&self) -> &'static [AiPermissionModeOption] {
+        self.permission_capability()
+            .map(|capability| capability.options)
+            .unwrap_or_default()
+    }
+
+    pub fn default_permission_mode(&self) -> Option<&'static str> {
+        self.permission_capability()
+            .map(|capability| capability.default)
+    }
+
+    pub fn validate_permission_mode(&self, mode: &str) -> Result<()> {
+        if self
+            .permission_modes()
+            .iter()
+            .any(|option| option.id == mode)
+        {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "Permission mode {mode:?} is not supported by {}",
+            self.provider
+        )
+    }
+
+    /// Shared boundary for interactive and restored chat model selections.
+    /// Most providers select models through profiles; Claude also accepts aliases.
+    pub(crate) fn validate_chat_model(&self, model: &str) -> Result<()> {
+        if model.is_empty()
+            || model.len() > 512
+            || model.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            anyhow::bail!(
+                "Model must be a nonempty alias or model ID without whitespace (at most 512 bytes)"
+            );
+        }
+        if self.provider != AiProviderKind::ClaudeCode && self.model != model {
+            anyhow::bail!("Configure this provider's model in its AI profile");
+        }
+        Ok(())
+    }
+
+    /// One precedence rule for runtime requests and both interfaces. Models
+    /// without effort support must not inherit a stale override or profile value.
+    pub fn resolve_reasoning_effort<'a>(&'a self, selection: Option<&'a str>) -> Option<&'a str> {
+        if self.provider == AiProviderKind::ClaudeCode
+            && !super::claude_code::supports_effort(&self.model)
+        {
+            return None;
+        }
+        selection.or(self.reasoning_effort.as_deref()).or_else(|| {
+            (self.provider == AiProviderKind::ClaudeCode)
+                .then(|| super::claude_code::default_effort(&self.model))
+                .flatten()
+        })
+    }
+
+    /// Presentation is separate from the stable configuration key.
+    pub fn display_name(&self) -> &str {
+        if self.provider == AiProviderKind::ClaudeCode && self.name == "claude_code" {
+            "Claude Agent"
+        } else {
+            &self.name
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -302,7 +405,43 @@ impl AiConfig {
     pub fn resolve_profile(&self, name: &str) -> Option<&AiProfileConfig> {
         self.profiles.get(name)
     }
+
+    /// Names of the environment variables a model-run shell must not inherit:
+    /// the provider credentials ovim and the provider CLIs it drives read, plus
+    /// every profile's configured `api_key_env`.
+    pub fn shell_scrubbed_env_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = PROVIDER_CREDENTIAL_ENV_VARS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        for profile in self.profiles.values() {
+            if let Some(name) = profile
+                .api_key_env
+                .as_deref()
+                .filter(|name| !name.is_empty())
+            {
+                if !names.iter().any(|known| known == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        names
+    }
 }
+
+/// Provider credential environment variables. A prompt-injected shell program
+/// (`env`, `curl -d "$OPENAI_API_KEY" ...`) could otherwise exfiltrate them, so
+/// the agent's shell never inherits them.
+pub const PROVIDER_CREDENTIAL_ENV_VARS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OVIM_OPENAI_API_KEY",
+    "OVIM_ANTHROPIC_API_KEY",
+    "EXA_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CODEX_API_KEY",
+];
 
 fn reject_obsolete_subagent_config(parsed: &AiTomlConfig) -> Result<()> {
     if parsed.obsolete_subagents.is_some() {
@@ -351,9 +490,27 @@ fn parse_tool_approval_mode(s: &str) -> ToolApprovalMode {
 
 /// Infer provider from model name prefix.
 pub fn infer_provider(model: &str) -> AiProviderKind {
+    infer_provider_with_openai_key(model, false)
+}
+
+/// Like [`infer_provider`], for a profile that names no provider. Codex-family
+/// model names mean the Codex device login unless the profile has an OpenAI API
+/// key (configured on the profile or present in the environment): configs
+/// written before the Codex route existed relied on that key, and silently
+/// switching them to a different login would be worse than keeping the API.
+pub fn infer_provider_with_openai_key(model: &str, openai_key_configured: bool) -> AiProviderKind {
     let m = model.to_lowercase();
-    if m.starts_with("gpt-5.6-") || m.contains("codex") {
-        AiProviderKind::Codex
+    if matches!(
+        m.as_str(),
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6.1-sol" | "gpt-6-luna"
+    ) || m.starts_with("gpt-5.6-")
+        || m.contains("codex")
+    {
+        if openai_key_configured {
+            AiProviderKind::OpenAi
+        } else {
+            AiProviderKind::Codex
+        }
     } else if m.starts_with("claude") {
         AiProviderKind::Anthropic
     } else if m.starts_with("gpt-")
@@ -370,7 +527,7 @@ pub fn infer_provider(model: &str) -> AiProviderKind {
 /// Default API key environment variable for a given provider.
 pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
     match provider {
-        AiProviderKind::Codex | AiProviderKind::CodexAppServer => None,
+        AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => None,
         AiProviderKind::OpenAi => Some("OPENAI_API_KEY".to_string()),
         AiProviderKind::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
         AiProviderKind::Ollama => None,
@@ -380,6 +537,7 @@ pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
 /// Parse a provider string (e.g. from Lua) into AiProviderKind.
 pub fn parse_provider_str(s: &str) -> Option<AiProviderKind> {
     match s.to_lowercase().as_str() {
+        "claude_code" => Some(AiProviderKind::ClaudeCode),
         "codex" => Some(AiProviderKind::Codex),
         "codex_app_server" => Some(AiProviderKind::CodexAppServer),
         "openai" => Some(AiProviderKind::OpenAi),
@@ -491,8 +649,43 @@ mod tests {
             parse_provider_str("codex_app_server"),
             Some(AiProviderKind::CodexAppServer)
         );
+        assert_eq!(infer_provider("gpt-6-astra"), AiProviderKind::Codex);
+        assert_eq!(infer_provider("GPT-6-ASTRA"), AiProviderKind::Codex);
+        assert_eq!(infer_provider("gpt-6-sol"), AiProviderKind::Codex);
+        assert_eq!(infer_provider("gpt-6.1-sol"), AiProviderKind::Codex);
+        assert_eq!(infer_provider("gpt-6-luna"), AiProviderKind::Codex);
         assert_eq!(infer_provider("gpt-5.6-sol"), AiProviderKind::Codex);
         assert_eq!(infer_provider("gpt-5.6-terra"), AiProviderKind::Codex);
         assert_eq!(default_api_key_env(AiProviderKind::Codex), None);
+    }
+
+    #[test]
+    fn an_openai_key_keeps_older_configs_on_the_api_instead_of_codex_login() {
+        for model in ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-terra"] {
+            assert_eq!(
+                infer_provider_with_openai_key(model, false),
+                AiProviderKind::Codex,
+                "{model}"
+            );
+            assert_eq!(
+                infer_provider_with_openai_key(model, true),
+                AiProviderKind::OpenAi,
+                "{model}"
+            );
+        }
+        // The key only matters where the answer would otherwise be Codex.
+        assert_eq!(
+            infer_provider_with_openai_key("claude-sonnet-5-5", true),
+            AiProviderKind::Anthropic
+        );
+        assert_eq!(
+            infer_provider_with_openai_key("qwen2.5-coder:7b", true),
+            AiProviderKind::Ollama
+        );
+        assert_eq!(
+            infer_provider_with_openai_key("gpt-4o", false),
+            AiProviderKind::OpenAi
+        );
+        assert_eq!(infer_provider("gpt-6-sol"), AiProviderKind::Codex);
     }
 }

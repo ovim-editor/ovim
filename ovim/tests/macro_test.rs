@@ -246,7 +246,8 @@ fn test_macro_with_search() {
         .press('a'); // Play - should find next and delete
 
     assert_eq!(test.buffer_content(), "ello world ello test\n");
-    test.assert_cursor(0, 11);
+    // nvim --clean (typed keys): recording /hello<CR>x lands on col 12; @a wraps to col 0.
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -452,11 +453,11 @@ fn test_macro_uppercase_register() {
         .press('x')
         .press('q');
 
-    // Play combined macro
+    // Play combined macro: register a holds `xx` now (nvim: `qaxqqAxq@a` on "test" empties it)
     test.press('@').press('a');
 
-    assert_eq!(test.buffer_content(), "st\n");
-    test.assert_cursor(0, 1);
+    assert_eq!(test.buffer_content(), "\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

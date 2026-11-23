@@ -218,22 +218,7 @@ impl Default for PathCompletionState {
 /// Returns `None` if the command doesn't take a file argument or hasn't reached
 /// the path portion yet.
 pub fn extract_path_from_command(command_line: &str) -> Option<&str> {
-    let trimmed = command_line.trim_start();
-
-    // Commands that take file path arguments.
-    const FILE_COMMANDS: &[&str] = &[
-        "e ", "edit ", "tabe ", "tabedit ", "w ", "write ", "saveas ", "source ", "sp ", "split ",
-        "vsp ", "vsplit ",
-    ];
-
-    for cmd in FILE_COMMANDS {
-        if let Some(rest) = trimmed.strip_prefix(cmd) {
-            return Some(rest);
-        }
-    }
-
-    // Also handle bare command with no space yet — don't trigger completion.
-    None
+    crate::commands::file_argument(command_line.trim_start())
 }
 
 #[cfg(test)]
@@ -315,6 +300,12 @@ mod tests {
         );
         assert_eq!(extract_path_from_command("sp file"), Some("file"));
         assert_eq!(extract_path_from_command("vsp file"), Some("file"));
+        // Every command whose argument is a file, from the ex table.
+        assert_eq!(extract_path_from_command("r notes.txt"), Some("notes.txt"));
+        assert_eq!(extract_path_from_command("so ~/x.lua"), Some("~/x.lua"));
+        assert_eq!(extract_path_from_command("e "), Some(""));
+        assert_eq!(extract_path_from_command("e! foo"), Some("foo"));
+        assert_eq!(extract_path_from_command("r !ls"), None);
         // No match
         assert_eq!(extract_path_from_command("set number"), None);
         assert_eq!(extract_path_from_command("q"), None);

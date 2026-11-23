@@ -4,6 +4,14 @@ pub struct ChatTextPoint {
     pub column: usize,
 }
 
+/// Link coordinates in the complete, wrapped chat history (before scrolling).
+#[derive(Debug, Clone)]
+pub struct ChatLink {
+    pub row: usize,
+    pub columns: std::ops::Range<usize>,
+    pub destination: String,
+}
+
 /// Hit-test geometry produced atomically by the latest chat render pass.
 /// Keeping these targets together prevents input from mixing stale controls
 /// from one frame with current controls from another.
@@ -13,12 +21,15 @@ pub struct ChatInteractionGeometry {
     pub comprehension_toggle: Option<crate::Rect>,
     pub model_picker_trigger: Option<crate::Rect>,
     pub effort_picker_trigger: Option<crate::Rect>,
-    pub model_picker_options: Vec<(crate::Rect, String)>,
+    pub permission_picker_trigger: Option<crate::Rect>,
+    pub model_picker_options: Vec<(crate::Rect, crate::ai::AiChatModelOption)>,
     pub effort_picker_options: Vec<(crate::Rect, String)>,
+    pub permission_picker_options: Vec<(crate::Rect, String)>,
     pub history: Option<crate::Rect>,
+    pub links: Vec<ChatLink>,
     pub slash_completions: Vec<(crate::Rect, usize)>,
     pub branches: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
-    pub walkthrough_replays: Vec<(crate::Rect, String)>,
+    pub tool_replays: Vec<(crate::Rect, String)>,
 }
 
 impl ChatInteractionGeometry {
@@ -47,14 +58,31 @@ pub struct ChatTextAutoscroll {
     pub last_tick: u128,
 }
 
+/// An action's visible cells in the latest terminal frame.
+#[derive(Debug, Clone)]
+pub struct CodeLensHitTarget {
+    pub area: crate::Rect,
+    pub file_path: String,
+    pub version: usize,
+    pub index: usize,
+    pub generation: u64,
+    pub mode: crate::launch::LaunchMode,
+}
+
 /// Cached rendering state used by the UI layer and mouse input.
 ///
 /// Groups fields that bridge between the renderer and input handling:
 /// mouse drag state and cached layout geometry from the last render pass.
 #[derive(Default)]
 pub struct RenderCache {
+    /// Renderers borrow the editor immutably while producing text rows.
+    pub code_lens_targets: std::cell::RefCell<Vec<CodeLensHitTarget>>,
+    pub hovered_code_lens: Option<crate::Rect>,
     /// Mouse interaction state (dragging, drag origin)
     pub mouse_state: super::MouseState,
+    /// Latest test panel geometry and active separator drag (column, width offset).
+    pub test_panel_area: Option<crate::Rect>,
+    pub test_panel_drag: Option<(u16, i16)>,
     /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
     pub last_buffer_area: Option<crate::Rect>,
     /// Largest valid scroll offset for the visible walkthrough answer.
@@ -149,12 +177,27 @@ mod tests {
             comprehension_toggle: Some(rect()),
             model_picker_trigger: Some(rect()),
             effort_picker_trigger: Some(rect()),
-            model_picker_options: vec![(rect(), "model".into())],
+            permission_picker_trigger: Some(rect()),
+            model_picker_options: vec![(
+                rect(),
+                crate::ai::AiChatModelOption {
+                    id: "profile".into(),
+                    label: "Profile".into(),
+                    provider: "claude_code".into(),
+                    model: "opus".into(),
+                },
+            )],
             effort_picker_options: vec![(rect(), "medium".into())],
+            permission_picker_options: vec![(rect(), "auto".into())],
             history: Some(rect()),
+            links: vec![super::ChatLink {
+                row: 1,
+                columns: 2..5,
+                destination: "https://example.com".into(),
+            }],
             slash_completions: vec![(rect(), 1)],
             branches: vec![(rect(), 2)],
-            walkthrough_replays: vec![(rect(), "call-1".into())],
+            tool_replays: vec![(rect(), "call-1".into())],
         };
 
         interactions.begin_frame();
@@ -163,11 +206,14 @@ mod tests {
         assert!(interactions.comprehension_toggle.is_none());
         assert!(interactions.model_picker_trigger.is_none());
         assert!(interactions.effort_picker_trigger.is_none());
+        assert!(interactions.permission_picker_trigger.is_none());
         assert!(interactions.model_picker_options.is_empty());
         assert!(interactions.effort_picker_options.is_empty());
+        assert!(interactions.permission_picker_options.is_empty());
         assert!(interactions.history.is_none());
+        assert!(interactions.links.is_empty());
         assert!(interactions.slash_completions.is_empty());
         assert!(interactions.branches.is_empty());
-        assert!(interactions.walkthrough_replays.is_empty());
+        assert!(interactions.tool_replays.is_empty());
     }
 }

@@ -12,8 +12,8 @@
 //! over the session API instead of over a pair of in-process channels.
 
 use super::bridge::EDITOR_STOPPED;
-use super::protocol::{GuiCommand, GuiReply, GuiSnapshot};
-use super::{GuiReplySender, GuiRequest};
+use super::protocol::{GuiCommand, GuiReply};
+use super::{GuiProjectionCache, GuiReplySender, GuiRequest, GuiSnapshot};
 use crate::editor::Editor;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
@@ -44,6 +44,7 @@ pub fn gui_channel(dimensions: (u16, u16)) -> (GuiChannel, GuiServer) {
             last_snapshot: None,
             last_render_version: 0,
             frames_built: 0,
+            projection_cache: GuiProjectionCache::default(),
         },
     )
 }
@@ -100,6 +101,9 @@ pub struct GuiServer {
     last_snapshot: Option<GuiSnapshot>,
     last_render_version: u64,
     frames_built: u64,
+    /// Line layouts and diff projections reused between frames, exactly as
+    /// the desktop loop keeps them.
+    projection_cache: GuiProjectionCache,
 }
 
 impl GuiServer {
@@ -123,8 +127,12 @@ impl GuiServer {
             &mut self.dimensions,
             &mut self.revision,
             &mut self.inputs,
+            &mut self.projection_cache,
         )
         .await;
+        // A headless session paints no terminal, so nothing else records the
+        // pane width the diff review lays itself out against.
+        super::update_diff_review_geometry(editor);
         true
     }
 
@@ -147,14 +155,25 @@ impl GuiServer {
         }
 
         let render_version = editor.render_input_version();
-        if self.last_snapshot.is_some() && render_version == self.last_render_version {
+        // Quitting is shell state rather than a render invalidation, but it
+        // still has to reach the frontend (see `publish_if_changed`).
+        let quit_unchanged = self
+            .last_snapshot
+            .as_ref()
+            .is_some_and(|last| last.should_quit == editor.should_quit());
+        if quit_unchanged && render_version == self.last_render_version {
             return;
         }
         self.last_render_version = render_version;
         // Project at the current revision so a runtime tick that did not touch
         // the visible state costs a comparison rather than a wire frame.
         self.frames_built += 1;
-        let mut next = super::snapshot(editor, self.revision, self.inputs);
+        let mut next = super::snapshot_with_cache(
+            editor,
+            self.revision,
+            self.inputs,
+            &mut self.projection_cache,
+        );
         if self.last_snapshot.as_ref() == Some(&next) {
             return;
         }
@@ -176,7 +195,8 @@ impl GuiServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::protocol::{GuiKeyInput, GuiReplyKind};
+    use crate::gui::protocol::GuiReplyKind;
+    use crate::gui::GuiKeyInput;
 
     /// Move the editor's visible state on, the way an edit would.
     fn changed(editor: &mut Editor, message: &str) {

@@ -5,10 +5,13 @@ use crate::ai::skills::ACTIVATE_SKILL_TOOL;
 use crate::ai::tools::builtins::{OpenBufferState, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{RuntimeServices, SideEffect, ToolResult};
-use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
+use crate::ai::{
+    redact_high_risk_tokens, redact_json_strings, truncate_utf8_with_notice, ToolApprovalMode,
+};
 use std::path::{Path, PathBuf};
 
-use super::ai_chat_state::{CodeExplanationContinuation, PendingToolApproval, ToolEventSummary};
+use super::ai_auto_mode::AutoModeShellReview;
+use super::ai_chat_state::{PendingToolApproval, ToolEventSummary};
 use super::ai_tool_path::{compact_tool_label, compact_tool_path, normalize_path};
 use super::Editor;
 
@@ -215,6 +218,7 @@ impl Editor {
 
         match profile.provider {
             crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::ClaudeCode
             | crate::ai::AiProviderKind::CodexAppServer
             | crate::ai::AiProviderKind::OpenAi
             | crate::ai::AiProviderKind::Ollama => schema::tools_to_openai_schema(&tools),
@@ -322,6 +326,7 @@ impl Editor {
             selection,
             diagnostics,
             project_diagnostics,
+            latest_test_run: self.test_panel().latest().cloned(),
             scope_context: ScopeContext {
                 current_file,
                 project_root,
@@ -500,9 +505,14 @@ impl Editor {
                         return None;
                     }
                 }
-                if self.current_session_approved_root_for(path).is_some() {
+                // A remembered directory opens paths, never programs: shell
+                // calls all share the active file's directory.
+                if tc.name != "bash" && self.current_session_approved_root_for(path).is_some() {
                     return None;
                 }
+            }
+            if tc.name == "bash" && self.ai_chat_shell_allowed_session() {
+                return None;
             }
         }
 
@@ -531,12 +541,17 @@ impl Editor {
             "approval required"
         };
 
+        let remember = if tc.name == "bash" {
+            "Ctrl-A to allow all shell commands for this chat session"
+        } else {
+            "Ctrl-A to allow for this chat session"
+        };
         Some(ToolApprovalRequest {
             requested_path: requested_path.clone(),
             approval_root,
             reason: reason.to_string(),
             message: format!(
-                "Approval required: {} ({}) for {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
+                "Approval required: {} ({}) for {}. Press Ctrl-Y to allow once, {remember}, Ctrl-N to deny.",
                 tc.name,
                 reason,
                 requested_path.display()
@@ -545,6 +560,10 @@ impl Editor {
     }
 
     fn remember_tool_approval(&mut self, tool_call: &ToolCallInfo, approval_root: &Path) {
+        if tool_call.name == "bash" {
+            self.remember_shell_approval();
+            return;
+        }
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return;
         };
@@ -567,6 +586,28 @@ impl Editor {
         {
             chat.approved_external_roots.push(root);
         }
+    }
+
+    /// "Allow for this session" on a shell prompt. Only `sensitive_prompt` has
+    /// a session grant to give: Auto mode reviews every program and
+    /// `always_prompt` never remembers.
+    fn remember_shell_approval(&mut self) {
+        if self.ai_state.config.tool_approval_mode != ToolApprovalMode::SensitivePrompt {
+            return;
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.shell_allowed_session = true;
+        }
+        self.set_status_message("Shell commands allowed for this chat session");
+    }
+
+    /// Whether the user allowed every shell command for this chat session.
+    /// Frontends keep this visible while it holds.
+    pub fn ai_chat_shell_allowed_session(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.shell_allowed_session)
     }
 
     fn execute_read_buffer_tool(
@@ -694,6 +735,21 @@ impl Editor {
                 tc.name
             )));
         }
+        if tc.name == "bash" && self.auto_mode_reviews_shell() {
+            // Synchronous dispatch has no Terra review to wait on, and Auto
+            // mode never runs an unreviewed program. Shell programs reach the
+            // editor through the reviewed, parked paths instead.
+            let session_temp_program = tc
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|command| self.current_session_authorizes_temp_shell_command(command));
+            if !session_temp_program {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(
+                    "auto mode must review shell programs before they run".to_string(),
+                ));
+            }
+        }
         if self.is_ai_subagent_control_tool(&tc.name) {
             return ToolDispatchOutcome::Completed(self.execute_ai_subagent_control_tool(tc));
         }
@@ -709,7 +765,7 @@ impl Editor {
                 .ai_state
                 .config
                 .profiles
-                .get(&self.ai_state.active_profile)
+                .get(&self.ai_chat_effective_profile())
                 .is_some_and(|profile| {
                     self.ai_state
                         .tool_registry
@@ -728,6 +784,33 @@ impl Editor {
             return ToolDispatchOutcome::Completed(
                 self.execute_record_comprehension_checkpoint(&tc.arguments),
             );
+        }
+        if matches!(tc.name.as_str(), "read_diff" | "show_custom_diff") {
+            let capabilities = self.build_chat_capabilities();
+            let available = self
+                .ai_state
+                .config
+                .profiles
+                .get(&self.ai_chat_effective_profile())
+                .is_some_and(|profile| {
+                    self.ai_state
+                        .tool_registry
+                        .tools_for_profile(profile, &capabilities)
+                        .iter()
+                        .any(|tool| tool.name == tc.name)
+                });
+            if !available {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(format!(
+                    "tool '{}' is unavailable for the active profile or scope",
+                    tc.name
+                )));
+            }
+            let result = if tc.name == "read_diff" {
+                self.execute_read_diff_tool(&tc.arguments)
+            } else {
+                self.execute_show_custom_diff_tool(tc)
+            };
+            return ToolDispatchOutcome::Completed(result);
         }
         let has_explicit_path = tc
             .arguments
@@ -841,7 +924,11 @@ impl Editor {
                     let outcome = crate::ai::exa::execute(&tc.name, &tc.arguments);
                     if outcome.credential_rejected {
                         self.note_exa_credential_rejected(outcome.environment_override);
-                    } else if let Some(error) = outcome.setup_error.clone() {
+                    } else if let Some(error) = outcome
+                        .setup_error
+                        .clone()
+                        .filter(|_| crate::ai::exa::should_offer_onboarding())
+                    {
                         self.open_exa_setup_dialog(Some(error));
                     }
                     outcome.result
@@ -996,11 +1083,14 @@ impl Editor {
 
     /// Resolve a paused outside-project tool request.
     pub fn ai_chat_resolve_pending_tool_approval(&mut self, allow: bool, remember: bool) -> bool {
+        if self.resolve_external_permission(allow) {
+            return true;
+        }
         let pending = self
             .ai_state
             .chat
             .as_mut()
-            .and_then(|c| c.pending_tool_approval.take());
+            .and_then(|c| c.take_parked_as::<PendingToolApproval>());
 
         let Some(pending) = pending else {
             return false;
@@ -1028,7 +1118,12 @@ impl Editor {
                     Some(pending.approval_root),
                     pending.runtime_tool_started,
                 );
-                self.set_status_message(format!("Approved {tool_name} for this invocation"));
+                let scope = if tool_name == "bash" && self.ai_chat_shell_allowed_session() {
+                    "for this chat session"
+                } else {
+                    "for this invocation"
+                };
+                self.set_status_message(format!("Approved {tool_name} {scope}"));
             } else {
                 let tool_name = pending.tool_call.name.clone();
                 self.finish_dynamic_tool(
@@ -1140,21 +1235,37 @@ impl Editor {
     }
 
     /// Resume an approved batch `bash` tool call by parking it on
-    /// `pending_shell_execution`, exactly like the unprompted batch path in
+    /// a parked shell execution, exactly like the unprompted batch path in
     /// `execute_tool_call_batch`. The user already approved, so no policy
     /// re-check happens here.
     fn resume_approved_batch_shell(&mut self, pending: PendingToolApproval) -> bool {
+        self.run_batch_shell_after_policy(
+            pending.tool_call,
+            pending.runtime_tool,
+            pending.remaining_tool_calls,
+            pending.model_name,
+        )
+    }
+
+    /// Run a batch `bash` call that the user or Terra has cleared. Execution
+    /// parks off the editor loop like any other batch shell program.
+    pub(super) fn run_batch_shell_after_policy(
+        &mut self,
+        tool_call: ToolCallInfo,
+        runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+        remaining_tool_calls: Vec<ToolCallInfo>,
+        model_name: String,
+    ) -> bool {
         let authorized = self
             .ai_state
             .tool_registry
-            .get(&pending.tool_call.name)
+            .get(&tool_call.name)
             .is_some_and(|definition| {
                 let capabilities = self.build_chat_capabilities();
                 capabilities.allows_side_effect(definition.side_effect)
                     && capabilities.contains(&definition.required_scope)
             });
-        let command = pending
-            .tool_call
+        let command = tool_call
             .arguments
             .get("command")
             .and_then(serde_json::Value::as_str)
@@ -1195,32 +1306,31 @@ impl Editor {
         };
         if let Some(error) = error {
             let result = ToolResult::Error(error);
-            if let (Some(turn), Some(runtime_tool)) =
-                (runtime_turn.as_ref(), pending.runtime_tool.as_ref())
+            if let (Some(turn), Some(runtime_tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
             {
                 if let Err(error) = self.ai_runtime_finish_tool(turn, runtime_tool, &result) {
                     crate::log_warn!("agent_runtime", "failed to record approved tool: {error}");
                 }
             }
-            self.record_tool_event_summary(&pending.tool_call, &result);
-            let result_content = self.format_tool_result_with_target(&pending.tool_call, &result);
+            self.record_tool_event_summary(&tool_call, &result);
+            let result_content = self.format_tool_result_with_target(&tool_call, &result);
             if let Some(conv) = self.conversation_mut() {
-                conv.append_tool_result(pending.tool_call.id.clone(), result_content);
+                conv.append_tool_result(tool_call.id.clone(), result_content);
             }
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                 chat.waiting = true;
             }
-            return self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name);
+            return self.execute_tool_call_batch(remaining_tool_calls, model_name);
         }
 
         self.start_pending_shell_execution(
-            pending.tool_call,
+            tool_call,
             super::ai_chat_state::ToolExecutionContinuation::Batch {
-                runtime_tool: pending.runtime_tool,
+                runtime_tool,
                 runtime_turn,
-                remaining_tool_calls: pending.remaining_tool_calls,
-                model_name: pending.model_name,
+                remaining_tool_calls,
+                model_name,
             },
             command,
             workdir.expect("checked above"),
@@ -1232,6 +1342,9 @@ impl Editor {
     /// On first chat open in a no-repo session, ask once whether project tools
     /// may access the current folder as the project boundary.
     pub(crate) fn maybe_prompt_no_repo_session_folder_access_on_chat_open(&mut self) {
+        if self.ai_chat_uses_external_agent() {
+            return;
+        }
         if self.ai_repo_root().is_some() || self.ai_state.no_repo_session_prompted {
             return;
         }
@@ -1357,19 +1470,14 @@ impl Editor {
                 None => None,
             };
 
-            let subagent_control_outcome = if matches!(
-                tc.name.as_str(),
-                crate::ai::tools::subagents::WAIT_AGENT_TOOL
-                    | crate::ai::tools::subagents::INTERRUPT_AGENT_TOOL
-                    | crate::ai::tools::subagents::FOLLOWUP_AGENT_TOOL
-            ) {
+            let parked_outcome = if self.parks_ai_tool_off_loop(&tc.name) {
                 let continuation = super::ai_chat_state::ToolExecutionContinuation::Batch {
                     runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
                     runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
                     remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
                     model_name: model_name.clone(),
                 };
-                match self.begin_pending_ai_subagent_control(tc.clone(), continuation) {
+                match self.begin_parked_ai_tool(tc.clone(), continuation) {
                     Ok(()) => {
                         if let Some(chat) = self.ai_state.chat.as_mut() {
                             chat.tool_call_count =
@@ -1443,27 +1551,55 @@ impl Editor {
                                     .into(),
                             ))),
                             (Some(workdir), Some(artifact_store)) => {
-                                if let Some(chat) = self.ai_state.chat.as_mut() {
-                                    chat.tool_call_count =
-                                        chat.tool_call_count.saturating_add(executed_in_batch);
+                                // Auto mode never runs an unreviewed program:
+                                // the batch path shares the dynamic path's
+                                // Terra review before anything executes.
+                                let review = if self.auto_mode_reviews_shell() {
+                                    self.auto_mode_shell_review(&command)
+                                } else {
+                                    Ok(AutoModeShellReview::Proceed)
+                                };
+                                match review {
+                                    Err(error) => Some(ToolDispatchOutcome::Completed(
+                                        ToolResult::Error(error),
+                                    )),
+                                    Ok(review) => {
+                                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                                            chat.tool_call_count = chat
+                                                .tool_call_count
+                                                .saturating_add(executed_in_batch);
+                                        }
+                                        let continuation =
+                                            super::ai_chat_state::ToolExecutionContinuation::Batch {
+                                                runtime_tool: runtime_tool
+                                                    .as_ref()
+                                                    .map(|(_, tool)| tool.clone()),
+                                                runtime_turn: runtime_tool
+                                                    .as_ref()
+                                                    .map(|(turn, _)| turn.clone()),
+                                                remaining_tool_calls: tool_calls[idx + 1..]
+                                                    .to_vec(),
+                                                model_name,
+                                            };
+                                        match review {
+                                            AutoModeShellReview::Proceed => self
+                                                .start_pending_shell_execution(
+                                                    tc.clone(),
+                                                    continuation,
+                                                    command,
+                                                    workdir,
+                                                    artifact_store,
+                                                ),
+                                            AutoModeShellReview::Classify(request) => self
+                                                .begin_auto_mode_classification(
+                                                    tc.clone(),
+                                                    continuation,
+                                                    *request,
+                                                ),
+                                        }
+                                        return true;
+                                    }
                                 }
-                                self.start_pending_shell_execution(
-                                    tc.clone(),
-                                    super::ai_chat_state::ToolExecutionContinuation::Batch {
-                                        runtime_tool: runtime_tool
-                                            .as_ref()
-                                            .map(|(_, tool)| tool.clone()),
-                                        runtime_turn: runtime_tool
-                                            .as_ref()
-                                            .map(|(turn, _)| turn.clone()),
-                                        remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
-                                        model_name,
-                                    },
-                                    command,
-                                    workdir,
-                                    artifact_store,
-                                );
-                                return true;
                             }
                         }
                     }
@@ -1472,52 +1608,9 @@ impl Editor {
                 None
             };
 
-            let background_outcome = if self.is_background_ai_tool(&tc.name) {
-                let continuation = super::ai_chat_state::ToolExecutionContinuation::Batch {
-                    runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
-                    runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
-                    remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
-                    model_name: model_name.clone(),
-                };
-                match self.begin_pending_background_tool(tc.clone(), continuation) {
-                    Ok(()) => {
-                        if let Some(chat) = self.ai_state.chat.as_mut() {
-                            chat.tool_call_count =
-                                chat.tool_call_count.saturating_add(executed_in_batch);
-                        }
-                        return true;
-                    }
-                    Err((result, _continuation)) => Some(ToolDispatchOutcome::Completed(result)),
-                }
-            } else {
-                None
-            };
-
-            let outcome = if let Some(outcome) = subagent_control_outcome {
-                outcome
-            } else if let Some(outcome) = shell_outcome {
-                outcome
-            } else if let Some(outcome) = background_outcome {
-                outcome
-            } else if tc.name == "explain_with_codebase" {
-                let continuation = CodeExplanationContinuation::Batch {
-                    runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
-                    runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
-                    remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
-                    model_name: model_name.clone(),
-                };
-                match self.begin_code_explanation(tc.clone(), continuation) {
-                    Ok(()) => {
-                        if let Some(chat) = self.ai_state.chat.as_mut() {
-                            chat.tool_call_count =
-                                chat.tool_call_count.saturating_add(executed_in_batch);
-                        }
-                        return true;
-                    }
-                    Err((result, _continuation)) => ToolDispatchOutcome::Completed(result),
-                }
-            } else {
-                self.dispatch_tool_call_with_approval(tc, None)
+            let outcome = match parked_outcome.or(shell_outcome) {
+                Some(outcome) => outcome,
+                None => self.dispatch_tool_call_with_approval(tc, None),
             };
 
             match outcome {
@@ -1590,20 +1683,18 @@ impl Editor {
         true
     }
 
-    fn pause_for_tool_approval(&mut self, pending: PendingToolApproval) {
-        let mut installed = false;
+    pub(super) fn pause_for_tool_approval(&mut self, pending: PendingToolApproval) {
+        if !self.park_ai_turn(pending) {
+            return;
+        }
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.pending_tool_approval = Some(pending);
             chat.waiting = false;
             chat.pending_job = None;
             chat.streaming_content = None;
             chat.streaming_thinking = None;
-            installed = true;
         }
-        if installed {
-            self.ai_state.ai_attention_generation =
-                self.ai_state.ai_attention_generation.saturating_add(1);
-        }
+        self.ai_state.ai_attention_generation =
+            self.ai_state.ai_attention_generation.saturating_add(1);
     }
 
     /// Close out tool calls that will never execute (cancelled, unknown
@@ -1665,6 +1756,15 @@ impl Editor {
             ToolResult::Success(s) => s.as_str().to_string(),
             ToolResult::Error(s) => format!("Error: {s}"),
         };
+        if tc.name == "read_diff" && matches!(result, ToolResult::Success(_)) {
+            if self.active_chat_provider_is_remote() {
+                if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw_body) {
+                    redact_json_strings(&mut value);
+                    return value.to_string();
+                }
+            }
+            return raw_body;
+        }
         if tc.name == ACTIVATE_SKILL_TOOL {
             let body = if self.active_chat_provider_is_remote() {
                 redact_high_risk_tokens(&raw_body)
@@ -1846,6 +1946,18 @@ impl Editor {
                 (
                     ToolSummaryKind::Navigation,
                     format!("walkthrough · {count} pages"),
+                )
+            }
+            "read_diff" => (ToolSummaryKind::Read, "Git diff snapshot".into()),
+            "show_custom_diff" => {
+                let title = tc
+                    .arguments
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Custom diff");
+                (
+                    ToolSummaryKind::Navigation,
+                    format!("diff · {}", compact_tool_label(title)),
                 )
             }
             "select_text" => {

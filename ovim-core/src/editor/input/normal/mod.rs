@@ -9,22 +9,70 @@
 mod editing_commands;
 mod mode_transitions;
 mod motions_input;
+mod operator_motion;
 mod operators;
 mod pending_commands;
 mod text_objects;
 
+pub(super) use operator_motion::{apply_between, finish_operator_search, Reach};
+
+/// A cursor motion as Normal mode runs it, for the modes that share them.
+pub(super) fn handle_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
+    motions_input::try_handle(editor, key_event)
+}
+
+/// The word (`big`: the WORD) under or after the cursor, as `*` picks it.
+pub(super) fn word_under_cursor(editor: &Editor, big: bool) -> Option<String> {
+    if big {
+        let cursor = editor.buffer().cursor();
+        let line = editor.buffer().line_text(cursor.line())?;
+        let graphemes: Vec<&str> =
+            unicode_segmentation::UnicodeSegmentation::graphemes(&*line, true).collect();
+        let blank = |index: usize| graphemes[index].chars().all(char::is_whitespace);
+        let on = (cursor.col().0..graphemes.len()).find(|&index| !blank(index))?;
+        let start = (0..on)
+            .rev()
+            .find(|&index| blank(index))
+            .map_or(0, |index| index + 1);
+        let end = (on..graphemes.len())
+            .find(|&index| blank(index))
+            .unwrap_or(graphemes.len());
+        return Some(graphemes[start..end].concat());
+    }
+    motions_input::word_at_or_after_cursor(editor).map(|(word, _)| word)
+}
+
+/// `.` for an operator over a motion. `inserted_text` is what a `c{motion}`
+/// typed, `None` for every other operator.
+pub(in crate::editor) fn repeat_operator_motion(
+    editor: &mut Editor,
+    operator: crate::editor::Operator,
+    motion: crate::motion_range::Motion,
+    count: usize,
+    inserted_text: Option<&str>,
+) -> Result<()> {
+    match inserted_text {
+        Some(text) => operator_motion::repeat_change(editor, motion, count, text),
+        None => operator_motion::apply_motion_operator(editor, operator, motion, count),
+    }
+}
+
 use crate::editor::Editor;
-use crate::{KeyCode, KeyEvent};
+use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
 /// Handle a key event in normal mode.
 ///
 /// This dispatcher tries each handler in priority order until one handles the key.
 pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-    // The test panel is passive rather than focused, so Escape must hide it
+    if editor.handle_pseudocode_key(key_event) {
+        return Ok(());
+    }
+    // Output panels can be passive rather than focused, so Escape must hide them
     // even when a pending operator or multi-key command consumes the key.
     if key_event.code == KeyCode::Esc {
         editor.close_test_panel();
+        editor.close_run_console();
     }
 
     // 0. Buffer-local keys of the branch diff review (Enter / q / r / s). Only
@@ -84,10 +132,89 @@ fn try_handle_diff_review_key(editor: &mut Editor, key_event: KeyEvent) -> bool 
         return false;
     }
     match key_event.code {
+        KeyCode::Char('x')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.toggle_diff_review_check_at_cursor()
+        }
+        KeyCode::Char('X')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.toggle_diff_review_show_checked()
+        }
         KeyCode::Enter => editor.diff_review_open_at_cursor(),
         KeyCode::Char('q') => editor.close_diff_review(),
         KeyCode::Char('r') => editor.refresh_diff_review(),
         KeyCode::Char('s') => editor.toggle_diff_review_layout(),
+        KeyCode::Char('K')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.expand_diff_context_at_cursor(true)
+        }
+        KeyCode::Char('J')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.expand_diff_context_at_cursor(false)
+        }
+        KeyCode::Char('w')
+            if key_event.modifiers.is_empty()
+                && editor
+                    .diff_review()
+                    .is_some_and(|state| state.custom().is_some()) =>
+        {
+            editor.toggle_diff_review_equal_changes();
+        }
+        KeyCode::Char('a')
+            if key_event.modifiers.is_empty()
+                && editor
+                    .diff_review()
+                    .and_then(|state| state.custom())
+                    .is_some_and(|review| {
+                        review
+                            .sections
+                            .iter()
+                            .any(|section| section.message.is_some())
+                    }) =>
+        {
+            editor.toggle_diff_review_notes();
+        }
+        KeyCode::Char('o')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.begin_diff_comment(false)
+        }
+        KeyCode::Char('O')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.begin_diff_comment(true)
+        }
+        KeyCode::Char('D')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT)
+                && editor.delete_diff_comment_at_cursor() => {}
+        KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::ALT) => {
+            if let Err(error) = editor.toggle_diff_review_overlay() {
+                editor.set_status_message(format!("Diff overlay: {error:#}"));
+            }
+        }
+        KeyCode::Char('O') if key_event.modifiers.contains(Modifiers::ALT) => {
+            if let Err(error) = editor.open_saved_diff_overlay() {
+                editor.set_status_message(format!("Diff overlay: {error:#}"));
+            }
+        }
         _ => return false,
     }
     true
@@ -96,133 +223,60 @@ fn try_handle_diff_review_key(editor: &mut Editor, key_event: KeyEvent) -> bool 
 /// Set up pending operators or commands for multi-key sequences.
 fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     use crate::editor::{CharMotion, InputState, Operator};
-    use crate::KeyCode;
 
-    match key_event.code {
-        // Operators
-        KeyCode::Char('d') => {
-            editor.set_pending_operator(Operator::Delete);
-            Ok(true)
-        }
-        KeyCode::Char('y') => {
-            editor.set_pending_operator(Operator::Yank);
-            Ok(true)
-        }
-        KeyCode::Char('c') => {
-            editor.set_pending_operator(Operator::Change);
-            Ok(true)
-        }
-        KeyCode::Char('>') => {
-            editor.set_pending_operator(Operator::Indent);
-            Ok(true)
-        }
-        KeyCode::Char('<') => {
-            editor.set_pending_operator(Operator::Dedent);
-            Ok(true)
-        }
-        KeyCode::Char('=') => {
-            editor.set_pending_operator(Operator::AutoIndent);
-            Ok(true)
-        }
-        // Pending commands
-        KeyCode::Char('g') => {
-            editor.set_pending_command('g');
-            Ok(true)
-        }
-        KeyCode::Char('z') => {
-            editor.set_pending_command('z');
-            Ok(true)
-        }
-        KeyCode::Char('Z') => {
-            editor.set_pending_command('Z');
-            Ok(true)
-        }
-        KeyCode::Char('[') => {
-            editor.set_pending_command('[');
-            Ok(true)
-        }
-        KeyCode::Char(']') => {
-            editor.set_pending_command(']');
-            Ok(true)
-        }
-        KeyCode::Char('"') => {
-            editor.set_pending_command('"');
-            Ok(true)
-        }
-        KeyCode::Char('m') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::Mark,
-                operator: None,
-            });
-            Ok(true)
-        }
-        KeyCode::Char('\'') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::JumpMarkLine,
-                operator: None,
-            });
-            Ok(true)
-        }
-        KeyCode::Char('`') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::JumpMarkExact,
-                operator: None,
-            });
-            Ok(true)
-        }
-        KeyCode::Char('q') => {
-            if editor.is_recording_macro() {
-                editor.stop_macro_recording();
-            } else {
-                editor.set_pending_command('q');
-            }
-            Ok(true)
-        }
-        KeyCode::Char('@') => {
-            editor.set_pending_command('@');
-            Ok(true)
-        }
-        KeyCode::Char('r') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::Replace,
-                operator: None,
-            });
-            Ok(true)
-        }
-        // Character motions - use new state machine
-        KeyCode::Char('f') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::Find,
-                operator: None,
-            });
-            Ok(true)
-        }
-        KeyCode::Char('F') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::FindBack,
-                operator: None,
-            });
-            Ok(true)
-        }
-        KeyCode::Char('t') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::Till,
-                operator: None,
-            });
-            Ok(true)
-        }
-        KeyCode::Char('T') => {
-            editor.set_input_state(InputState::AwaitingChar {
-                motion: CharMotion::TillBack,
-                operator: None,
-            });
-            Ok(true)
-        }
-        // Leader key (configurable via vim.g.mapleader, default: space)
-        KeyCode::Char(c) if c == editor.leader_key() => {
-            editor.set_input_state(InputState::Leader { keys: vec![] });
-            Ok(true)
-        }
-        _ => Ok(false),
+    let KeyCode::Char(key) = key_event.code else {
+        return Ok(false);
+    };
+    // Ctrl/Alt chords are never the plain-letter command (`<C-c>` is not `c`).
+    if key_event
+        .modifiers
+        .intersects(Modifiers::CONTROL | Modifiers::ALT)
+    {
+        return Ok(false);
     }
+    let awaiting = |motion| InputState::AwaitingChar {
+        motion,
+        operator: None,
+    };
+    let operator = match key {
+        'd' => Some(Operator::Delete),
+        'y' => Some(Operator::Yank),
+        'c' => Some(Operator::Change),
+        '>' => Some(Operator::Indent),
+        '<' => Some(Operator::Dedent),
+        '=' => Some(Operator::AutoIndent),
+        _ => None,
+    };
+    if let Some(operator) = operator {
+        editor.enter_operator_pending(operator);
+        return Ok(true);
+    }
+    let state = match key {
+        'g' => InputState::GPrefix { operator: None },
+        'z' => InputState::ZPrefix,
+        'Z' => InputState::QuitPrefix,
+        '[' | ']' => InputState::BracketPrefix { bracket: key },
+        '"' => InputState::RegisterPending,
+        'q' if editor.is_recording_macro() => {
+            editor.stop_macro_recording();
+            return Ok(true);
+        }
+        'q' => InputState::MacroPrefix { is_recording: true },
+        '@' => InputState::MacroPrefix {
+            is_recording: false,
+        },
+        'm' => awaiting(CharMotion::Mark),
+        '\'' => awaiting(CharMotion::JumpMarkLine),
+        '`' => awaiting(CharMotion::JumpMarkExact),
+        'r' => awaiting(CharMotion::Replace),
+        'f' => awaiting(CharMotion::Find),
+        'F' => awaiting(CharMotion::FindBack),
+        't' => awaiting(CharMotion::Till),
+        'T' => awaiting(CharMotion::TillBack),
+        // Leader key (configurable via vim.g.mapleader, default: space)
+        c if c == editor.leader_key() => InputState::Leader { keys: vec![] },
+        _ => return Ok(false),
+    };
+    editor.set_input_state(state);
+    Ok(true)
 }

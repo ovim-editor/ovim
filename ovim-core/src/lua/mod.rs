@@ -226,6 +226,8 @@ impl LuaContext {
 
     /// Reloads configuration
     pub fn reload_config(&mut self) -> Result<()> {
+        // Options set through `ovim.lsp.configure` are re-declared by the script.
+        crate::lsp::user_settings::clear_lua();
         self.config_loaded = false;
         self.load_config()?;
         Ok(())
@@ -303,7 +305,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_chat_profile_enables_embedded_browser_scope() {
+    fn claude_code_is_the_builtin_chat_default() {
+        let context = LuaContext::new().unwrap();
+        let bridge = EditorBridge::new();
+        setup_vim_api(context.lua(), bridge.clone()).unwrap();
+        context.load_builtin().unwrap();
+        let snapshot = bridge.take_ai_config_if_dirty().unwrap();
+        assert_eq!(snapshot.0["chat"], "claude_code");
+        // Inline selection edits and queries keep Ovim's own harness.
+        assert_eq!(snapshot.0["query"], "codex_terra");
+        let profile = snapshot.2["claude_code"]
+            .clone()
+            .into_profile_config("claude_code".into());
+        assert_eq!(profile.provider, crate::ai::AiProviderKind::ClaudeCode);
+        assert!(profile.api_key_env.is_none());
+        context
+            .lua()
+            .load("vim.ai.default_profile = 'claude_code'")
+            .exec()
+            .unwrap();
+        let snapshot = bridge.take_ai_config_if_dirty().unwrap();
+        assert_eq!(snapshot.0["chat"], "claude_code");
+        assert_eq!(snapshot.0["query"], "claude_code");
+        assert_eq!(snapshot.1.as_deref(), Some("claude_code"));
+        assert!(context
+            .lua()
+            .load("vim.ai.setup({profiles={bad={provider='claude_cod',model='default'}}})")
+            .exec()
+            .is_err());
+    }
+
+    #[test]
+    fn builtin_anthropic_profiles_leave_room_for_thinking_and_tool_calls() {
+        let context = LuaContext::new().unwrap();
+        let bridge = EditorBridge::new();
+        setup_vim_api(context.lua(), bridge.clone()).unwrap();
+        context.load_builtin().unwrap();
+        let snapshot = bridge.take_ai_config_if_dirty().unwrap();
+        for name in ["anthropic", "anthropic_frontier"] {
+            let profile = snapshot.2[name].clone().into_profile_config(name.into());
+            assert_eq!(profile.provider, crate::ai::AiProviderKind::Anthropic);
+            // Thinking tokens count against max_tokens; 4096 truncated replies
+            // and tool calls.
+            assert!(profile.max_tokens.unwrap() >= 16384, "{name}");
+        }
+    }
+
+    #[test]
+    fn builtin_codex_chat_profile_enables_embedded_browser_scope() {
         let context = LuaContext::new().unwrap();
         let bridge = EditorBridge::new();
         setup_vim_api(context.lua(), bridge.clone()).unwrap();
@@ -312,9 +361,10 @@ mod tests {
         let snapshot = bridge
             .take_ai_config_if_dirty()
             .expect("built-in AI config");
-        let chat_profile = snapshot.0.get("chat").expect("chat context profile");
+        // Claude Code brings its own tools; the Codex chat profile is the one
+        // that runs Ovim's harness with hosted browser tools.
+        let chat_profile = &"codex_sol".to_string();
         let profile = snapshot.2.get(chat_profile).expect("chat profile");
-        assert_eq!(chat_profile, "codex_sol");
         assert!(
             profile.scope_network,
             "the built-in GUI chat profile should expose hosted browser tools"

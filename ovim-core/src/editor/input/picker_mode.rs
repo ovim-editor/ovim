@@ -3,7 +3,7 @@
 //! Handles file finder, grep, code actions, and LSP location pickers.
 //! Supports navigation (j/k, Ctrl-N/P, arrows), query editing, and selection.
 
-use crate::editor::Editor;
+use crate::editor::{Editor, PickerRole};
 use crate::mode::Mode;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -25,7 +25,14 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Tab / BackTab - toggle between query and file filter fields
         KeyCode::Tab | KeyCode::BackTab => {
-            if let Some(picker) = editor.picker_mut() {
+            if editor.hierarchy_picker_active() {
+                // Call/type hierarchy: Tab drills down, Shift-Tab goes back.
+                if key_event.code == KeyCode::Tab {
+                    editor.expand_selected_hierarchy_entry();
+                } else {
+                    editor.hierarchy_go_back();
+                }
+            } else if let Some(picker) = editor.picker_mut() {
                 picker.toggle_field();
             }
         }
@@ -96,6 +103,26 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             if let Some(picker) = editor.picker_mut() {
                 picker.move_cursor_end();
             }
+        }
+        // Git status list: Ctrl-T stages/unstages, Ctrl-E edits the file
+        KeyCode::Char('t')
+            if key_event.modifiers.contains(Modifiers::CONTROL)
+                && editor.picker().and_then(|p| p.role()) == Some(PickerRole::GitStatus) =>
+        {
+            editor.git_status_toggle_selected();
+        }
+        KeyCode::Char('e')
+            if key_event.modifiers.contains(Modifiers::CONTROL)
+                && editor.picker().and_then(|p| p.role()) == Some(PickerRole::GitStatus) =>
+        {
+            editor.git_status_edit_selected();
+        }
+        // Problems list: Ctrl-T cycles the severity filter
+        KeyCode::Char('t')
+            if key_event.modifiers.contains(Modifiers::CONTROL)
+                && editor.picker().and_then(|p| p.role()) == Some(PickerRole::Problems) =>
+        {
+            editor.cycle_problems_filter();
         }
         // Ctrl-N - move down in results
         KeyCode::Char('n') if key_event.modifiers.contains(Modifiers::CONTROL) => {

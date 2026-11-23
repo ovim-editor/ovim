@@ -90,6 +90,49 @@ impl SingleLineInput {
         true
     }
 
+    /// Remove everything before the cursor (Vim cmdline `CTRL-U`).
+    pub fn delete_to_start(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        self.text.drain(..self.cursor);
+        self.cursor = 0;
+        true
+    }
+
+    /// Remove the word before the cursor (Vim cmdline `CTRL-W`): trailing
+    /// whitespace first, then one run of keyword or of other non-blank
+    /// characters.
+    pub fn delete_word_backward(&mut self) -> bool {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let before = &self.text[..self.cursor];
+        let mut start = self.cursor;
+        let mut chars = before.char_indices().rev().peekable();
+        while let Some(&(index, c)) = chars.peek() {
+            if !c.is_whitespace() {
+                break;
+            }
+            start = index;
+            chars.next();
+        }
+        if let Some(&(_, first)) = chars.peek() {
+            let class = is_word(first);
+            while let Some(&(index, c)) = chars.peek() {
+                if c.is_whitespace() || is_word(c) != class {
+                    break;
+                }
+                start = index;
+                chars.next();
+            }
+        }
+        if start == self.cursor {
+            return false;
+        }
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+        true
+    }
+
     /// Move the cursor one character left.
     pub fn move_left(&mut self) -> bool {
         let Some(previous) = self.previous_boundary() else {
@@ -171,6 +214,41 @@ mod tests {
         assert!(!input.delete());
         assert!(!input.move_home());
         assert!(!input.move_end());
+    }
+
+    #[test]
+    fn delete_to_start_keeps_the_text_after_the_cursor() {
+        let mut input = SingleLineInput::new("hello world");
+        for _ in 0..5 {
+            input.move_left();
+        }
+        assert!(input.delete_to_start());
+        assert_eq!(input.text(), "world");
+        assert_eq!(input.cursor(), 0);
+        assert!(!input.delete_to_start());
+    }
+
+    /// Matches Vim's cmdline CTRL-W (checked against `nvim --headless`).
+    #[test]
+    fn delete_word_backward_follows_vim_word_classes() {
+        let cases = [
+            ("foo bar", "foo "),
+            ("foo bar  ", "foo "),
+            ("foo.bar", "foo."),
+            ("foo.", "foo"),
+            ("foo..", "foo"),
+            ("héllo wörld", "héllo "),
+            ("   ", ""),
+            ("word", ""),
+        ];
+        for (before, after) in cases {
+            let mut input = SingleLineInput::new(before);
+            assert!(input.delete_word_backward(), "{before:?}");
+            assert_eq!(input.text(), after, "{before:?}");
+            assert_eq!(input.cursor(), after.len());
+        }
+        let mut empty = SingleLineInput::default();
+        assert!(!empty.delete_word_backward());
     }
 
     #[test]

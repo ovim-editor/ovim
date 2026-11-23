@@ -16,6 +16,81 @@ pub(crate) fn is_scratch_path(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Directory the language server materializes library (jar) sources into.
+const MATERIALIZED_SOURCES_DIR: &str = "hyperion-materialized-sources";
+
+/// Directories (relative to the user's home) whose files are managed by a
+/// package manager or toolchain: dependency and standard-library sources that
+/// language servers navigate into. Editing them in place is never what the
+/// user wants (a crate registry checkout is re-extracted, a Gradle cache entry
+/// is content-addressed).
+const MANAGED_SOURCE_DIRS: &[&[&str]] = &[
+    &[".cargo", "registry"],
+    &[".cargo", "git", "checkouts"],
+    &[".rustup", "toolchains"],
+    &[".gradle", "caches"],
+    &[".m2", "repository"],
+];
+
+/// True when `path` has `dir` (a chain of directory names) as consecutive
+/// components.
+fn contains_component_chain(path: &std::path::Path, dir: &[&str]) -> bool {
+    let names: Vec<&str> = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    names.windows(dir.len()).any(|window| window == dir)
+}
+
+/// True for decompiled/extracted library sources and package-manager caches:
+/// navigating into a dependency must not leave an editable buffer whose edits
+/// can never land anywhere useful (OV-00458, OV-00470).
+pub(crate) fn is_library_source_path(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| name.starts_with(MATERIALIZED_SOURCES_DIR))
+    }) || MANAGED_SOURCE_DIRS
+        .iter()
+        .any(|dir| contains_component_chain(path, dir))
+}
+
+/// Library sources open read-only AND not modifiable: `read_only` alone would
+/// only refuse `:w` (Vim's `readonly`), the buffer must refuse the edit itself
+/// (`E21`, Vim's `nomodifiable`).
+pub(crate) fn mark_library_source_read_only(buffer: &mut Buffer) {
+    if buffer.file_path().is_some_and(is_library_source_path) {
+        buffer.set_read_only(true);
+        buffer.set_modifiable(false);
+    }
+}
+
+/// Canonical identity of a buffer/URI path: absolute, symlinks resolved for
+/// the part that exists, lexically normalised for the rest. Scratch names
+/// (`[Title]`) are kept verbatim.
+pub(crate) fn canonical_path_key(path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(path);
+    if is_scratch_path(&path.to_string_lossy()) {
+        return path.to_path_buf();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    crate::ai::path_policy::canonicalize_or_normalize(&absolute)
+}
+
+/// True when two path spellings denote the same file.
+pub(crate) fn paths_identify_same_file(a: &str, b: &str) -> bool {
+    a == b || canonical_path_key(a) == canonical_path_key(b)
+}
+
 /// Scratch identity for DATA-SAFETY decisions (quit protection, `:wa`).
 ///
 /// The bracket-name heuristic alone would misclassify a REAL file whose
@@ -108,6 +183,9 @@ impl Editor {
     /// Sets the current buffer file path and updates the % register
     /// to keep register-based file operations in sync with the buffer path.
     pub fn set_file_path(&mut self, path: String) {
+        if self.buffer().file_path() != Some(path.as_str()) {
+            self.tab_page_manager.current_tab_mut().definition_origin = None;
+        }
         self.buffer_mut().set_file_path(path.clone());
         self.registers.set_current_file(path);
     }
@@ -122,6 +200,8 @@ impl Editor {
         let mut buf = buf;
         buf.set_language_catalog(self.language_catalog.clone());
         self.initialize_buffer_indent_options(&mut buf);
+        self.request_buffer_git_status(&buf);
+        mark_library_source_read_only(&mut buf);
         self.buffers.push(buf);
         self.buffers.len() - 1
     }
@@ -173,6 +253,11 @@ impl Editor {
     /// Switches to a buffer by index (0-based)
     pub fn switch_to_buffer(&mut self, index: usize) {
         if index < self.buffers.len() && index != self.current_buffer_index {
+            // Restoring a tab's own buffer preserves its return target. An
+            // explicit file/buffer change within that tab ends the preview.
+            if self.tab_page_manager.current_tab().buffer_id() != Some(self.buffers[index].id()) {
+                self.tab_page_manager.current_tab_mut().definition_origin = None;
+            }
             // Save current file to alternate file register (skip scratch buffers)
             if let Some(current_path) = self.buffer().file_path() {
                 if !is_scratch_path(current_path) {
@@ -181,10 +266,14 @@ impl Editor {
             }
 
             self.current_buffer_index = index;
+            // Once the user looks at a buffer it is theirs, not a hidden
+            // workspace-edit carrier.
+            let viewed = self.buffers[index].id();
+            self.lsp
+                .state
+                .workspace_edit_carriers
+                .retain(|id| *id != viewed);
             self.lsp.state.needs_lsp_init = true;
-
-            // Clear buffer-local marks (a-z) when switching files
-            self.nav.marks.clear();
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
@@ -217,9 +306,6 @@ impl Editor {
             self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
             self.lsp.state.needs_lsp_init = true;
 
-            // Clear buffer-local marks (a-z) when switching files
-            self.nav.marks.clear();
-
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
@@ -234,8 +320,8 @@ impl Editor {
             self.request_diagnostics_refresh();
 
             // Mark that we need to send didClose for the old file
-            if old_file_path.is_some() {
-                self.lsp.state.pending_did_close_file = old_file_path;
+            if let Some(old) = old_file_path {
+                self.queue_lsp_did_close(old);
             }
         }
     }
@@ -260,9 +346,6 @@ impl Editor {
             };
             self.lsp.state.needs_lsp_init = true;
 
-            // Clear buffer-local marks (a-z) when switching files
-            self.nav.marks.clear();
-
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
@@ -277,8 +360,8 @@ impl Editor {
             self.request_diagnostics_refresh();
 
             // Mark that we need to send didClose for the old file
-            if old_file_path.is_some() {
-                self.lsp.state.pending_did_close_file = old_file_path;
+            if let Some(old) = old_file_path {
+                self.queue_lsp_did_close(old);
             }
         }
     }
@@ -294,6 +377,11 @@ impl Editor {
         // Remove current buffer (track sync state)
         if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
             self.lsp.state.document_sync.remove(&path);
+            // The server keeps documents open while their buffers are loaded;
+            // deleting the buffer is what closes it.
+            if !is_scratch_path(&path) {
+                self.queue_lsp_did_close(path);
+            }
         }
 
         // Remove current buffer
@@ -312,8 +400,11 @@ impl Editor {
 
     /// Adds a new buffer and switches to it
     pub fn add_buffer(&mut self, mut buffer: Buffer) {
+        self.tab_page_manager.current_tab_mut().definition_origin = None;
         buffer.set_language_catalog(self.language_catalog.clone());
         self.initialize_buffer_indent_options(&mut buffer);
+        self.request_buffer_git_status(&buffer);
+        mark_library_source_read_only(&mut buffer);
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
         self.clear_lsp_state();
@@ -334,22 +425,25 @@ impl Editor {
         self.mark_dirty();
     }
 
-    /// Finds the index of a buffer with the given file path
-    /// Returns None if no buffer has that file path
+    /// Finds the index of a buffer with the given file path.
+    ///
+    /// This is THE identity check for "is this file already open": every
+    /// spelling of a path (relative, `./x`, `a/../x`, symlinked directory,
+    /// non-normalised URI path) resolves to the same buffer, and it also works
+    /// for files that no longer exist on disk. Returns None if no buffer has
+    /// that file path. If (legacy) duplicates exist the current buffer wins so
+    /// an edit can never land on a hidden twin of the visible buffer.
     pub(crate) fn find_buffer_by_path(&self, file_path: &str) -> Option<usize> {
-        // Normalize paths for comparison
-        let target_path = std::path::Path::new(file_path).canonicalize().ok()?;
-
-        for (index, buffer) in self.buffers.iter().enumerate() {
-            if let Some(buf_path) = buffer.file_path() {
-                if let Ok(buf_canonical) = std::path::Path::new(buf_path).canonicalize() {
-                    if target_path == buf_canonical {
-                        return Some(index);
-                    }
-                }
-            }
+        let same = |index: usize| {
+            self.buffers
+                .get(index)
+                .and_then(|buffer| buffer.file_path())
+                .is_some_and(|buf_path| paths_identify_same_file(buf_path, file_path))
+        };
+        if same(self.current_buffer_index) {
+            return Some(self.current_buffer_index);
         }
-        None
+        (0..self.buffers.len()).find(|&index| same(index))
     }
 
     /// Finds or loads a buffer by URI, returning its index
@@ -370,6 +464,7 @@ impl Editor {
 
         // Load the file into a new buffer (don't switch to it)
         let buffer = Buffer::load_file(&file_path).ok()?;
+        self.lsp.state.workspace_edit_carriers.push(buffer.id());
         let index = self.push_buffer(buffer);
         // Note: We intentionally don't change current_buffer_index here
         // to avoid switching away from the user's current file
@@ -486,13 +581,17 @@ impl Editor {
             return false;
         }
 
+        let past_end = buffer_index == self.current_buffer_index && self.mode().types_text();
         let (all_applied, recorded_edits, cursor_before, cursor_after, file_path) = {
             let buffer = &mut self.buffers[buffer_index];
             let cursor_before =
                 crate::change::CursorPos::new(buffer.cursor().line(), buffer.cursor().col());
 
-            let (all_applied, recorded_edits) =
-                buffer.record(|buf| Self::apply_text_edits_to_buffer(buf, &edits));
+            let (all_applied, recorded_edits) = buffer.record(|buf| {
+                let applied = Self::apply_text_edits_to_buffer(buf, &edits);
+                buf.clamp_cursor_to_content(past_end);
+                applied
+            });
 
             let cursor_after =
                 crate::change::CursorPos::new(buffer.cursor().line(), buffer.cursor().col());
@@ -510,13 +609,12 @@ impl Editor {
             return all_applied;
         }
 
-        // LSP-applied edits should be undoable but should not become dot-repeat
-        // templates, so we push directly to undo/redo stacks without touching
-        // last_change/last_repeat_action.
+        // LSP-applied edits are undoable but do not become the dot-repeat
+        // target: push_change leaves last_repeat_action alone.
         let change = Change::recorded(recorded_edits, cursor_before, cursor_after);
         {
             let cm = self.buffers[buffer_index].change_manager_mut();
-            cm.push_undo_change_preserving_repeat(change);
+            cm.push_change(change);
         }
 
         // Ensure the edited document is re-synced to LSP. We do NOT set
@@ -538,6 +636,66 @@ impl Editor {
         }
 
         all_applied
+    }
+
+    /// Autoread for buffers that are not the current one (splits, other tabs,
+    /// hidden buffers): a clean buffer whose file changed on disk is reloaded,
+    /// a modified one is left alone. Mirrors what the frontends already do
+    /// for the current buffer (`checktime` semantics) and tells the language
+    /// server about the new text. Returns the reloaded file names.
+    pub fn reload_background_buffers_changed_on_disk(&mut self) -> Vec<String> {
+        let mut reloaded = Vec::new();
+        for index in 0..self.buffers.len() {
+            if index == self.current_buffer_index {
+                continue;
+            }
+            let buffer = &self.buffers[index];
+            if is_scratch_buffer(buffer) || buffer.file_mtime().is_none() {
+                continue;
+            }
+            let Some(path) = buffer.file_path().map(str::to_string) else {
+                continue;
+            };
+            if self.buffer_index_is_modified(index)
+                || !std::path::Path::new(&path).exists()
+                || !matches!(self.buffers[index].check_external_modification(), Ok(true))
+            {
+                continue;
+            }
+            if !self.reload_buffer_from_disk(index) {
+                continue;
+            }
+            reloaded.push(path);
+        }
+        if !reloaded.is_empty() {
+            self.lsp.slots.diagnostics.invalidate();
+            self.lsp.slots.inlay_hints.invalidate();
+        }
+        reloaded
+    }
+
+    /// Replaces the text of the buffer at `index` with what is on disk, as an
+    /// unmodified buffer, and has the language server resend the document.
+    /// Returns false when the file could not be read.
+    pub(crate) fn reload_buffer_from_disk(&mut self, index: usize) -> bool {
+        let Some(buffer) = self.buffers.get_mut(index) else {
+            return false;
+        };
+        let Some(path) = buffer.file_path().map(str::to_string) else {
+            return false;
+        };
+        if buffer.reload_from_disk().is_err() {
+            return false;
+        }
+        buffer.change_manager_mut().mark_saved();
+        buffer.mark_clean();
+        let state = self.lsp.state.document_sync.entry(path).or_default();
+        state.mark_modified();
+        state.last_flushed_content = None;
+        state.force_full_resend = true;
+        state.mark_saved();
+        self.refresh_git_state_after_reload(index);
+        true
     }
 
     /// Per-buffer variant of [`Editor::is_modified`]: unsaved-changes check
@@ -608,9 +766,7 @@ impl Editor {
         if buffer.is_read_only() {
             return false;
         }
-        if buffer.file_mtime().is_some()
-            && !matches!(buffer.check_external_modification(), Ok(false))
-        {
+        if !matches!(buffer.check_external_modification(), Ok(false)) {
             return false;
         }
 
@@ -695,7 +851,11 @@ impl Editor {
                 continue;
             }
             // Mirror the :w guard against clobbering external changes.
-            if !force && buffer.file_mtime().is_some() {
+            if !force && std::path::Path::new(&path).exists() {
+                if buffer.file_mtime().is_none() {
+                    errors.push(format!("E13: File exists (add ! to override): {}", path));
+                    continue;
+                }
                 match buffer.check_external_modification() {
                     Ok(true) => {
                         errors.push(format!(
@@ -790,6 +950,108 @@ mod tests {
     use super::*;
     use std::fs;
     use std::str::FromStr;
+
+    /// OV-00458: materialized library sources open read-only.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn library_source_buffers_are_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let sources = dir
+            .path()
+            .join("hyperion-materialized-sources-v1")
+            .join("files");
+        fs::create_dir_all(&sources).unwrap();
+        let library = sources.join("65f9c7.java");
+        let own = dir.path().join("Own.java");
+        fs::write(&library, "class Lib {}\n").unwrap();
+        fs::write(&own, "class Own {}\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&own).unwrap();
+        assert!(!editor.buffer().is_read_only());
+        editor.open_file(&library).unwrap();
+        assert!(editor.buffer().is_read_only());
+        assert!(is_library_source_path(&library.to_string_lossy()));
+        assert!(!is_library_source_path(&own.to_string_lossy()));
+    }
+
+    /// OV-00470: `read_only` only refused `:w`; library sources (and the
+    /// class-file stub Hyperion serves for classes without sources) must
+    /// refuse the edit itself, whatever key tries it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn library_source_buffers_refuse_every_edit() {
+        use crate::editor::InputHandler;
+        use crate::{KeyCode, KeyEvent, Modifiers};
+        let handle_key_event = InputHandler::handle_key_event;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sources = dir
+            .path()
+            .join("hyperion-materialized-sources-v1")
+            .join("files");
+        fs::create_dir_all(&sources).unwrap();
+        let stub = sources.join("246c58.java");
+        fs::write(&stub, "// Generated stub\nclass Stub {}\nint x;\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&stub).unwrap();
+        let before = editor.buffer().rope().to_string();
+        assert!(!editor.buffer().is_modifiable());
+
+        for keys in [
+            "ix", "Ax", "ox", "Ox", "x", "dd", "D", "cwfoo", "p", "P", "rx", "J", ">>", "~", "3x",
+            "ddP",
+        ] {
+            for ch in keys.chars() {
+                let _ = handle_key_event(
+                    &mut editor,
+                    KeyEvent::new(KeyCode::Char(ch), Modifiers::NONE),
+                );
+            }
+            let _ = handle_key_event(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE));
+            assert_eq!(
+                editor.buffer().rope().to_string(),
+                before,
+                "keys {keys:?} changed a library source"
+            );
+            assert_eq!(editor.mode(), crate::mode::Mode::Normal, "keys {keys:?}");
+        }
+        assert!(!editor.buffer().is_modified());
+        // `i` explains why nothing happened.
+        let _ = handle_key_event(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('i'), Modifiers::NONE),
+        );
+        assert!(editor.status_message().contains("E21"));
+
+        // The user can opt in explicitly, as in Vim.
+        crate::commands::execute_command(&mut editor, "set modifiable");
+        let _ = handle_key_event(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('x'), Modifiers::NONE),
+        );
+        assert_ne!(editor.buffer().rope().to_string(), before);
+    }
+
+    #[test]
+    fn package_manager_caches_count_as_library_sources() {
+        for path in [
+            "/home/u/.cargo/registry/src/index.crates.io-1/serde-1.0/src/lib.rs",
+            "/home/u/.cargo/git/checkouts/x-abc/123/src/lib.rs",
+            "/home/u/.rustup/toolchains/stable/lib/rustlib/src/rust/library/std/src/lib.rs",
+            "/home/u/.gradle/caches/modules-2/files-2.1/a/b/c.java",
+            "/home/u/.m2/repository/org/x/y/1.0/y-1.0-sources/Y.java",
+            "/tmp/hyperion-materialized-sources-v1/session-1/files/a.java",
+        ] {
+            assert!(is_library_source_path(path), "{path}");
+        }
+        for path in [
+            "/home/u/proj/src/lib.rs",
+            "/home/u/.cargo/config.toml",
+            "/home/u/proj/registry/mod.rs",
+        ] {
+            assert!(!is_library_source_path(path), "{path}");
+        }
+    }
 
     #[test]
     fn is_scratch_path_detects_bracket_names() {
@@ -1003,7 +1265,7 @@ mod tests {
         let first_index = editor.current_buffer_index();
         editor.open_file(&second).expect("open second");
 
-        let result = crate::cmd_set::handle_set_command(&mut editor, "shiftwidth=2");
+        let result = crate::commands::execute_command(&mut editor, "set shiftwidth=2");
         assert!(matches!(result, crate::CommandResult::Success(_)));
         assert_eq!(editor.indent_options().shift_width, 2);
 
@@ -1173,5 +1435,52 @@ mod tests {
         // prev_buffer back to scratch — % should remain the real file
         editor.prev_buffer();
         assert_eq!(editor.registers().get(Some('%')), expected_path);
+    }
+
+    /// Autoread: a clean buffer in another window follows an external write;
+    /// a modified one keeps the user's text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn background_buffers_follow_external_writes_unless_modified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let clean = dir.path().join("clean.txt");
+        let dirty = dir.path().join("dirty.txt");
+        let current = dir.path().join("current.txt");
+        fs::write(&clean, "clean v1\n").unwrap();
+        fs::write(&dirty, "dirty v1\n").unwrap();
+        fs::write(&current, "current\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&clean).unwrap();
+        editor.open_file(&dirty).unwrap();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "mine ");
+        editor.open_file(&current).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for path in [&clean, &dirty] {
+            fs::write(path, "changed on disk\n").unwrap();
+            let newer = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(newer)
+                .unwrap();
+        }
+
+        let reloaded = editor.reload_background_buffers_changed_on_disk();
+        assert_eq!(reloaded.len(), 1, "{reloaded:?}");
+        let content = |name: &str| {
+            editor
+                .buffers
+                .iter()
+                .find(|b| b.file_path().is_some_and(|p| p.ends_with(name)))
+                .unwrap()
+                .rope()
+                .to_string()
+        };
+        assert_eq!(content("clean.txt"), "changed on disk\n");
+        assert_eq!(content("dirty.txt"), "mine dirty v1\n");
     }
 }

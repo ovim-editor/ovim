@@ -9,16 +9,59 @@ use anyhow::Result;
 
 /// Handles input in Search mode
 pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    if let Some(text) = super::helpers::take_prompt_register_text(editor, &key_event) {
+        let mut changed = false;
+        for character in text.chars() {
+            changed |= editor.insert_search_char(character);
+        }
+        if changed {
+            editor.preview_search();
+        }
+        return Ok(());
+    }
+    if let Some(control) = super::helpers::prompt_control(&key_event) {
+        use super::helpers::PromptControl;
+        match control {
+            PromptControl::Cancel => {
+                return handle_search_mode(
+                    editor,
+                    KeyEvent::new(KeyCode::Esc, crate::Modifiers::NONE),
+                );
+            }
+            PromptControl::Backspace => {
+                return handle_search_mode(
+                    editor,
+                    KeyEvent::new(KeyCode::Backspace, crate::Modifiers::NONE),
+                );
+            }
+            PromptControl::DeleteToStart => {
+                if editor.delete_search_to_start() {
+                    editor.preview_search();
+                }
+            }
+            PromptControl::DeleteWord => {
+                if editor.delete_search_word() {
+                    editor.preview_search();
+                }
+            }
+            PromptControl::Home => editor.move_search_cursor_home(),
+            PromptControl::End => editor.move_search_cursor_end(),
+            PromptControl::InsertRegister => editor.editing.pending_register_insert = true,
+            PromptControl::Ignore => {}
+        }
+        return Ok(());
+    }
     match key_event.code {
         KeyCode::Char(ch) => {
             if editor.insert_search_char(ch) {
                 // Incremental search: update highlighting immediately
-                editor.execute_search();
+                editor.preview_search();
             }
         }
         KeyCode::Backspace => {
             if editor.search_buffer().is_empty() {
                 // Backspace on empty search buffer exits search mode (like Neovim)
+                editor.take_search_operator();
                 editor.restore_search_start_position();
                 editor.clear_search_buffer();
 
@@ -32,13 +75,13 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
             } else {
                 if editor.backspace_search_buffer() {
-                    editor.execute_search();
+                    editor.preview_search();
                 }
             }
         }
         KeyCode::Delete => {
             if editor.delete_from_search_buffer() {
-                editor.execute_search();
+                editor.preview_search();
             }
         }
         KeyCode::Left => {
@@ -55,7 +98,9 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Enter => {
             // Execute the search and accept it
-            editor.execute_search();
+            let operator = editor.take_search_operator();
+            let origin = editor.search_origin();
+            let found = editor.execute_search();
 
             // Check if we're extending a visual selection
             if let Some(visual_search_state) = editor.take_visual_search_state() {
@@ -74,10 +119,16 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 editor.set_mode(Mode::Normal);
             }
+
+            // `d/pat<CR>`: the operator covers the text from where the search began.
+            if let (Some(operator), Some(origin), true) = (operator, origin, found) {
+                super::normal::finish_operator_search(editor, operator, origin)?;
+            }
         }
         KeyCode::Esc => {
             // Cancel search mode
             // BUG FIX: Restore cursor to position before search started
+            editor.take_search_operator();
             editor.restore_search_start_position();
             editor.clear_search_buffer();
 

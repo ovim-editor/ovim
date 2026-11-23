@@ -141,4 +141,8 @@ impl PatchHighlights {
     pub fn line(&self, patch_line: usize) -> &[(Range<usize>, HighlightGroup)] {
         self.lines.get(patch_line).map(Vec::as_slice).unwrap_or(&[])
     }
+
+    pub fn into_lines(self) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+        self.lines
+    }
 }

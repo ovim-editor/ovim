@@ -9,7 +9,10 @@ use std::ops::Range;
 use std::time::Duration;
 
 use crate::display::grapheme_display_width;
-use crate::native_diff::{BaseKind, DiffFile, PatchLine, PatchLineKind, ReviewPatch};
+use crate::native_diff::{
+    BaseKind, CustomReview, DiffFile, PatchLine, PatchLineKind, ReviewPatch, ReviewSection,
+    ReviewSectionLine,
+};
 use crate::syntax::HighlightGroup;
 use crate::unicode::grapheme_indices;
 
@@ -32,15 +35,15 @@ const MIN_SPLIT_TEXT_WIDTH: usize = 8;
 const MAX_WRAP_ROWS: usize = 12;
 
 const KEY_HINT: &str =
-    "# Enter open at cursor · ]c [c hunk · ]f [f file · r refresh · q close · <Space>gf fetch base";
+    "# Enter open at cursor · ]c [c hunk · ]f [f file · o/O comment · Alt-o overlay · Alt-O saved · K/J context ↑/↓ · x check · X show checked · r refresh · q close · <Space>gf fetch base";
 
 /// How the patch body is laid out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DiffLayout {
     /// One column, raw patch text: what `git diff` prints.
-    #[default]
     Unified,
     /// Old on the left, new on the right, with source line numbers.
+    #[default]
     Split,
 }
 
@@ -167,6 +170,8 @@ impl Toolbar {
 
 /// Everything a render produces for the review buffer.
 pub struct Rendered {
+    /// Stable review item owning each rendered row.
+    pub item_rows: Vec<Option<String>>,
     pub title: String,
     pub text: String,
     pub rows: Vec<ReviewRow>,
@@ -176,6 +181,16 @@ pub struct Rendered {
     pub file_lines: Vec<usize>,
     pub toolbar: Toolbar,
     pub highlights: Vec<Vec<(Range<usize>, HighlightGroup)>>,
+    pub code_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>>,
+    pub custom_targets: Vec<Option<CustomTarget>>,
+}
+
+/// Source coordinates for a displayed custom row. A paired row can point to
+/// different files on its two sides.
+#[derive(Debug, Clone, Default)]
+pub struct CustomTarget {
+    pub old: Option<(String, usize)>,
+    pub new: Option<(String, usize)>,
 }
 
 /// One rendered grapheme of a patch line body.
@@ -481,7 +496,20 @@ pub fn render(
         .map(|line| if line == usize::MAX { fallback } else { line })
         .collect();
 
+    let mut item_rows: Vec<_> = builder
+        .rows
+        .iter()
+        .map(|row| {
+            row.info()
+                .and_then(|info| info.file)
+                .map(|index| format!("file:{}", patch.files[index].path))
+        })
+        .collect();
+    for &(row, index) in &stat_rows {
+        item_rows[row] = Some(format!("file:{}", patch.files[index].path));
+    }
     Rendered {
+        item_rows,
         title: format!(
             "{DIFF_REVIEW_TITLE_PREFIX}{} → {}",
             patch.head, patch.base.name
@@ -493,7 +521,425 @@ pub fn render(
         file_lines,
         toolbar,
         highlights: builder.highlights,
+        code_highlights: code.into_lines(),
+        custom_targets: Vec::new(),
     }
+}
+
+/// Renders a saved arrangement from the same canonical patch used by the
+/// regular review. Section paths are independent, which makes cross-file
+/// moves visible in both terminal layouts.
+pub fn render_custom(
+    custom: &CustomReview,
+    title: &str,
+    layout: DiffLayout,
+    width: usize,
+    tab_width: usize,
+    hide_equal: bool,
+    hide_notes: bool,
+) -> Rendered {
+    let patch = &custom.snapshot.patch;
+    let bodies = patch_bodies(patch);
+    let code = PatchHighlights::compute(patch, &bodies);
+    let geometry = SplitGeometry::new(patch, width);
+    let mut builder = Builder::default();
+    let mut targets = Vec::new();
+    let mut hunk_lines = Vec::new();
+    let mut file_lines = vec![usize::MAX; patch.files.len()];
+    builder.header(title, Some(HighlightGroup::DiffHeader));
+    targets.push(None);
+    builder.header(
+        &format!(
+            "{} → {} / worktree · +{} −{} · saved comparison",
+            patch.base.name,
+            patch.head,
+            patch.additions(),
+            patch.deletions()
+        ),
+        Some(HighlightGroup::Comment),
+    );
+    targets.push(None);
+    let toolbar = render_toolbar(layout, &mut builder);
+    targets.resize(builder.len(), None);
+    let has_notes = custom
+        .sections
+        .iter()
+        .any(|section| section.message.is_some());
+    builder.header(
+        if has_notes {
+            "# Enter open source · ]c [c section · o/O comment · Alt-o live/overlay · Alt-O saved · s layout · w hide equal · a notes · K/J context ↑/↓ · x check · X show checked · r refresh/redraw · q close"
+        } else {
+            "# Enter open source · ]c [c section · o/O comment · Alt-o live/overlay · Alt-O saved · s layout · w hide equal · K/J context ↑/↓ · x check · X show checked · r refresh/redraw · q close"
+        },
+        Some(HighlightGroup::Comment),
+    );
+    targets.push(None);
+    builder.header("", None);
+    targets.push(None);
+
+    builder.header(
+        if hide_equal {
+            "Hide equal changes: on (paired, ignoring whitespace)"
+        } else {
+            "Hide equal changes: off · w to toggle"
+        },
+        Some(HighlightGroup::Comment),
+    );
+    targets.push(None);
+    if has_notes {
+        builder.header(
+            if hide_notes {
+                "Agent notes: hidden · a to show"
+            } else {
+                "Agent notes: visible · a to hide"
+            },
+            Some(HighlightGroup::Comment),
+        );
+        targets.push(None);
+    }
+    let mut item_rows = vec![None; builder.len()];
+    for section in &custom.sections {
+        let hidden = if hide_equal {
+            section.equal_change_lines()
+        } else {
+            Default::default()
+        };
+        let has_remaining = section.lines.iter().any(|line| {
+            matches!(line.kind, PatchLineKind::Added | PatchLineKind::Removed)
+                && !hidden.contains(&line.source_patch_line)
+        });
+        let has_metadata = section
+            .lines
+            .iter()
+            .any(|line| line.kind == PatchLineKind::Meta);
+        if !hidden.is_empty() && !has_remaining && !has_metadata {
+            continue;
+        }
+        let visible_lines = || {
+            section
+                .lines
+                .iter()
+                .filter(|line| !hidden.contains(&line.source_patch_line))
+        };
+        let heading = section_heading(section);
+        let header_line = builder.header(&heading, Some(HighlightGroup::DiffHeader));
+        targets.push(None);
+        hunk_lines.push(header_line);
+        if !hide_notes {
+            if let Some(message) = &section.message {
+                builder.header("  Agent note:", Some(HighlightGroup::Comment));
+                targets.push(None);
+                for line in wrap_agent_message(message, width.saturating_sub(4).max(8), tab_width) {
+                    builder.header(&format!("    {line}"), Some(HighlightGroup::Comment));
+                    targets.push(None);
+                }
+            }
+        }
+        for (index, file) in patch.files.iter().enumerate() {
+            if file_lines[index] == usize::MAX
+                && (section.new_path.as_deref() == Some(file.path.as_str())
+                    || section.old_path.as_deref() == Some(file.path.as_str())
+                    || (section.old_path.is_some()
+                        && section.old_path.as_deref() == file.old_path.as_deref()))
+            {
+                file_lines[index] = header_line;
+            }
+        }
+        match layout {
+            DiffLayout::Unified => {
+                for line in visible_lines() {
+                    emit_custom_unified(
+                        line,
+                        section,
+                        patch,
+                        &code,
+                        tab_width,
+                        &mut builder,
+                        &mut targets,
+                    );
+                }
+            }
+            DiffLayout::Split => {
+                let mut old = Vec::new();
+                let mut new = Vec::new();
+                for line in visible_lines() {
+                    match line.kind {
+                        PatchLineKind::Removed => old.push(line),
+                        PatchLineKind::Added => new.push(line),
+                        PatchLineKind::Context => {
+                            flush_custom_pair(
+                                &old,
+                                &new,
+                                section,
+                                patch,
+                                &bodies,
+                                &code,
+                                tab_width,
+                                &geometry,
+                                &mut builder,
+                                &mut targets,
+                            );
+                            old.clear();
+                            new.clear();
+                            emit_custom_pair(
+                                Some(line),
+                                Some(line),
+                                section,
+                                patch,
+                                &bodies,
+                                &code,
+                                tab_width,
+                                &geometry,
+                                &mut builder,
+                                &mut targets,
+                            );
+                        }
+                        _ => {
+                            flush_custom_pair(
+                                &old,
+                                &new,
+                                section,
+                                patch,
+                                &bodies,
+                                &code,
+                                tab_width,
+                                &geometry,
+                                &mut builder,
+                                &mut targets,
+                            );
+                            old.clear();
+                            new.clear();
+                            builder
+                                .header(&line.text, Some(structural_group(line.kind, &line.text)));
+                            targets.push(None);
+                        }
+                    }
+                }
+                flush_custom_pair(
+                    &old,
+                    &new,
+                    section,
+                    patch,
+                    &bodies,
+                    &code,
+                    tab_width,
+                    &geometry,
+                    &mut builder,
+                    &mut targets,
+                );
+            }
+        }
+        builder.header("", None);
+        targets.push(None);
+        item_rows.resize(builder.len(), Some(format!("section:{}", section.id)));
+    }
+    if hide_equal && hunk_lines.is_empty() {
+        builder.header("No unequal changes", Some(HighlightGroup::Comment));
+        targets.push(None);
+    }
+    item_rows.resize(builder.len(), None);
+    let fallback = builder.len().saturating_sub(1);
+    Rendered {
+        item_rows,
+        title: format!("{DIFF_REVIEW_TITLE_PREFIX}{title}"),
+        text: builder.text,
+        rows: builder.rows,
+        stat_rows: Vec::new(),
+        hunk_lines,
+        file_lines: file_lines
+            .into_iter()
+            .map(|line| {
+                if line == usize::MAX && !hide_equal {
+                    fallback
+                } else {
+                    line
+                }
+            })
+            .collect(),
+        toolbar,
+        highlights: builder.highlights,
+        code_highlights: code.into_lines(),
+        custom_targets: targets,
+    }
+}
+
+/// Wrap prose by display cells while preserving paragraph breaks. Long words
+/// are split at grapheme boundaries so a single URL cannot overflow the view.
+fn wrap_agent_message(message: &str, width: usize, tab_width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for paragraph in message.split('\n') {
+        let mut row = String::new();
+        let mut used = 0;
+        let expanded = paragraph.replace('\t', &" ".repeat(tab_width.max(1)));
+        for token in expanded.split_inclusive(' ') {
+            let token_width = grapheme_indices(token)
+                .map(|(_, glyph)| grapheme_display_width(glyph).max(1))
+                .sum::<usize>();
+            if used > 0 && used + token_width > width && token_width <= width {
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+            }
+            for (_, glyph) in grapheme_indices(token) {
+                let cells = grapheme_display_width(glyph).max(1);
+                if used > 0 && used + cells > width {
+                    rows.push(std::mem::take(&mut row));
+                    used = 0;
+                }
+                row.push_str(glyph);
+                used += cells;
+            }
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+fn section_heading(section: &ReviewSection) -> String {
+    let old = section.old_path.as_deref().unwrap_or("∅");
+    let new = section.new_path.as_deref().unwrap_or("∅");
+    let kind = match (section.old_path.is_some(), section.new_path.is_some()) {
+        (true, false) => "Deletion",
+        (false, true) => "Addition",
+        _ => "Change",
+    };
+    let label = section.label.as_deref().unwrap_or(kind);
+    let prefix = if kind != "Change" && label != kind {
+        format!("{kind} · ")
+    } else {
+        String::new()
+    };
+    format!("── {prefix}{label} · {old} → {new}")
+}
+
+fn is_source_line(kind: PatchLineKind) -> bool {
+    matches!(
+        kind,
+        PatchLineKind::Context | PatchLineKind::Added | PatchLineKind::Removed
+    )
+}
+
+fn custom_info(line: &ReviewSectionLine, patch: &ReviewPatch) -> PatchLine {
+    patch
+        .lines
+        .get(line.source_patch_line)
+        .copied()
+        .unwrap_or(PatchLine {
+            kind: line.kind,
+            file: None,
+            old_line: line.old_line,
+            new_line: line.new_line,
+        })
+}
+
+fn custom_target(line: &ReviewSectionLine, section: &ReviewSection) -> CustomTarget {
+    CustomTarget {
+        old: line
+            .old_line
+            .and_then(|number| section.old_path.as_ref().map(|path| (path.clone(), number))),
+        new: line
+            .new_line
+            .and_then(|number| section.new_path.as_ref().map(|path| (path.clone(), number))),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_custom_unified(
+    source: &ReviewSectionLine,
+    section: &ReviewSection,
+    patch: &ReviewPatch,
+    code: &PatchHighlights,
+    tab_width: usize,
+    builder: &mut Builder,
+    targets: &mut Vec<Option<CustomTarget>>,
+) {
+    if !is_source_line(source.kind) {
+        builder.header(
+            &source.text,
+            Some(structural_group(source.kind, &source.text)),
+        );
+        targets.push(None);
+        return;
+    }
+    let glyphs = layout_body(&source.text, tab_width, false);
+    let mut row = RowBuilder::default();
+    let patch_line = source.source_patch_line;
+    let cell = push_cell(
+        &mut row,
+        CellSpec {
+            info: custom_info(source, patch),
+            patch_line,
+            glyphs: &glyphs,
+            segment: 0..glyphs.len(),
+            code: code.line(source.source_patch_line),
+            number: None,
+            number_width: 0,
+            marker: Some(marker_for(source.kind)),
+            pad_to: None,
+            elided: false,
+        },
+    );
+    builder.push(row, ReviewRow::single(cell));
+    targets.push(Some(custom_target(source, section)));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_custom_pair(
+    old: &[&ReviewSectionLine],
+    new: &[&ReviewSectionLine],
+    section: &ReviewSection,
+    patch: &ReviewPatch,
+    bodies: &[&str],
+    code: &PatchHighlights,
+    tab_width: usize,
+    geometry: &SplitGeometry,
+    builder: &mut Builder,
+    targets: &mut Vec<Option<CustomTarget>>,
+) {
+    for index in 0..old.len().max(new.len()) {
+        emit_custom_pair(
+            old.get(index).copied(),
+            new.get(index).copied(),
+            section,
+            patch,
+            bodies,
+            code,
+            tab_width,
+            geometry,
+            builder,
+            targets,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_custom_pair(
+    old: Option<&ReviewSectionLine>,
+    new: Option<&ReviewSectionLine>,
+    section: &ReviewSection,
+    patch: &ReviewPatch,
+    bodies: &[&str],
+    code: &PatchHighlights,
+    tab_width: usize,
+    geometry: &SplitGeometry,
+    builder: &mut Builder,
+    targets: &mut Vec<Option<CustomTarget>>,
+) {
+    let before = builder.len();
+    emit_pair(
+        patch,
+        bodies,
+        code,
+        tab_width,
+        geometry,
+        builder,
+        old.map(|line| line.source_patch_line),
+        new.map(|line| line.source_patch_line),
+    );
+    let target = CustomTarget {
+        old: old.and_then(|line| custom_target(line, section).old),
+        new: new.and_then(|line| custom_target(line, section).new),
+    };
+    targets.resize(builder.len().max(before), Some(target));
 }
 
 /// The text of each patch line without its marker column.
@@ -779,7 +1225,10 @@ fn render_split(
                     let line = builder.len();
                     let mut row = RowBuilder::default();
                     row.push(
-                        &file_banner(entry, geometry.row_width()),
+                        &file_banner(
+                            entry,
+                            geometry.row_width().saturating_sub("  [x] checked".len()),
+                        ),
                         Some(HighlightGroup::DiffHeader),
                     );
                     builder.push(row, ReviewRow::single(header_cell(*info, index, "")));
@@ -1130,9 +1579,276 @@ fn humanize(age: Duration) -> String {
     }
 }
 
+/// Insert source context at existing code boundaries, without control or spacer rows.
+/// Canonical patch indices and their syntax mappings remain untouched.
+pub fn expand_context(
+    rendered: &mut Rendered,
+    context: &crate::native_diff::context::DiffContext,
+    snapshot: &crate::native_diff::ReviewSnapshot,
+    guided: bool,
+    layout: DiffLayout,
+    width: usize,
+    tab_width: usize,
+) -> Vec<Option<String>> {
+    use std::collections::{BTreeMap, HashMap};
+    type Insertion = (String, Builder, Vec<Option<CustomTarget>>, Option<String>);
+    let mut insertions: BTreeMap<usize, Vec<Insertion>> = BTreeMap::new();
+    let mut ids = vec![None; rendered.rows.len()];
+    let geometry = SplitGeometry::new(&snapshot.patch, width);
+    let mut source_rows: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (index, row) in rendered.rows.iter().enumerate() {
+        for cell in [row.left, row.right].into_iter().flatten() {
+            source_rows.entry(cell.patch_line).or_default().push(index);
+        }
+    }
+    for region in context.regions(guided) {
+        let mut positions: Vec<_> = region
+            .patch_lines
+            .iter()
+            .filter_map(|line| source_rows.get(line))
+            .flatten()
+            .copied()
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        let (Some(&first), Some(&last)) = (positions.first(), positions.last()) else {
+            continue;
+        };
+        ids[first..=last].fill(Some(region.id.clone()));
+        let Some(view) = context.view(snapshot, &region.id) else {
+            continue;
+        };
+        let (old_path, new_path) = context.paths(&region.id);
+        let separate = layout == DiffLayout::Unified
+            && guided
+            && positions.iter().all(|&row| {
+                rendered.rows[row]
+                    .info()
+                    .is_some_and(|info| info.kind != PatchLineKind::Context)
+            });
+        let mut edges = Vec::new();
+        if separate {
+            for old in [true, false] {
+                let side_rows: Vec<_> = positions
+                    .iter()
+                    .copied()
+                    .filter(|&row| {
+                        rendered.rows[row].info().is_some_and(|info| {
+                            info.kind
+                                == if old {
+                                    PatchLineKind::Removed
+                                } else {
+                                    PatchLineKind::Added
+                                }
+                        })
+                    })
+                    .collect();
+                if let (Some(&first), Some(&last)) = (side_rows.first(), side_rows.last()) {
+                    for (position, edge) in [(first, &view.before), (last + 1, &view.after)] {
+                        edges.push((
+                            position,
+                            crate::native_diff::context::ContextEdge {
+                                old: if old { edge.old.clone() } else { Vec::new() },
+                                new: if old { Vec::new() } else { edge.new.clone() },
+                            },
+                        ));
+                    }
+                }
+            }
+        } else {
+            edges.extend([(first, view.before), (last + 1, view.after)]);
+        }
+        for (position, edge) in edges {
+            if edge.old.is_empty() && edge.new.is_empty() {
+                continue;
+            }
+            let mut builder = Builder::default();
+            let mut targets = Vec::new();
+            let pairs: Vec<_> = if layout == DiffLayout::Split
+                || (old_path == new_path
+                    && edge.old.len() == edge.new.len()
+                    && edge
+                        .old
+                        .iter()
+                        .zip(&edge.new)
+                        .all(|(old, new)| old.text == new.text))
+            {
+                (0..edge.old.len().max(edge.new.len()))
+                    .map(|i| (edge.old.get(i), edge.new.get(i)))
+                    .collect()
+            } else {
+                edge.old
+                    .iter()
+                    .map(|line| (Some(line), None))
+                    .chain(edge.new.iter().map(|line| (None, Some(line))))
+                    .collect()
+            };
+            for (old, new) in pairs {
+                let target = CustomTarget {
+                    old: old
+                        .zip(old_path)
+                        .map(|(line, path)| (path.to_string(), line.number)),
+                    new: new
+                        .zip(new_path)
+                        .map(|(line, path)| (path.to_string(), line.number)),
+                };
+                let old_glyphs =
+                    old.map(|line| layout_body(&line.text, tab_width, layout == DiffLayout::Split));
+                let new_glyphs =
+                    new.map(|line| layout_body(&line.text, tab_width, layout == DiffLayout::Split));
+                let runs = |glyphs: &Option<Vec<Glyph<'_>>>| {
+                    glyphs.as_ref().map(|g| {
+                        if layout == DiffLayout::Split {
+                            chunk_glyphs(g, geometry.text_width)
+                        } else {
+                            std::iter::once(0..g.len()).collect()
+                        }
+                    })
+                };
+                let old_runs = runs(&old_glyphs);
+                let new_runs = runs(&new_glyphs);
+                let count = old_runs
+                    .as_ref()
+                    .map_or(0, Vec::len)
+                    .max(new_runs.as_ref().map_or(0, Vec::len))
+                    .clamp(1, MAX_WRAP_ROWS);
+                for row_index in 0..count {
+                    let mut row = RowBuilder::default();
+                    let cell = |row: &mut RowBuilder, old_side: bool| {
+                        let (line, glyphs, runs, path) = if old_side {
+                            (old?, old_glyphs.as_ref()?, old_runs.as_ref()?, old_path)
+                        } else {
+                            (new?, new_glyphs.as_ref()?, new_runs.as_ref()?, new_path)
+                        };
+                        Some(push_cell(
+                            row,
+                            CellSpec {
+                                info: PatchLine {
+                                    kind: PatchLineKind::Context,
+                                    file: snapshot.patch.files.iter().position(|f| {
+                                        Some(f.path.as_str()) == path
+                                            || f.old_path.as_deref() == path
+                                    }),
+                                    old_line: old.map(|l| l.number),
+                                    new_line: new.map(|l| l.number),
+                                },
+                                patch_line: usize::MAX,
+                                glyphs,
+                                segment: runs
+                                    .get(row_index)
+                                    .cloned()
+                                    .unwrap_or(glyphs.len()..glyphs.len()),
+                                code: &[],
+                                number: (layout == DiffLayout::Split && row_index == 0)
+                                    .then_some(line.number),
+                                number_width: if layout == DiffLayout::Split {
+                                    geometry.number_width
+                                } else {
+                                    0
+                                },
+                                marker: Some(' '),
+                                pad_to: (layout == DiffLayout::Split)
+                                    .then_some(geometry.text_width),
+                                elided: row_index + 1 == count && runs.len() > count,
+                            },
+                        ))
+                    };
+                    let review_row = if layout == DiffLayout::Split {
+                        let left = cell(&mut row, true);
+                        if left.is_none() {
+                            row.pad(geometry.number_width + 3 + geometry.text_width);
+                        }
+                        row.push(&format!(" {SEPARATOR} "), Some(HighlightGroup::Punctuation));
+                        let right = cell(&mut row, false);
+                        ReviewRow { left, right }
+                    } else {
+                        ReviewRow::single(cell(&mut row, new.is_none()).expect("context source"))
+                    };
+                    builder.push(row, review_row);
+                    targets.push(Some(target.clone()));
+                }
+            }
+            insertions.entry(position).or_default().push((
+                region.id.clone(),
+                builder,
+                targets,
+                rendered.item_rows[first].clone(),
+            ));
+        }
+    }
+    if insertions.is_empty() {
+        return ids;
+    }
+    let original: Vec<_> = rendered.text.lines().map(str::to_string).collect();
+    let mut text = String::new();
+    let mut rows = Vec::new();
+    let mut highlights = Vec::new();
+    let mut targets = Vec::new();
+    let mut result_ids = Vec::new();
+    let mut item_rows = Vec::new();
+    let mut mapping = vec![0; original.len()];
+    for index in 0..=original.len() {
+        if let Some(entries) = insertions.remove(&index) {
+            for (id, builder, context_targets, item) in entries {
+                item_rows.extend(std::iter::repeat_n(item, builder.rows.len()));
+                result_ids.extend(std::iter::repeat_n(Some(id), builder.rows.len()));
+                text.push_str(&builder.text);
+                rows.extend(builder.rows);
+                highlights.extend(builder.highlights);
+                targets.extend(context_targets);
+            }
+        }
+        if let Some(line) = original.get(index) {
+            mapping[index] = rows.len();
+            text.push_str(line);
+            text.push('\n');
+            rows.push(rendered.rows[index].clone());
+            highlights.push(rendered.highlights[index].clone());
+            targets.push(rendered.custom_targets.get(index).cloned().flatten());
+            result_ids.push(ids[index].clone());
+            item_rows.push(rendered.item_rows[index].clone());
+        }
+    }
+    let remap = |line: &mut usize| {
+        if let Some(mapped) = mapping.get(*line) {
+            *line = *mapped;
+        }
+    };
+    for line in &mut rendered.hunk_lines {
+        remap(line);
+    }
+    for line in &mut rendered.file_lines {
+        remap(line);
+    }
+    for (line, _) in &mut rendered.stat_rows {
+        remap(line);
+    }
+    rendered.item_rows = item_rows;
+    rendered.text = text;
+    rendered.rows = rows;
+    rendered.highlights = highlights;
+    rendered.custom_targets = targets;
+    result_ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_message_wraps_words_and_unicode_without_exceeding_width() {
+        let message = "Move ordinary words together\n\t日本語👩‍💻longunbrokenword";
+        let rows = wrap_agent_message(message, 12, 4);
+        assert_eq!(rows[0], "Move ");
+        assert!(rows.iter().any(|row| row.contains("ordinary")));
+        assert!(rows.iter().any(|row| row.starts_with("    日本")));
+        assert!(rows.iter().all(|row| {
+            grapheme_indices(row)
+                .map(|(_, glyph)| grapheme_display_width(glyph).max(1))
+                .sum::<usize>()
+                <= 12
+        }));
+    }
 
     #[test]
     fn humanize_buckets() {

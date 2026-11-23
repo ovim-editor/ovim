@@ -28,14 +28,16 @@ fn tick_picker(picker: &mut Picker) {
     let mut last_count = None;
     let mut last_top = None;
 
-    for _ in 0..300 {
+    for _ in 0..600 {
         let changed = picker.tick();
         let count = picker.filtered_result_count();
         let top = picker.filtered_result(0).map(|r| r.display.clone());
 
         if !changed && last_count == Some(count) && last_top == top {
             stable_polls += 1;
-            if stable_polls >= 5 {
+            // A loaded CI runner can leave the matcher idle for tens of ms
+            // after the first snapshot (items injected, query not yet ranked).
+            if stable_polls >= 40 {
                 break;
             }
         } else {
@@ -44,6 +46,25 @@ fn tick_picker(picker: &mut Picker) {
 
         last_count = Some(count);
         last_top = top;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Incremental loading can remain idle before a matcher worker is scheduled.
+/// Wait for the expected result instead of mistaking an empty snapshot for
+/// completion after a few unchanged polls.
+fn wait_for_result_count(picker: &mut Picker, expected: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        picker.tick();
+        if picker.filtered_result_count() == expected {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "matcher did not produce {expected} results; got {}",
+            picker.filtered_result_count()
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -374,7 +395,7 @@ fn add_file_result_during_loading() {
 
     picker.add_file_result(file_result("a.rs"));
     picker.add_file_result(file_result("b.rs"));
-    tick_picker(&mut picker);
+    wait_for_result_count(&mut picker, 2);
     assert_eq!(picker.filtered_result_count(), 2);
 
     picker.finish_loading();
@@ -388,7 +409,7 @@ fn add_file_result_with_active_query_filters_incrementally() {
 
     picker.add_file_result(file_result("src/main.rs"));
     picker.add_file_result(file_result("src/lib.rs")); // doesn't match
-    tick_picker(&mut picker);
+    wait_for_result_count(&mut picker, 1);
 
     // Only matching result appears
     assert_eq!(picker.filtered_result_count(), 1);

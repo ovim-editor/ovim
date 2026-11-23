@@ -1,5 +1,6 @@
 /// A shell command queued by `:!cmd` for the event loop to execute
 /// with full terminal access (outside the alternate screen).
+#[derive(Debug, PartialEq, Eq)]
 pub struct PendingShellCommand {
     /// The expanded shell command string
     pub command: String,
@@ -15,13 +16,10 @@ pub struct PendingTerminalSession {
     pub command: Option<String>,
 }
 
-/// Grouped state for the build/test subsystem (`:make`, `<Space>t` test runs).
+/// Grouped state for the build/test subsystem (the test panel and last-test bookkeeping; runs themselves go
+/// through the launch pipeline).
 #[derive(Default)]
 pub(crate) struct BuildState {
-    /// Pending `:make` result from background thread
-    pub(crate) pending_make: Option<super::PendingMake>,
-    /// Streaming output from a `<Space>t` test run
-    pub(crate) pending_test: Option<super::test_panel::PendingTest>,
     /// Right-side test panel (run history + open state)
     pub(crate) test_panel: super::test_panel::TestPanelState,
     /// Last test run via `<Space>t` keybindings (for `<Space>tl` repeat and

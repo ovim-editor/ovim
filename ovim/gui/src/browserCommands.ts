@@ -25,6 +25,33 @@ export const BROWSER_COMMAND_NAMES = [
     "tabprev",
 ] as const;
 
+/** Dev servers on loopback/LAN addresses rarely speak TLS. */
+const isLocalHost = (authority: string) => {
+    const host = (
+        authority.startsWith("[")
+            ? authority.slice(1, authority.indexOf("]"))
+            : authority.split(":", 1)[0]
+    ).toLowerCase();
+    if (/\.(localhost|local)$/.test(host)) return true;
+    if (authority.startsWith("["))
+        return host === "::1" || /^f[cd]|^fe[89ab]/.test(host);
+    const octets = host.split(".").map(Number);
+    if (
+        octets.length !== 4 ||
+        octets.some((octet) => !Number.isInteger(octet) || octet > 255)
+    )
+        return false;
+    const [a, b] = octets;
+    return (
+        a === 127 ||
+        a === 10 ||
+        a === 0 ||
+        (a === 192 && b === 168) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 169 && b === 254)
+    );
+};
+
 export const normalizeBrowserAddress = (value: string) => {
     const address = value.trim();
     if (!address) return address;
@@ -35,7 +62,8 @@ export const normalizeBrowserAddress = (value: string) => {
     const looksLikeNetworkLocation =
         !/\s|@/.test(address) &&
         (host.includes(".") || host.startsWith("[") || /^\d+$/.test(host));
-    if (looksLikeNetworkLocation) return `https://${address}`;
+    if (looksLikeNetworkLocation)
+        return `${isLocalHost(authority) ? "http" : "https"}://${address}`;
     if (/^[a-z][a-z\d+.-]*:/i.test(address)) return address;
 
     return `https://duckduckgo.com/?${new URLSearchParams({ q: address })}`;

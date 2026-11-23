@@ -71,11 +71,14 @@ fn build_grep_matcher(query: &str) -> Result<RegexMatcher, ()> {
         .map_err(|_| ())
 }
 
-/// Build a directory walker builder with standard gitignore and hidden file settings.
+/// Build a directory walker builder with standard gitignore and hidden file
+/// settings. `.gitignore` is honoured outside a git repository too
+/// (`require_git(false)`), like replace-in-files.
 pub(crate) fn build_walker(root: &Path) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(true)
+        .require_git(false)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true);
@@ -408,5 +411,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let results = grep_search_sync("", dir.path(), 100);
         assert!(results.is_empty());
+    }
+
+    /// A `.gitignore` outside a git repository is honoured, like in
+    /// replace-in-files.
+    #[test]
+    fn grep_search_sync_honours_gitignore_outside_a_repository() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join(".gitignore"), "generated.txt\n").unwrap();
+        fs::write(root.join("kept.txt"), "needle\n").unwrap();
+        fs::write(root.join("generated.txt"), "needle\n").unwrap();
+
+        let results = grep_search_sync("needle", root, 100);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(results[0].rel_path.ends_with("kept.txt"));
     }
 }

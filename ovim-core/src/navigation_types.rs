@@ -25,6 +25,9 @@ pub struct OutlineSymbol {
     pub start_line: usize,
     pub end_line: usize,
     pub children: Vec<OutlineSymbol>,
+    /// 0-based (line, char column) of the symbol's name, for jumping to it.
+    #[serde(skip)]
+    pub selection: Option<(usize, usize)>,
 }
 
 /// Workspace symbol search results

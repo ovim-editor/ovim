@@ -3,6 +3,15 @@ use crate::buffer::Buffer;
 use crate::buffer::Cursor;
 use crate::coordinates::DisplayCol;
 
+/// Cursor and viewport transferred together when splitting an existing view.
+#[derive(Clone, Copy)]
+struct SplitViewport {
+    cursor: Cursor,
+    scroll_offset: usize,
+    scroll_subrow: usize,
+    wrap_cursor_row: Option<usize>,
+}
+
 /// Represents a window - a viewport into a buffer
 #[derive(Debug, Clone)]
 pub struct Window {
@@ -28,11 +37,15 @@ pub struct Window {
     /// content width. `None` when wrap is off or not yet built. Per-window so a
     /// split pane wraps at its own width rather than the focused pane's.
     /// (roadmap 19 / OV-00209)
-    wrap_map: Option<WrapMap>,
+    wrap_map: Option<Box<WrapMap>>,
     /// `DecorationMap::generation` at the time `wrap_map` was built — decorations
     /// belong to the buffer, not the window, so inlay-hint arrivals must rebuild
     /// every window's wrap map.
     wrap_decoration_generation: u64,
+    /// One-shot screen-row anchor captured when this window was split. Once the
+    /// pane has rebuilt its wrap geometry at its final width, it keeps the
+    /// copied cursor visible at this row and clears the anchor.
+    pending_wrap_reflow_cursor_row: Option<usize>,
 }
 
 impl Window {
@@ -48,16 +61,17 @@ impl Window {
             height,
             wrap_map: None,
             wrap_decoration_generation: 0,
+            pending_wrap_reflow_cursor_row: None,
         }
     }
 
     /// This window's soft-wrap map (if built).
     pub fn wrap_map(&self) -> Option<&WrapMap> {
-        self.wrap_map.as_ref()
+        self.wrap_map.as_deref()
     }
 
     /// Mutable access to this window's soft-wrap map slot.
-    pub fn wrap_map_mut(&mut self) -> &mut Option<WrapMap> {
+    pub fn wrap_map_mut(&mut self) -> &mut Option<Box<WrapMap>> {
         &mut self.wrap_map
     }
 
@@ -122,6 +136,16 @@ impl Window {
         self.scroll_subrow = subrow;
     }
 
+    /// Queue a one-shot cursor visibility repair after split reflow.
+    pub fn set_pending_wrap_reflow_cursor_row(&mut self, row: Option<usize>) {
+        self.pending_wrap_reflow_cursor_row = row;
+    }
+
+    /// Screen-row anchor awaiting a split-time wrap reflow repair.
+    pub fn pending_wrap_reflow_cursor_row(&self) -> Option<usize> {
+        self.pending_wrap_reflow_cursor_row
+    }
+
     /// Gets the horizontal scroll offset (display columns).
     pub fn horizontal_offset(&self) -> usize {
         self.horizontal_offset.as_usize()
@@ -181,11 +205,13 @@ impl Window {
 
     /// Ensures the cursor column is visible horizontally, adjusting horizontal offset if needed.
     ///
-    /// `cursor_col` is a **display column** (accounts for wide chars and tabs).
+    /// `cursor_col` is a **display column** (accounts for wide chars and tabs);
+    /// `visible_width` the number of text columns on screen (0 = unknown).
     /// Returns true if horizontal offset changed.
     pub fn ensure_cursor_visible_horizontal(
         &mut self,
         cursor_col: usize,
+        visible_width: usize,
         wrap: bool,
         sidescroll: usize,
         sidescrolloff: usize,
@@ -199,15 +225,23 @@ impl Window {
             return false;
         }
 
-        let visible_width = self.width as usize;
         let h_off = self.horizontal_offset.as_usize();
         let old_offset = h_off;
+
+        // Text columns on screen: the pane without its gutter. Callers that
+        // do not know the gutter pass 0 and get the whole pane.
+        let visible_width = if visible_width == 0 {
+            self.width as usize
+        } else {
+            visible_width.min(self.width as usize)
+        };
 
         // Clamp sidescrolloff so left and right margins don't overlap
         let sidescrolloff = sidescrolloff.min(visible_width.saturating_sub(1) / 2);
 
-        // Calculate bounds with sidescrolloff
-        let left_bound = h_off + sidescrolloff;
+        // Calculate bounds with sidescrolloff. A scrolled line draws its `<`
+        // indicator over the first cell, so the cursor may not sit there.
+        let left_bound = h_off + sidescrolloff.max(usize::from(h_off > 0));
         let right_bound = h_off + visible_width.saturating_sub(sidescrolloff + 1);
 
         let new_offset;
@@ -340,8 +374,8 @@ pub struct WindowView {
 /// Render-time mirror of [`WindowNode`] that carries only the tree *shape* plus
 /// each leaf's [`WindowView`].
 ///
-/// `WindowNode::clone()` deep-copies every leaf's `wrap_map` (a `Vec<u16>` plus
-/// a `Vec<usize>`, one entry per logical line) — wasted work, since the render
+/// `WindowNode::clone()` copies every leaf's wrap-map row counts, prefix
+/// index, and layout handles — wasted work, since the render
 /// walk never reads the snapshot's wrap map: it (re)builds each pane's map into
 /// the *live* `Window` (`Editor::ensure_wrap_map_for_window`) as it descends.
 /// [`WindowNode::view_tree`] produces this cheap copy instead.
@@ -641,7 +675,6 @@ impl WindowManager {
             buffer_id,
             0,
             None,
-            None,
         );
     }
 
@@ -652,6 +685,8 @@ impl WindowManager {
         buffer_id: usize,
         cursor: Cursor,
         scroll_offset: usize,
+        scroll_subrow: usize,
+        wrap_reflow_cursor_row: Option<usize>,
     ) {
         let focused_idx = self.focused_window;
         Self::split_window_by_index_static(
@@ -660,8 +695,12 @@ impl WindowManager {
             direction,
             buffer_id,
             0,
-            Some(cursor),
-            Some(scroll_offset),
+            Some(SplitViewport {
+                cursor,
+                scroll_offset,
+                scroll_subrow,
+                wrap_cursor_row: wrap_reflow_cursor_row,
+            }),
         );
     }
 
@@ -672,8 +711,7 @@ impl WindowManager {
         direction: SplitDirection,
         buffer_id: usize,
         current_index: usize,
-        cursor: Option<Cursor>,
-        scroll_offset: Option<usize>,
+        viewport: Option<SplitViewport>,
     ) -> (bool, usize) {
         match node {
             WindowNode::Leaf(window) => {
@@ -681,19 +719,17 @@ impl WindowManager {
                     // Found the window to split - create new window with same dimensions
                     let mut new_window = Window::new(buffer_id, window.width(), window.height());
 
-                    // Copy cursor and scroll state to both windows
-                    if let Some(ref cursor) = cursor {
-                        window
-                            .cursor_mut()
-                            .set_position(cursor.line(), cursor.col());
-                        new_window
-                            .cursor_mut()
-                            .set_position(cursor.line(), cursor.col());
+                    // Copy the full viewport as one unit to both windows.
+                    if let Some(view) = viewport {
+                        for pane in [&mut *window, &mut new_window] {
+                            pane.cursor_mut()
+                                .set_position(view.cursor.line(), view.cursor.col());
+                            pane.set_scroll_position(view.scroll_offset, view.scroll_subrow);
+                        }
                     }
-                    if let Some(scroll) = scroll_offset {
-                        window.set_scroll_offset(scroll);
-                        new_window.set_scroll_offset(scroll);
-                    }
+                    let anchor = viewport.and_then(|view| view.wrap_cursor_row);
+                    window.set_pending_wrap_reflow_cursor_row(anchor);
+                    new_window.set_pending_wrap_reflow_cursor_row(anchor);
 
                     let old_window = std::mem::replace(window, Window::new(0, 0, 0));
 
@@ -716,8 +752,7 @@ impl WindowManager {
                     direction,
                     buffer_id,
                     current_index,
-                    cursor,
-                    scroll_offset,
+                    viewport,
                 );
                 if found {
                     (true, next_index)
@@ -728,8 +763,7 @@ impl WindowManager {
                         direction,
                         buffer_id,
                         next_index,
-                        cursor,
-                        scroll_offset,
+                        viewport,
                     )
                 }
             }
@@ -1042,5 +1076,38 @@ impl WindowManager {
         self.focused_window = 0; // Reset focus to index 0
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod horizontal_scroll_tests {
+    use super::*;
+
+    /// A 60 column pane whose gutter leaves 54 text columns.
+    fn pane() -> Window {
+        Window::new(0, 60, 10)
+    }
+
+    #[test]
+    fn the_cursor_is_kept_inside_the_text_columns_not_the_whole_pane() {
+        let mut window = pane();
+        // Column 55 is inside the 60 column pane but past the 54 text columns.
+        assert!(window.ensure_cursor_visible_horizontal(55, 54, false, 1, 0));
+        assert_eq!(window.horizontal_offset(), 2);
+        // Unknown text width (0) falls back to the pane width.
+        let mut window = pane();
+        assert!(!window.ensure_cursor_visible_horizontal(55, 0, false, 1, 0));
+    }
+
+    #[test]
+    fn the_cursor_never_sits_on_the_indicator_cell_of_a_scrolled_line() {
+        let mut window = pane();
+        window.horizontal_offset = DisplayCol(20);
+        // Without sidescrolloff the first cell is still reserved for `<`.
+        assert!(window.ensure_cursor_visible_horizontal(20, 54, false, 1, 0));
+        assert_eq!(window.horizontal_offset(), 19);
+        // At offset 0 nothing is reserved.
+        let mut window = pane();
+        assert!(!window.ensure_cursor_visible_horizontal(0, 54, false, 1, 0));
     }
 }

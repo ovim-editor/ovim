@@ -281,6 +281,7 @@ impl Editor {
     }
 
     fn finish_ai_runtime_turn(&mut self, terminal: AiTurnTerminal, detail: Option<String>) {
+        self.retire_external_tools();
         let Some(turn) = self.active_ai_runtime_turn() else {
             return;
         };

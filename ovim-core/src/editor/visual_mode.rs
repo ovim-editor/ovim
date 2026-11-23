@@ -1,8 +1,41 @@
+use super::visual_context::VisualSelection;
 use super::Editor;
 use crate::mode::Mode;
 use crate::unicode::{grapheme_count, GraphemeCol};
 
+/// End column reported by `visual_selection` for a block that extends to the
+/// end of every line (`$`). One short of `usize::MAX` so `end_col + 1` cannot
+/// wrap in callers.
+pub const BLOCK_TO_EOL_COL: usize = usize::MAX - 1;
+
 impl Editor {
+    /// Rope range for an inclusive characterwise selection. Include the line
+    /// terminator when its EOL cell is selected, then normalize the exclusive
+    /// endpoint onto the next line for buffer edits.
+    pub(crate) fn visual_character_range(&self) -> Option<crate::textobjects::TextObjectRange> {
+        let ((start_line, start_col), (end_line, end_col)) = self.visual_selection()?;
+        let buffer = self.buffer();
+        let start_text = buffer.line_text(start_line)?;
+        let end_text = buffer.line_slice(end_line)?.to_string();
+        let start_col = crate::unicode::grapheme_to_char_col(&start_text, GraphemeCol(start_col));
+        let mut end_col =
+            crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col.saturating_add(1)));
+        // The last line has no line break to select (`v$d` there leaves an
+        // empty line).
+        if end_line + 1 >= buffer.line_count() {
+            end_col.0 = end_col.0.min(buffer.line_len(end_line));
+        }
+        let end_offset = buffer.rope().line_to_char(end_line) + end_col.0;
+        let end_line = buffer.rope().char_to_line(end_offset);
+        let end_col = crate::unicode::CharCol(end_offset - buffer.rope().line_to_char(end_line));
+        Some(crate::textobjects::TextObjectRange {
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+        })
+    }
+
     /// Returns the current visual selection as user-visible text.
     ///
     /// Frontends use this for native clipboard integration while keeping the
@@ -28,8 +61,34 @@ impl Editor {
 
     /// Saves the current visual selection for gv command
     pub fn save_last_visual_selection(&mut self) {
-        if let Some(selection) = self.visual_selection() {
-            self.visual.last_visual_selection = Some((selection.0, selection.1, self.mode));
+        if let Some(selection) = self.selection_when_key_arrived() {
+            self.visual.last_visual_selection = Some(selection);
+        }
+    }
+
+    /// The selection as it stood when the key being handled arrived, with the
+    /// mode it was made in. An operator that moves the cursor before Visual
+    /// mode ends must not change what `gv` and the `'<` `'>` marks record.
+    fn selection_when_key_arrived(&self) -> Option<VisualSelection> {
+        self.visual.key_selection.or_else(|| {
+            let (start, end) = self.visual_selection()?;
+            Some((start, end, self.mode))
+        })
+    }
+
+    /// Records `'<` and `'>` for the selection of a Visual mode that is
+    /// ending (what `:'<,'>` and `` `< `` read).
+    pub(super) fn store_visual_marks(&mut self) {
+        let Some((start, end, _)) = self.selection_when_key_arrived() else {
+            return;
+        };
+        for (name, (line, col)) in [('<', start), ('>', end)] {
+            let line_len = self
+                .buffer()
+                .line_text(line)
+                .map_or(0, |text| grapheme_count(&text));
+            self.buffer_mut()
+                .set_local_mark(name, line, GraphemeCol(col.min(line_len)));
         }
     }
 
@@ -54,7 +113,12 @@ impl Editor {
                 // For VisualLine, always use column 0
                 0
             } else {
-                start.1.min(start_line_len.saturating_sub(1))
+                // A saved characterwise selection may include the newline.
+                if mode == Mode::Visual && start.1 == start_line_len {
+                    start.1
+                } else {
+                    start.1.min(start_line_len.saturating_sub(1))
+                }
             };
 
             // Clamp end position to buffer bounds
@@ -68,7 +132,11 @@ impl Editor {
                 // For VisualLine, always use column 0
                 0
             } else {
-                end.1.min(end_line_len.saturating_sub(1))
+                if mode == Mode::Visual && end.1 == end_line_len {
+                    end.1
+                } else {
+                    end.1.min(end_line_len.saturating_sub(1))
+                }
             };
 
             // Set visual start
@@ -90,19 +158,6 @@ impl Editor {
         self.visual.last_visual_selection = Some((start, end, mode));
     }
 
-    /// Sets visual block insert/append state for replay on insert mode exit
-    pub fn set_visual_block_insert_state(
-        &mut self,
-        state: Option<(usize, usize, usize, bool, bool)>,
-    ) {
-        self.visual.visual_block_insert_state = state;
-    }
-
-    /// Gets visual block insert/append state
-    pub fn visual_block_insert_state(&self) -> Option<(usize, usize, usize, bool, bool)> {
-        self.visual.visual_block_insert_state
-    }
-
     /// Returns true when `$` was pressed in visual block mode (extend to EOL).
     pub fn visual_block_dollar(&self) -> bool {
         self.visual.visual_block_dollar
@@ -112,10 +167,39 @@ impl Editor {
         self.visual.visual_block_dollar = val;
     }
 
+    /// Whether a visual-block `I` / `A` / `c` is waiting for its insert to end
+    /// (the typed text is then replicated onto the other block lines).
+    pub fn has_pending_block_insert(&self) -> bool {
+        self.visual.block_insert.is_some()
+    }
+
     /// Gets the visual selection range (start and end positions)
     /// Returns ((start_line, start_col), (end_line, end_col))
     /// Note: For VisualBlock, this returns the corners of the rectangle
     pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (start, end) = self.raw_visual_selection()?;
+        if self.mode == Mode::VisualBlock || self.buffer().fold_manager().is_empty() {
+            return Some((start, end));
+        }
+        // A selection that starts or ends inside a closed fold covers the
+        // whole fold (Vim, `:help fold-behavior`). A characterwise end lands
+        // on the newline cell so the fold's last line goes entirely.
+        let linewise = self.mode == Mode::VisualLine;
+        Some(self.extend_selection_over_folds(start, end, |line| {
+            let len = self
+                .buffer()
+                .line_text(line)
+                .map(|text| grapheme_count(&text))
+                .unwrap_or(0);
+            if linewise {
+                len.saturating_sub(1)
+            } else {
+                len
+            }
+        }))
+    }
+
+    fn raw_visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.visual.visual_start.map(|start| {
             let cursor = self.buffer().cursor();
             let mut end = (cursor.line(), cursor.col().0);
@@ -124,7 +208,7 @@ impl Editor {
                 Mode::VisualLine => {
                     // Get the length of the end line (excluding newline)
                     if let Some(line_text) = self.buffer().line_text(end.0) {
-                        let line_len = line_text.chars().count();
+                        let line_len = grapheme_count(&line_text);
                         end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                     }
 
@@ -141,7 +225,7 @@ impl Editor {
                         new_start.1 = 0;
                         let mut new_end = start;
                         if let Some(line_text) = self.buffer().line_text(new_end.0) {
-                            let line_len = line_text.chars().count();
+                            let line_len = grapheme_count(&line_text);
                             new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                         }
                         (new_start, new_end)
@@ -159,8 +243,16 @@ impl Editor {
 
                     let (min_col, max_col) = if self.visual.visual_block_dollar {
                         // `$` was pressed: extend each line to its own EOL.
-                        // Use usize::MAX - 1 as sentinel (avoids +1 overflow in callers).
-                        (start.1.min(end.1), usize::MAX - 1)
+                        // The flag is the source of truth; consumers see it as a
+                        // column no line reaches (`BLOCK_TO_EOL_COL`). The cursor
+                        // sits at the end of its line (past the last character,
+                        // as in Vim), which bounds the left edge together with
+                        // the anchor.
+                        let cursor_line_len = self
+                            .buffer()
+                            .line_text(end.0)
+                            .map_or(0, |line| grapheme_count(&line));
+                        (start.1.min(cursor_line_len), BLOCK_TO_EOL_COL)
                     } else if start.1 <= end.1 {
                         (start.1, end.1)
                     } else {

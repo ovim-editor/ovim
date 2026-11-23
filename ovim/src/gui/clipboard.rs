@@ -32,8 +32,8 @@
 //! prompt, no dependence on a DOM gesture, and no clipboard content passing
 //! through the webview or its IPC at all.
 
-use super::protocol::GuiSnapshot;
 use super::GuiBridge;
+use super::GuiSnapshot;
 use ovim_core::editor::Editor;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -58,10 +58,10 @@ pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 /// frequently nothing to read back.
 pub fn clipboard_text(editor: &Editor) -> Result<super::GuiClipboardText, String> {
     let text = editor.registers().last_clipboard_write();
-    within_limit(text)?;
+    within_limit(&text)?;
     Ok(super::GuiClipboardText {
         generation: editor.registers().clipboard_generation(),
-        text: text.to_string(),
+        text,
     })
 }
 

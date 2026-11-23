@@ -45,17 +45,17 @@ impl Editor {
         let boundary_root = self
             .ai_effective_project_root()
             .ok_or_else(|| self.no_project_root_error())?;
-        let boundary_root = normalize_path(&boundary_root);
+        let boundary_root = canonicalize_or_normalize(&boundary_root);
 
         let requested_path = {
             let path = Path::new(raw_path);
             if path.is_absolute() {
                 self.absolutize_path(path)
             } else {
-                let joined = boundary_root.join(path);
-                joined
-                    .canonicalize()
-                    .unwrap_or_else(|_| normalize_path(&joined))
+                // Resolve existing ancestors even when the leaf is new. A
+                // lexical project prefix must not authorize creation through
+                // a directory symlink pointing outside the project.
+                canonicalize_or_normalize(&boundary_root.join(path))
             }
         };
         let requested_path_for_approval = canonicalize_or_normalize(&requested_path);

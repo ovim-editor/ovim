@@ -10,6 +10,9 @@ use crate::dashboard::DashboardAnimation;
 /// path completion, dashboard, cat animation, diagnostics, and toast notifications.
 #[derive(Default)]
 pub struct UiPanels {
+    /// Source-mapped reading buffers, keyed by their own buffer IDs.
+    pub pseudocode:
+        std::collections::HashMap<crate::buffer::BufferId, super::pseudocode::PseudocodeView>,
     /// Latest user-facing status message shown by the editor UI.
     pub status_message: String,
     /// File tree explorer
@@ -37,9 +40,37 @@ pub struct UiPanels {
     /// Top-right toast notifications (transient and sticky)
     pub toast_center: ToastCenter,
     /// Open branch diff review (`<Space>gd`), if any
-    pub diff_review: Option<super::diff_review::DiffReviewState>,
+    pub diff_review: Option<Box<super::diff_review::DiffReviewState>>,
+    /// Unsent annotations for reviews closed or replaced during this session.
+    pub closed_diff_comments: std::collections::BTreeMap<String, (u64, Vec<super::DiffComment>)>,
+    /// Shared durable refinements, enabled by frontends or explicitly injected by tests.
+    pub diff_review_store: Option<crate::native_diff::store::ReviewStore>,
+    /// Latest agent arrangement for each Git worktree in this editor session.
+    pub diff_review_overlays:
+        std::collections::HashMap<std::path::PathBuf, super::diff_review::SavedDiffOverlay>,
     /// Background `git fetch` started from the diff review
     pub pending_git_fetch: Option<super::diff_review::PendingGitFetch>,
+    /// Hide equal same-file pairs in curated terminal reviews.
+    pub diff_review_hide_equal: bool,
+    /// Hide agent messages on saved review sections (visible by default).
+    pub diff_review_hide_notes: bool,
+    /// Content-addressed review checks survive closing/reopening within this session.
+    pub diff_review_checks: super::diff_review::ReviewChecks,
+    pub diff_review_show_checked: bool,
     /// Layout the next review opens in; `s` and the toolbar change it.
     pub diff_review_layout: super::diff_review::DiffLayout,
+    /// "Replace in files" review panel (`<Space>sr`), kept while hidden.
+    pub search_replace: Option<Box<super::search_replace::SearchReplacePanel>>,
+    /// Data behind the Problems picker (severity filter re-uses it).
+    pub problems: Option<Box<super::problems::ProblemsState>>,
+    /// Background history lookup (`:GitLog`, `:GitLineLog`), if one is running.
+    pub pending_git_history: Option<super::git_tools::PendingGitHistory>,
+    /// Open commit message buffer (`:GitCommit`), if any.
+    pub commit: Option<Box<super::git_tools::CommitSession>>,
+    /// Cached symbol tree of the current file (breadcrumbs, outline).
+    pub outline: Box<super::outline::OutlineState>,
+    /// Recently opened files (session order and optional persistence).
+    pub recent: Box<super::project_nav::RecentTracker>,
+    /// Buffers touched by the last replace in files, for `:ReplaceUndo`.
+    pub last_replace_buffers: Vec<(crate::buffer::BufferId, u64)>,
 }

@@ -1,9 +1,12 @@
-use crate::ai::chat_types::{ChatOpts, ConversationTree};
+use crate::ai::chat_types::{ChatOpts, ConversationTree, ToolCallInfo};
 use crate::buffer::BufferId;
 use crate::mode::Mode;
 use anyhow::Result;
 
-use super::ai_chat_state::AiChatState;
+use super::ai_chat_state::{
+    AiChatState, CodeExplanationContinuation, ParkedKind, ParkedTurn, PendingShellExecution,
+    ToolExecutionContinuation,
+};
 use super::Editor;
 
 impl Editor {
@@ -12,22 +15,47 @@ impl Editor {
     // -----------------------------------------------------------------
 
     /// Open or resume an AI chat panel.
-    pub fn open_ai_chat(&mut self, opts: ChatOpts) -> Result<()> {
+    pub fn open_ai_chat(&mut self, mut opts: ChatOpts) -> Result<()> {
+        if let Some(profile) = opts.profile.as_deref() {
+            if self.ai_state.config.resolve_profile(profile).is_none() {
+                anyhow::bail!("Unknown AI profile: {profile}");
+            }
+        }
         if self
             .ai_state
             .chat
             .as_ref()
             .is_some_and(|chat| chat.opts.name == opts.name)
         {
-            let mode_before = self.mode();
+            if let Some(profile) = opts.profile.as_deref() {
+                let changes_selection = self.ai_chat_effective_profile() != profile
+                    || self
+                        .ai_state
+                        .chat
+                        .as_ref()
+                        .is_some_and(|chat| chat.model_override.is_some());
+                if changes_selection && !self.apply_ai_chat_selection(profile, None) {
+                    anyhow::bail!("{}", self.status_message());
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    // Explicit options remain explicit even when their value
+                    // happens to equal the remembered/default selection.
+                    chat.follow_chat_default = false;
+                }
+            }
+            let mode_before = self.ai_chat_return_mode();
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.mode_before_chat = mode_before;
             }
+            self.attach_diff_comments_to_chat();
             self.set_mode(Mode::AiChat);
+            self.maybe_prompt_provider_choice_on_chat_open();
             self.maybe_prompt_codex_auth_on_chat_open();
-            self.maybe_prompt_exa_on_chat_open();
+            self.mark_dirty();
             return Ok(());
         }
+
+        let mode_before = self.ai_chat_return_mode();
 
         // Switching to another named conversation replaces the live panel.
         // Its projected message history remains stored under its own key.
@@ -35,7 +63,6 @@ impl Editor {
             self.discard_active_ai_chat("chat replaced");
         }
         let buffer_id = self.buffer().id();
-        let mode_before = self.mode();
 
         if let Err(error) = self.prepare_durable_ai_chat(buffer_id, &opts.name) {
             self.set_status_message(format!(
@@ -56,7 +83,30 @@ impl Editor {
             .get(&key)
             .map(ConversationTree::branch_generation)
             .unwrap_or_default();
+        let follow_chat_default = opts.profile.is_none() && opts.name != "query";
+        let (model_override, permission_mode_override) = if opts.profile.is_none() {
+            let context = if opts.name == "query" {
+                "query"
+            } else {
+                "chat"
+            };
+            opts.profile = self.ai_chat_context_profile(context);
+            if context == "chat" {
+                let selection = self.ai_chat_remembered_selection();
+                (
+                    selection.and_then(|selection| selection.model.clone()),
+                    selection.and_then(|selection| selection.permission_mode.clone()),
+                )
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
         let mut chat = AiChatState::new(opts, buffer_id, mode_before);
+        chat.model_override = model_override;
+        chat.permission_mode_override = permission_mode_override;
+        chat.follow_chat_default = follow_chat_default;
         let runtime_locator = self
             .ai_state
             .durable_chat_bindings
@@ -78,10 +128,11 @@ impl Editor {
             });
         chat.buffer_was_clean_at_chat_start = buffer_clean;
         self.ai_state.chat = Some(chat);
+        self.attach_diff_comments_to_chat();
         self.set_mode(Mode::AiChat);
         self.maybe_prompt_no_repo_session_folder_access_on_chat_open();
+        self.maybe_prompt_provider_choice_on_chat_open();
         self.maybe_prompt_codex_auth_on_chat_open();
-        self.maybe_prompt_exa_on_chat_open();
 
         if let Some(msg) = initial {
             if let Some(conv) = self.conversation() {
@@ -95,7 +146,26 @@ impl Editor {
             }
         }
 
+        self.mark_dirty();
         Ok(())
+    }
+
+    /// Chat consumes visual selections; its return mode must not resurrect a
+    /// visual mode whose anchor `set_mode` clears. Keep the selection for `gv`.
+    /// Reopening or replacing a visible chat retains its original return mode.
+    fn ai_chat_return_mode(&mut self) -> Mode {
+        match self.mode() {
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
+                self.save_last_visual_selection();
+                Mode::Normal
+            }
+            Mode::AiChat => self
+                .ai_state
+                .chat
+                .as_ref()
+                .map_or(Mode::Normal, |chat| chat.mode_before_chat),
+            mode => mode,
+        }
     }
 
     /// Hide the AI chat panel without clearing or interrupting it.
@@ -128,34 +198,18 @@ impl Editor {
         let had_agent_work = self.ai_state.chat.as_ref().is_some_and(|chat| {
             chat.waiting
                 || chat.pending_job.is_some()
-                || chat.pending_tool_approval.is_some()
-                || chat.pending_auto_mode_classification.is_some()
-                || chat.pending_shell_execution.is_some()
-                || chat.pending_background_tool.is_some()
-                || chat.pending_subagent_control.is_some()
+                || chat.parked().is_some()
                 || chat.pending_code_explanation.is_some()
         });
 
         self.flush_ai_runtime_stream_segments();
         self.commit_partial_streaming(&model_name);
 
-        let (
-            pending_job,
-            pending_approval,
-            pending_classification,
-            pending_shell,
-            pending_background,
-            pending_subagent,
-            pending_explanation,
-        ) = {
+        let (pending_job, parked, walkthrough) = {
             let chat = self.ai_state.chat.as_mut().expect("pending chat exists");
             (
                 chat.pending_job.take(),
-                chat.pending_tool_approval.take(),
-                chat.pending_auto_mode_classification.take(),
-                chat.pending_shell_execution.take(),
-                chat.pending_background_tool.take(),
-                chat.pending_subagent_control.take(),
+                chat.take_parked(),
                 chat.pending_code_explanation.take(),
             )
         };
@@ -163,250 +217,19 @@ impl Editor {
         if let Some(job) = pending_job {
             job.task.abort();
         }
-        if let Some(pending) = pending_approval {
-            if let (Some(turn), Some(tool)) =
-                (pending.dynamic_turn.as_ref(), pending.runtime_tool.as_ref())
-            {
-                if let Err(error) =
-                    self.ai_state
-                        .agent_runtime
-                        .fail_tool(turn, tool, "cancelled by user")
-                {
-                    crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
-                }
-            } else if let (Some(turn), Some(tool)) =
-                (self.active_ai_runtime_turn(), pending.runtime_tool.as_ref())
-            {
-                if let Err(error) =
-                    self.ai_state
-                        .agent_runtime
-                        .fail_tool(&turn, tool, "cancelled by user")
-                {
-                    crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
-                }
-            }
-            match pending.dynamic_response {
-                Some(response) => {
-                    let _ = response.send(Err("cancelled by user".into()));
-                }
-                None => {
-                    // Batch approvals pause after the assistant tool_use blocks
-                    // were committed; close out the paused call and the rest of
-                    // the batch so the next provider request stays well-formed.
-                    let mut unresolved = vec![pending.tool_call.clone()];
-                    unresolved.extend(pending.remaining_tool_calls);
-                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
-                }
-            }
-        }
-        if let Some(pending) = pending_classification {
-            if let Err(error) = self.ai_state.agent_runtime.fail_tool(
-                &pending.runtime_turn,
-                &pending.runtime_tool,
-                "cancelled by user",
-            ) {
-                crate::log_warn!("agent_runtime", "failed to cancel classified tool: {error}");
-            }
-            let _ = pending
-                .dynamic_response
-                .send(Err("cancelled by user".into()));
-        }
-        if let Some(pending) = pending_shell {
-            // Aborting a started `spawn_blocking` task does not stop it; the
-            // command itself must be killed or it keeps mutating the workspace
-            // after the UI reports the cancellation.
-            pending.kill.cancel();
-            pending.task.abort();
-            if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.retire_shell_transcript(
-                    &pending.tool_call.id,
-                    super::ai_chat_state::ShellTranscriptPhase::Interrupted,
-                );
-            }
-            let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation {
-                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
-                    runtime_turn,
-                    runtime_tool,
-                    response,
-                } => (
-                    Some(runtime_turn),
-                    Some(runtime_tool),
-                    Some(response),
-                    Vec::new(),
-                ),
-                super::ai_chat_state::ToolExecutionContinuation::Batch {
-                    runtime_turn,
-                    runtime_tool,
-                    remaining_tool_calls,
-                    ..
-                } => {
-                    // The tool_use blocks for this shell call and the rest of
-                    // the batch are already committed; close them out so the
-                    // next provider request stays well-formed.
-                    let mut unresolved = vec![pending.tool_call.clone()];
-                    unresolved.extend(remaining_tool_calls);
-                    (runtime_turn, runtime_tool, None, unresolved)
-                }
-            };
-            if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref()) {
-                if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
-                    turn,
-                    tool,
-                    "cancelled by user before the shell result was observed",
-                ) {
-                    crate::log_warn!("agent_runtime", "failed to cancel shell tool: {error}");
-                }
-            }
-            if let Some(response) = response {
-                let _ = response.send(Err("cancelled by user".into()));
-            }
-            self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
-        }
-        if let Some(pending) = pending_background {
-            pending.task.abort();
-            match pending.continuation {
-                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
-                    runtime_tool,
-                    runtime_turn,
-                    response,
-                } => {
-                    if let Err(error) = self.ai_state.agent_runtime.fail_tool(
-                        &runtime_turn,
-                        &runtime_tool,
-                        "cancelled by user",
-                    ) {
-                        crate::log_warn!(
-                            "agent_runtime",
-                            "failed to cancel background tool: {error}"
-                        );
-                    }
-                    let _ = response.send(Err("cancelled by user".into()));
-                }
-                super::ai_chat_state::ToolExecutionContinuation::Batch {
-                    runtime_tool,
-                    runtime_turn,
-                    remaining_tool_calls,
-                    ..
-                } => {
-                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
-                        && let Err(error) =
-                            self.ai_state
-                                .agent_runtime
-                                .fail_tool(turn, tool, "cancelled by user")
-                    {
-                        crate::log_warn!(
-                            "agent_runtime",
-                            "failed to cancel background tool: {error}"
-                        );
-                    }
-                    let mut unresolved = vec![pending.tool_call];
-                    unresolved.extend(remaining_tool_calls);
-                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
-                }
-            }
-        }
-        if let Some(pending) = pending_subagent {
-            pending.task.abort();
-            match pending.continuation {
-                super::ai_chat_state::ToolExecutionContinuation::Dynamic {
-                    runtime_tool,
-                    runtime_turn,
-                    response,
-                } => {
-                    if let Err(error) = self.ai_state.agent_runtime.fail_tool(
-                        &runtime_turn,
-                        &runtime_tool,
-                        "cancelled by user",
-                    ) {
-                        crate::log_warn!(
-                            "agent_runtime",
-                            "failed to cancel delegated-agent control: {error}"
-                        );
-                    }
-                    let _ = response.send(Err("cancelled by user".into()));
-                }
-                super::ai_chat_state::ToolExecutionContinuation::Batch {
-                    runtime_tool,
-                    runtime_turn,
-                    remaining_tool_calls,
-                    ..
-                } => {
-                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
-                    {
-                        if let Err(error) =
-                            self.ai_state
-                                .agent_runtime
-                                .fail_tool(turn, tool, "cancelled by user")
-                        {
-                            crate::log_warn!(
-                                "agent_runtime",
-                                "failed to cancel delegated-agent control: {error}"
-                            );
-                        }
-                    }
-                    let mut unresolved = vec![pending.tool_call];
-                    unresolved.extend(remaining_tool_calls);
-                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
-                }
-            }
-        }
-        if let Some(pending) = pending_explanation {
+        if let Some(walkthrough) = walkthrough {
             self.discard_code_explanation_presentation_buffer(
-                pending.presentation_buffer_id,
-                pending.original_active_buffer_id,
+                walkthrough.presentation_buffer_id,
+                walkthrough.original_active_buffer_id,
             );
             if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.active_buffer_id = pending.original_active_buffer_id;
+                chat.active_buffer_id = walkthrough.original_active_buffer_id;
             }
             self.ai_state.active_selection = None;
-            match pending.continuation {
-                None => {}
-                Some(super::ai_chat_state::CodeExplanationContinuation::Dynamic {
-                    runtime_tool,
-                    runtime_turn,
-                    response,
-                }) => {
-                    if let Err(error) = self.ai_state.agent_runtime.fail_tool(
-                        &runtime_turn,
-                        &runtime_tool,
-                        "cancelled by user",
-                    ) {
-                        crate::log_warn!(
-                            "agent_runtime",
-                            "failed to cancel code walkthrough: {error}"
-                        );
-                    }
-                    let _ = response.send(Err("cancelled by user".into()));
-                }
-                Some(super::ai_chat_state::CodeExplanationContinuation::Batch {
-                    runtime_tool,
-                    runtime_turn,
-                    remaining_tool_calls,
-                    ..
-                }) => {
-                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
-                    {
-                        if let Err(error) =
-                            self.ai_state
-                                .agent_runtime
-                                .fail_tool(turn, tool, "cancelled by user")
-                        {
-                            crate::log_warn!(
-                                "agent_runtime",
-                                "failed to cancel code walkthrough: {error}"
-                            );
-                        }
-                    }
-                    // The walkthrough call and the rest of its batch are
-                    // committed tool_use blocks; close them out.
-                    let mut unresolved = vec![pending.tool_call.clone()];
-                    unresolved.extend(remaining_tool_calls);
-                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
-                }
-                Some(super::ai_chat_state::CodeExplanationContinuation::Replay) => {}
-            }
         }
-
+        if let Some(parked) = parked {
+            self.cancel_parked_turn(parked);
+        }
         self.ai_runtime_interrupt_turn("cancelled by user");
         self.clear_streaming_state();
         if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -423,13 +246,196 @@ impl Editor {
         true
     }
 
+    /// Park the active turn on `parked`. A turn that is already parked keeps
+    /// its interaction; the rejected one is cancelled so its provider call or
+    /// committed tool_use is still answered. Returns whether it was parked.
+    pub(super) fn park_ai_turn(&mut self, parked: impl ParkedKind) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        match chat.park(parked) {
+            Ok(()) => true,
+            Err(rejected) => {
+                self.cancel_parked_turn(*rejected);
+                false
+            }
+        }
+    }
+
+    /// Tear down one parked interaction after the user cancelled its turn.
+    fn cancel_parked_turn(&mut self, parked: ParkedTurn) {
+        match parked {
+            ParkedTurn::Approval(pending) => {
+                if let (Some(turn), Some(tool)) =
+                    (pending.dynamic_turn.as_ref(), pending.runtime_tool.as_ref())
+                {
+                    if let Err(error) =
+                        self.ai_state
+                            .agent_runtime
+                            .fail_tool(turn, tool, "cancelled by user")
+                    {
+                        crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
+                    }
+                } else if let (Some(turn), Some(tool)) =
+                    (self.active_ai_runtime_turn(), pending.runtime_tool.as_ref())
+                {
+                    if let Err(error) =
+                        self.ai_state
+                            .agent_runtime
+                            .fail_tool(&turn, tool, "cancelled by user")
+                    {
+                        crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
+                    }
+                }
+                match pending.dynamic_response {
+                    Some(response) => {
+                        let _ = response.send(Err("cancelled by user".into()));
+                    }
+                    None => {
+                        // Batch approvals pause after the assistant tool_use blocks
+                        // were committed; close out the paused call and the rest of
+                        // the batch so the next provider request stays well-formed.
+                        let mut unresolved = vec![pending.tool_call];
+                        unresolved.extend(pending.remaining_tool_calls);
+                        self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
+                    }
+                }
+            }
+            ParkedTurn::Classifying(pending) => {
+                self.cancel_tool_continuation(
+                    pending.tool_call,
+                    pending.continuation,
+                    "classified shell program",
+                );
+            }
+            ParkedTurn::Shell(pending) => {
+                // Aborting a started `spawn_blocking` task does not stop it; the
+                // command itself must be killed or it keeps mutating the workspace
+                // after the UI reports the cancellation.
+                pending.kill.cancel();
+                pending.task.abort();
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.retire_shell_transcript(
+                        &pending.tool_call.id,
+                        super::ai_chat_state::ShellTranscriptPhase::Interrupted,
+                    );
+                }
+                let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation
+                {
+                    ToolExecutionContinuation::Dynamic {
+                        runtime_turn,
+                        runtime_tool,
+                        response,
+                    } => (
+                        Some(runtime_turn),
+                        Some(runtime_tool),
+                        Some(response),
+                        Vec::new(),
+                    ),
+                    ToolExecutionContinuation::Batch {
+                        runtime_turn,
+                        runtime_tool,
+                        remaining_tool_calls,
+                        ..
+                    } => {
+                        // The tool_use blocks for this shell call and the rest of
+                        // the batch are already committed; close them out so the
+                        // next provider request stays well-formed.
+                        let mut unresolved = vec![pending.tool_call];
+                        unresolved.extend(remaining_tool_calls);
+                        (runtime_turn, runtime_tool, None, unresolved)
+                    }
+                };
+                if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref()) {
+                    if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
+                        turn,
+                        tool,
+                        "cancelled by user before the shell result was observed",
+                    ) {
+                        crate::log_warn!("agent_runtime", "failed to cancel shell tool: {error}");
+                    }
+                }
+                if let Some(response) = response {
+                    let _ = response.send(Err("cancelled by user".into()));
+                }
+                self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
+            }
+            ParkedTurn::Background(pending) => {
+                pending.task.abort();
+                self.cancel_tool_continuation(
+                    pending.tool_call,
+                    pending.continuation,
+                    "background tool",
+                );
+            }
+            ParkedTurn::SubagentControl(pending) => {
+                pending.task.abort();
+                self.cancel_tool_continuation(
+                    pending.tool_call,
+                    pending.continuation,
+                    "delegated-agent control",
+                );
+            }
+            ParkedTurn::CodeExplanation(pending) => match pending.continuation {
+                CodeExplanationContinuation::EditorMcp {
+                    rpc_id, response, ..
+                } => {
+                    let _ = response.send(super::ai_editor_mcp::tool_reply(
+                        rpc_id,
+                        crate::ai::ToolResult::Error("Walkthrough cancelled".into()),
+                    ));
+                }
+                CodeExplanationContinuation::Tool(continuation) => {
+                    self.cancel_tool_continuation(
+                        pending.tool_call,
+                        continuation,
+                        "code walkthrough",
+                    );
+                }
+            },
+        }
+    }
+
+    /// Fail a cancelled tool call's runtime record, then answer the provider
+    /// (dynamic) or close the call and the rest of its committed batch.
+    fn cancel_tool_continuation(
+        &mut self,
+        tool_call: ToolCallInfo,
+        continuation: ToolExecutionContinuation,
+        what: &str,
+    ) {
+        if let (Some(turn), Some(tool)) = continuation.runtime_refs()
+            && let Err(error) =
+                self.ai_state
+                    .agent_runtime
+                    .fail_tool(turn, tool, "cancelled by user")
+        {
+            crate::log_warn!("agent_runtime", "failed to cancel {what}: {error}");
+        }
+        match continuation {
+            ToolExecutionContinuation::Dynamic { response, .. } => {
+                let _ = response.send(Err("cancelled by user".into()));
+            }
+            ToolExecutionContinuation::Batch {
+                remaining_tool_calls,
+                ..
+            } => {
+                // The call and the rest of its batch are committed tool_use
+                // blocks; close them out so the next request stays well-formed.
+                let mut unresolved = vec![tool_call];
+                unresolved.extend(remaining_tool_calls);
+                self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
+            }
+        }
+    }
+
     /// Interrupt only the active shell tool, leaving its agent turn alive so
     /// the resulting failure can be observed and the agent can continue.
     pub fn interrupt_ai_shell_process(&mut self, force: bool) -> bool {
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };
-        let Some(pending) = chat.pending_shell_execution.as_ref() else {
+        let Some(pending) = chat.parked_as::<PendingShellExecution>() else {
             return false;
         };
         let tool_call_id = pending.tool_call.id.clone();
@@ -477,22 +483,8 @@ impl Editor {
         {
             job.task.abort();
         }
-        if let Some(background) = self
-            .ai_state
-            .chat
-            .as_ref()
-            .and_then(|chat| chat.pending_background_tool.as_ref())
-        {
-            background.task.abort();
-        }
-        if let Some(shell) = self
-            .ai_state
-            .chat
-            .as_ref()
-            .and_then(|chat| chat.pending_shell_execution.as_ref())
-        {
-            shell.kill.cancel();
-            shell.task.abort();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.abandon_parked_tool();
         }
         self.ai_runtime_interrupt_turn(reason);
         if let Some(mut chat) = self.ai_state.chat.take() {
@@ -505,6 +497,11 @@ impl Editor {
     // -----------------------------------------------------------------
 
     pub fn ai_chat_context_profile(&self, context: &str) -> Option<String> {
+        if context == "chat" {
+            if let Some(selection) = self.ai_chat_remembered_selection() {
+                return Some(selection.profile.clone());
+            }
+        }
         // Look up in contexts table first
         if let Some(profile) = self.ai_state.config.contexts.get(context) {
             if self.ai_state.config.profiles.contains_key(profile) {
@@ -521,7 +518,10 @@ impl Editor {
             .chat
             .as_ref()
             .and_then(|chat| chat.opts.profile.clone())
-            .unwrap_or_else(|| self.ai_state.active_profile.clone())
+            .unwrap_or_else(|| {
+                self.ai_chat_context_profile("chat")
+                    .unwrap_or_else(|| self.ai_state.active_profile.clone())
+            })
     }
 
     // -----------------------------------------------------------------
@@ -673,131 +673,6 @@ mod tests {
         ));
     }
 
-    /// Committed tool_use blocks must all have a closing tool_result after a
-    /// cancel, or the next provider request is rejected as malformed.
-    fn assert_cancelled_tool_results(editor: &Editor, expected_ids: &[&str]) {
-        let messages = editor.conversation().unwrap().messages();
-        let tool_ids: Vec<_> = messages
-            .iter()
-            .filter(|m| m.role == ChatRole::Tool)
-            .filter_map(|m| m.tool_call_id.as_deref())
-            .collect();
-        assert_eq!(tool_ids, expected_ids);
-        assert!(messages
-            .iter()
-            .filter(|m| m.role == ChatRole::Tool)
-            .all(|m| m.content.contains("Execution cancelled")));
-    }
-
-    fn committed_tool_batch(editor: &mut Editor) -> (ToolCallInfo, ToolCallInfo) {
-        let first = ToolCallInfo {
-            id: "tool-1".into(),
-            name: "bash".into(),
-            arguments: serde_json::json!({ "command": "true" }),
-        };
-        let follow_up = ToolCallInfo {
-            id: "tool-2".into(),
-            name: "read_file".into(),
-            arguments: serde_json::json!({}),
-        };
-        editor
-            .conversation_mut()
-            .unwrap()
-            .append_assistant_message_with_tools(
-                String::new(),
-                "test".into(),
-                vec![first.clone(), follow_up.clone()],
-            );
-        (first, follow_up)
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn cancelling_pending_batch_approval_closes_committed_tool_calls() {
-        let mut editor = Editor::default();
-        open_test_chat(&mut editor);
-        let (first, follow_up) = committed_tool_batch(&mut editor);
-        editor.ai_state.chat.as_mut().unwrap().pending_tool_approval =
-            Some(super::super::ai_chat_state::PendingToolApproval {
-                tool_call: first,
-                reason: "sensitive command".into(),
-                runtime_tool: None,
-                runtime_tool_started: false,
-                remaining_tool_calls: vec![follow_up],
-                model_name: "test".into(),
-                requested_path: std::path::PathBuf::from("."),
-                approval_root: std::path::PathBuf::from("."),
-                dynamic_response: None,
-                dynamic_turn: None,
-            });
-
-        assert!(editor.cancel_ai_chat_generation());
-
-        assert_cancelled_tool_results(&editor, &["tool-1", "tool-2"]);
-        editor.close_ai_chat();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn cancelling_background_execution_closes_committed_tool_calls() {
-        let mut editor = Editor::default();
-        open_test_chat(&mut editor);
-        let (first, follow_up) = committed_tool_batch(&mut editor);
-        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async {});
-        let chat = editor.ai_state.chat.as_mut().unwrap();
-        chat.pending_background_tool = Some(super::super::ai_chat_state::PendingBackgroundTool {
-            tool_call: first,
-            continuation: super::super::ai_chat_state::ToolExecutionContinuation::Batch {
-                runtime_tool: None,
-                runtime_turn: None,
-                remaining_tool_calls: vec![follow_up],
-                model_name: "test".into(),
-            },
-            receiver: result_rx,
-            task,
-        });
-
-        assert!(editor.cancel_ai_chat_generation());
-
-        assert_cancelled_tool_results(&editor, &["tool-1", "tool-2"]);
-        editor.close_ai_chat();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn cancelling_parked_code_explanation_closes_committed_tool_calls() {
-        let mut editor = Editor::default();
-        open_test_chat(&mut editor);
-        let (first, follow_up) = committed_tool_batch(&mut editor);
-        let buffer_id = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
-        editor
-            .ai_state
-            .chat
-            .as_mut()
-            .unwrap()
-            .pending_code_explanation = Some(super::super::ai_chat_state::PendingCodeExplanation {
-            tool_call: first,
-            steps: Vec::new(),
-            current: 0,
-            answer_scroll: 0,
-            threads: Vec::new(),
-            interaction: super::super::ai_chat_state::CodeExplanationInteraction::Navigating,
-            original_active_buffer_id: buffer_id,
-            presentation_buffer_id: None,
-            continuation: Some(
-                super::super::ai_chat_state::CodeExplanationContinuation::Batch {
-                    runtime_tool: None,
-                    runtime_turn: None,
-                    remaining_tool_calls: vec![follow_up],
-                    model_name: "test".into(),
-                },
-            ),
-        });
-
-        assert!(editor.cancel_ai_chat_generation());
-
-        assert_cancelled_tool_results(&editor, &["tool-1", "tool-2"]);
-        editor.close_ai_chat();
-    }
-
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelling_shell_execution_kills_the_running_command() {
@@ -820,7 +695,7 @@ mod tests {
             id: "slow-shell".into(),
             name: "bash".into(),
             arguments: serde_json::json!({
-                "command": "touch shell-started; sleep 5; touch cancelled-marker"
+                "command": "touch shell-started; sleep 120; touch cancelled-marker"
             }),
         };
         let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
@@ -832,12 +707,12 @@ mod tests {
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
-            .as_ref()
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
             .unwrap()
             .kill
             .clone();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         let pid = loop {
             if let Some(pid) = kill.published_child() {
                 break pid;
@@ -853,7 +728,8 @@ mod tests {
 
         // The blocking task reaps the killed child; once the pid is gone the
         // command (and its trailing `touch cancelled-marker`) can never run.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -864,12 +740,32 @@ mod tests {
         assert!(!dir.path().join("cancelled-marker").exists());
     }
 
+    /// How long the shell tests wait for a condition that only depends on
+    /// process scheduling: the shell is a *login* shell (`-lc`), so on a
+    /// loaded CI runner its profile can take seconds before the command even
+    /// starts. The waits poll, so a healthy run never pays this; the
+    /// commands that must outlive the wait sleep far longer (and are killed
+    /// by the test itself), so no wall-clock window can close underneath it.
+    const SHELL_TEST_PATIENCE_SECS: u64 = 30;
+
     /// True while `pid` names a terminated-but-unreaped (zombie) process.
     /// Used to observe the reap-last ordering: the shell leader must stay a
     /// zombie — reserving its pid and pgid for `killpg` — for as long as
     /// the execution is parked on the output drain.
+    ///
+    /// Reads `/proc/<pid>/stat` where it exists: spawning `ps` from a busy,
+    /// multi-threaded test process costs a fork+exec per poll and made the
+    /// observation itself the slowest step under load.
     #[cfg(unix)]
     fn leader_is_zombie(pid: u32) -> bool {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // `pid (comm) S ...`: the state follows the last `)` because
+            // `comm` may itself contain parentheses.
+            return stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.trim_start().chars().next())
+                == Some('Z');
+        }
         std::process::Command::new("ps")
             .args(["-o", "stat=", "-p", &pid.to_string()])
             .output()
@@ -902,7 +798,7 @@ mod tests {
                 // The shell leader exits immediately; the backgrounded
                 // descendant inherits the output pipes, so the execution
                 // stays blocked on the drain long after the leader is gone.
-                "command": "(sleep 5; touch cancelled-marker) & echo started"
+                "command": "(sleep 120; touch cancelled-marker) & echo started"
             }),
         };
         let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
@@ -914,12 +810,12 @@ mod tests {
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
-            .as_ref()
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
             .unwrap()
             .kill
             .clone();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         let pid = loop {
             if let Some(pid) = kill.published_child() {
                 break pid;
@@ -934,7 +830,8 @@ mod tests {
         // zombie with its pid still published: the kernel then reserves the
         // pid/pgid, which is what lets cancellation still reach the
         // descendant through `killpg`.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !leader_is_zombie(pid) {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -952,7 +849,8 @@ mod tests {
 
         // The whole process group must die, so the descendant's trailing
         // `touch` can never run.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -963,7 +861,8 @@ mod tests {
         // Only the blocking execution reaps the leader, and it does so as
         // its final step — so the zombie disappearing proves the pending
         // execution resolved (and did not leak the zombie).
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -983,14 +882,16 @@ mod tests {
         let workdir = dir.path().to_path_buf();
         let worker = std::thread::spawn(move || {
             super::super::ai_tool_execution::run_bash_program(
-                "(sleep 5; touch cancelled-marker) & echo started",
+                "(sleep 120; touch cancelled-marker) & echo started",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 None,
             )
         });
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         let pid = loop {
             if let Some(pid) = kill.published_child() {
                 break pid;
@@ -1004,7 +905,8 @@ mod tests {
         // The leader exits but stays an un-reaped zombie while the
         // backgrounded descendant holds the pipes: the execution is parked
         // on the output drain and reaping is deferred to the very end.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !leader_is_zombie(pid) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1022,7 +924,8 @@ mod tests {
         // Cancellation SIGKILLs the group, which closes the pipes and lets
         // the drain (and thus the whole execution) resolve well before the
         // descendant's 5s sleep would have ended.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !worker.is_finished() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1039,6 +942,60 @@ mod tests {
         assert!(!dir.path().join("cancelled-marker").exists());
     }
 
+    /// OV-00471: the zombie-leader observations used a 2 s deadline, which a
+    /// login shell that spends longer than that in its profile (a loaded CI
+    /// runner) blew through. A slow start must only delay the assertions, and
+    /// cancelling afterwards must still resolve the execution promptly.
+    #[cfg(unix)]
+    #[test]
+    fn slow_shell_startup_only_delays_the_zombie_leader_observations() {
+        let dir = tempfile::tempdir().unwrap();
+        let kill = std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default());
+        let task_kill = kill.clone();
+        let workdir = dir.path().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            super::super::ai_tool_execution::run_bash_program(
+                // 3 s of "profile" before the command, longer than the old
+                // 2 s deadline; the descendant then outlives every wait.
+                "sleep 3; (sleep 120; touch cancelled-marker) & echo started",
+                &workdir,
+                &[],
+                Some(&task_kill),
+                None,
+            )
+        });
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
+        let pid = loop {
+            if let Some(pid) = kill.published_child() {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell child never spawned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        while !leader_is_zombie(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell leader never became an un-reaped zombie"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!worker.is_finished());
+        kill.cancel();
+        while !worker.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled shell drain did not resolve"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        worker.join().unwrap();
+        assert!(!dir.path().join("cancelled-marker").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn graceful_shell_interrupt_finishes_without_cancelling_the_execution_task() {
@@ -1046,11 +1003,12 @@ mod tests {
         let kill = std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default());
         let task_kill = kill.clone();
         let workdir = dir.path().to_path_buf();
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
         let worker = std::thread::spawn(move || {
             super::super::ai_tool_execution::run_bash_program(
                 "trap 'exit 130' INT; echo ready; while :; do sleep 1; done",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 Some(progress_tx),
             )
@@ -1071,7 +1029,8 @@ mod tests {
         // delay, so a timed interrupt could land before the trap is even armed
         // and race the "ready" output away entirely.
         let mut events = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !events.iter().any(is_ready_output) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1084,7 +1043,8 @@ mod tests {
         }
         kill.interrupt();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !worker.is_finished() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1133,17 +1093,19 @@ mod tests {
             // The perl descendant leaves the process group via setsid() but
             // keeps the pipes. Once the shell leader exits, the group has NO
             // living members — the window where the pgid would be reusable
-            // if the leader were reaped. sleep 15 so only the bounded
+            // if the leader were reaped. sleep 120 so only the bounded
             // post-cancel drain (a few seconds) can explain a prompt return.
             super::super::ai_tool_execution::run_bash_program(
-                "perl -e 'use POSIX (); POSIX::setsid(); sleep 15' & echo started",
+                "perl -e 'use POSIX (); POSIX::setsid(); sleep 120' & echo started",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 None,
             )
         });
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         let pid = loop {
             if let Some(pid) = kill.published_child() {
                 break pid;
@@ -1156,7 +1118,8 @@ mod tests {
         };
         // The un-reaped zombie leader is what keeps the pid/pgid reserved
         // even though the group has no living members left.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !leader_is_zombie(pid) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1169,7 +1132,8 @@ mod tests {
         // exact window where a reaped leader's pgid would be reusable.
         // Cancelling earlier would kill perl while it is still in the group
         // and skip the scenario under test.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1187,7 +1151,8 @@ mod tests {
         // execution still resolves via the bounded drain.
         kill.cancel();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while !worker.is_finished() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1477,6 +1442,8 @@ mod tests {
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         editor.ai_state.config.tool_approval_mode = crate::ai::ToolApprovalMode::Auto;
+        editor.ai_state.shell_classifier =
+            std::sync::Arc::new(super::super::ai_auto_mode::HeldClassifier);
         let turn = editor.begin_ai_runtime_turn("inspect the project").unwrap();
         let run_id = turn.run_id.clone();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1513,7 +1480,7 @@ mod tests {
             .chat
             .as_ref()
             .unwrap()
-            .pending_auto_mode_classification
+            .parked_as::<crate::editor::ai_chat_state::PendingAutoModeClassification>()
             .is_some());
         assert!(matches!(
             result_rx.try_recv(),
@@ -1527,15 +1494,15 @@ mod tests {
             .iter()
             .any(|event| matches!(event.kind, EventKind::ToolStarted(_))));
 
-        // The classifier task may still be connecting to app-server. Dropping
-        // its receiver is sufficient here; this test covers routing, while
-        // verdict handling is exercised by the focused classifier tests.
+        // The held classifier never answers. Dropping the receiver is
+        // sufficient here; this test covers routing, while verdict handling is
+        // exercised by the focused classifier tests.
         editor
             .ai_state
             .chat
             .as_mut()
             .unwrap()
-            .pending_auto_mode_classification = None;
+            .take_parked_as::<crate::editor::ai_chat_state::PendingAutoModeClassification>();
         abort_handle.abort();
     }
 
@@ -1715,13 +1682,14 @@ mod tests {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx, None, false);
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while editor
             .ai_state
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
             .is_some()
         {
             editor.poll_pending_ai_chat_job();
@@ -1779,20 +1747,31 @@ mod tests {
         let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
         let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
 
-        let started = std::time::Instant::now();
         editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx, None, false);
-        assert!(started.elapsed() < std::time::Duration::from_millis(100));
-        assert!(editor
+        let pending = editor
             .ai_state
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
-            .is_some());
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
+            .expect("shell must run in the background");
         assert_eq!(
             editor.ai_chat_activity(),
             super::super::AiChatActivity::RunningShell
         );
+
+        // Wait for real process-start progress while the release gate stays
+        // closed. Progress is a visible state change, not job completion.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS),
+            async {
+                while pending.progress.is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            },
+        )
+        .await
+        .expect("shell did not start");
 
         // A live tool belongs to the chat, not to the chat panel. Hiding the
         // panel must return input ownership to the editor while the tool keeps
@@ -1809,24 +1788,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(editor.cursor_position().line, 1);
+        editor.poll_pending_ai_chat_job();
         assert_eq!(
             editor.ai_chat_activity(),
             super::super::AiChatActivity::RunningShell
         );
-        assert!(!editor.poll_pending_ai_chat_job());
         assert!(matches!(
             response_rx.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
 
         std::fs::write(release_gate, "go").unwrap();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(SHELL_TEST_PATIENCE_SECS);
         while editor
             .ai_state
             .chat
             .as_ref()
             .unwrap()
-            .pending_shell_execution
+            .parked_as::<crate::editor::ai_chat_state::PendingShellExecution>()
             .is_some()
         {
             // Streaming output is itself a visible state change, so a `true`
@@ -1880,19 +1860,21 @@ mod tests {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         let (classification_tx, classification_rx) = tokio::sync::oneshot::channel();
         classification_tx.send(result).unwrap();
-        editor
+        assert!(editor
             .ai_state
             .chat
             .as_mut()
             .unwrap()
-            .pending_auto_mode_classification =
-            Some(super::super::ai_chat_state::PendingAutoModeClassification {
+            .park(super::super::ai_chat_state::PendingAutoModeClassification {
                 tool_call: call,
-                runtime_tool: tool,
-                runtime_turn: turn,
-                dynamic_response: response_tx,
+                continuation: ToolExecutionContinuation::Dynamic {
+                    runtime_tool: tool,
+                    runtime_turn: turn,
+                    response: response_tx,
+                },
                 receiver: classification_rx,
-            });
+            })
+            .is_ok());
         response_rx
     }
 
@@ -1925,13 +1907,17 @@ mod tests {
             .chat
             .as_ref()
             .unwrap()
-            .pending_auto_mode_classification
+            .parked_as::<crate::editor::ai_chat_state::PendingAutoModeClassification>()
             .is_some());
         assert!(editor.set_ai_chat_yolo_mode(true));
 
         let chat = editor.ai_state.chat.as_ref().unwrap();
-        assert!(chat.pending_auto_mode_classification.is_none());
-        assert!(chat.pending_tool_approval.is_none());
+        assert!(chat
+            .parked_as::<crate::editor::ai_chat_state::PendingAutoModeClassification>()
+            .is_none());
+        assert!(chat
+            .parked_as::<crate::editor::ai_chat_state::PendingToolApproval>()
+            .is_none());
         assert!(editor.ai_chat_yolo_mode());
     }
 
@@ -1960,8 +1946,12 @@ mod tests {
     fn shell_approval_summary_contains_full_command_and_terra_reason() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
-        editor.ai_state.chat.as_mut().unwrap().pending_tool_approval =
-            Some(super::super::ai_chat_state::PendingToolApproval {
+        assert!(editor
+            .ai_state
+            .chat
+            .as_mut()
+            .unwrap()
+            .park(super::super::ai_chat_state::PendingToolApproval {
                 tool_call: ToolCallInfo {
                     id: "approval-summary".into(),
                     name: "bash".into(),
@@ -1978,7 +1968,8 @@ mod tests {
                 approval_root: std::path::PathBuf::from("/repo"),
                 dynamic_response: None,
                 dynamic_turn: None,
-            });
+            })
+            .is_ok());
 
         let summary = editor.ai_chat_pending_tool_approval_summary().unwrap();
         assert!(summary.contains("git diff --check && cargo test"));

@@ -127,7 +127,18 @@ pub async fn gui_open_project_dialog() -> Result<(), String> {
 ///
 /// The remote-editing work drives this path with a target it already knows.
 #[tauri::command]
-pub async fn gui_open_project_window(path: String) -> Result<(), String> {
+pub async fn gui_open_project_window(
+    bridge: tauri::State<'_, super::GuiBridge>,
+    path: String,
+) -> Result<(), String> {
+    // "New Window" names the snapshot's workspace, which over a remote link is
+    // a path on the other host. Opening it here would start a local editor on
+    // a directory that is not the one the user is looking at.
+    if bridge.is_remote() {
+        return Err(
+            "New Window opens a local project; over a remote link, use Open Project… or run another `ovim gui --remote`".to_string(),
+        );
+    }
     let directory = resolve_project_dir(&path)?;
     spawn_project_window(&directory)
 }

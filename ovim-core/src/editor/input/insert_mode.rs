@@ -9,7 +9,9 @@
 //! - Visual block insert state handling
 //! - Tab/auto-indent
 
-use crate::editor::{Change, Editor, InsertEntryMode};
+use crate::change::ChangeToken;
+use crate::editor::{BlockInsert, Change, CompletionAcceptMode, Editor, InsertEntryMode};
+use crate::indentation::leading_str;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{CharCol, GraphemeCol};
@@ -17,18 +19,7 @@ use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
 use super::helpers;
-
-fn is_completion_trigger_char(c: char) -> bool {
-    matches!(c, '.')
-}
-
-// Looser than the motion-word rule on purpose: hyphens count so Tailwind
-// classes like `w-1/2` stay as one prefix and the menu doesn't collapse
-// mid-token. Keep in sync with `is_completion_keyword_char` in
-// `ovim-core/src/editor/lsp_modules/completion.rs`.
-fn is_completion_ident_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '-'
-}
+use crate::editor::editing_state::{LiteralKind, PendingLiteral};
 
 /// Cleans up whitespace-only lines before exiting insert mode.
 ///
@@ -77,7 +68,9 @@ fn exit_insert_mode(editor: &mut Editor) {
 /// Close the current recording before a temporary normal command can mutate
 /// the buffer. Ctrl-O keeps the insertion position and starts a fresh undo
 /// unit when the normal command completes.
-fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
+pub(super) fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
+    editor.end_snippet_session();
+    editor.clear_signature_help();
     // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
     let cursor = editor.buffer().cursor();
     editor.editing.last_insert_position = Some((cursor.line(), cursor.col().0));
@@ -87,22 +80,24 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
         cleanup_whitespace_only_line(editor);
     }
 
-    // Track whether finalize actually pushed an insert-mode undo entry.
-    // For cases like `cw<Esc>`/`C<Esc>` where no text was typed, finalize
-    // pushes nothing and we must not pop unrelated history.
-    let undo_len_before_finalize = editor.buffer().change_manager().undo_stack.len();
-    editor.finalize_change_building();
-    let insert_change_pushed =
-        editor.buffer().change_manager().undo_stack.len() > undo_len_before_finalize;
+    // `[count]i`, `[count]o`, ...: the text typed is inserted `count` times in all. A
+    // temporary Normal-mode command (Ctrl-O) ends the insert without repeating it.
+    let count = editor
+        .editing
+        .insert_count
+        .take()
+        .filter(|_| !temporary)
+        .unwrap_or(1);
+
+    let mut session = editor.finalize_change_building();
+    if count > 1 {
+        session = repeat_typed_text(editor, session, count);
+    }
 
     // Check for pending change repeat (cc, C, s, S, cj, ck, cw, cgn, etc.)
     if let Some(pending) = editor.take_pending_change_repeat() {
-        // Pop the insert session's `Recorded` only if it pushed one.
-        let insert_undo = if insert_change_pushed {
-            editor.pop_last_change()
-        } else {
-            None
-        };
+        // The insert session's `Recorded`, if the session typed anything.
+        let insert_undo = session.and_then(|token| editor.pop_by_token(token));
         let inserted_text = insert_undo
             .as_ref()
             .map(|c| c.get_inserted_text())
@@ -147,6 +142,7 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
         Some(RepeatAction::InsertSession {
             entry_mode: mode @ (InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove),
             edits,
+            count,
             ..
         }) => {
             // Skip the first edit — that's the synthetic newline created by
@@ -157,125 +153,22 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
                 above: matches!(mode, InsertEntryMode::OpenAbove),
                 inserted_text,
                 options: editor.indent_options(),
+                count: *count,
             })
         }
         _ => None,
     };
-
-    // Update the . register with the last inserted text
-    editor.update_last_inserted_register();
     if let Some(action) = open_line_repeat {
         editor.set_repeat_action(action);
     }
 
-    // If we were in visual block insert/append mode, replay the changes on all other lines.
-    // For visual-block change (`Ctrl-V ... c ...`), also capture a semantic repeat template.
-    let pending_visual_block_change = editor.take_pending_visual_block_change_repeat();
-    let pending_visual_block_delete_token = editor
-        .editing
-        .pending_visual_block_change_delete_token
-        .take();
-    let mut visual_block_change_inserted_text: Option<String> = None;
-    let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
-        editor.visual_block_insert_state()
-    {
-        // Pull the first-line session's `Recorded` so we can extend its
-        // edits with the replays on sibling lines and push the combined
-        // result as a single undo entry.
-        if let Some(last_change) = editor.last_change().cloned() {
-            let inserted_text = last_change.get_inserted_text();
-            if !is_append && !move_to_end {
-                visual_block_change_inserted_text = Some(inserted_text.clone());
-            }
-            let cursor_before = last_change.cursor_before();
-            let mut all_edits: Vec<crate::edit::Edit> =
-                last_change.into_edits().unwrap_or_default();
-
-            // `$A` (block append to end-of-line) appends at each line's EOL;
-            // a plain `A` appends at the fixed block column on every line.
-            // Consume the flag here since this path doesn't route through
-            // exit_visual_mode_to_normal (which is where it normally resets).
-            let block_dollar = editor.visual_block_dollar();
-            editor.set_visual_block_dollar(false);
-
-            // Replay the typed text on each sibling line inside a record()
-            // session so the edits are captured (and the edit_log populated)
-            // without the caller having to track each insert_text_at manually.
-            let ((), sibling_edits) = editor.buffer_mut().record(|buf| {
-                for line_idx in (start_line + 1)..=end_line {
-                    if is_append && block_dollar {
-                        // `$A`: append at end of each line.
-                        if let Some(line) = buf.line_text(line_idx) {
-                            let line_len = line.chars().count();
-                            buf.insert_text_at(line_idx, CharCol(line_len), &inserted_text);
-                        }
-                    } else if is_append {
-                        // `A`: append at the block append column, padding short
-                        // lines so the column lines up (matching Vim).
-                        if let Some(line) = buf.line_text(line_idx) {
-                            let line_len = line.chars().count();
-                            if col <= line_len {
-                                buf.insert_text_at(line_idx, CharCol(col), &inserted_text);
-                            } else {
-                                let padding = " ".repeat(col - line_len);
-                                let padded = format!("{padding}{inserted_text}");
-                                buf.insert_text_at(line_idx, CharCol(line_len), &padded);
-                            }
-                        }
-                    } else {
-                        // Insert mode: insert at the block column (`col` is
-                        // grapheme-space from visual-block state — pre-existing
-                        // Class-2 assumption that equals char-space for ASCII).
-                        if let Some(line_text) = buf.line_text(line_idx) {
-                            let insert_col = col.min(line_text.chars().count());
-                            buf.insert_text_at(line_idx, CharCol(insert_col), &inserted_text);
-                        }
-                    }
-                }
-            });
-
-            // If sibling lines produced edits, rewrite the undo entry to
-            // contain all of them. The first-line Recorded we popped above
-            // stands in for the whole visual-block insert/append.
-            if !sibling_edits.is_empty() {
-                editor.pop_last_change();
-                all_edits.extend(sibling_edits);
-
-                // Visual-block change (`c`) has a preceding delete Recorded.
-                // Redeem it by token so we never pop unrelated history.
-                if let Some(token) = pending_visual_block_delete_token {
-                    if let Some(prev_change) = editor.pop_by_token(token) {
-                        let mut merged = prev_change.into_edits().unwrap_or_default();
-                        merged.extend(all_edits);
-                        all_edits = merged;
-                    }
-                }
-
-                let cursor_after = editor.cursor_position();
-                editor
-                    .buffer_mut()
-                    .change_manager_mut()
-                    .push_change(Change::recorded(all_edits, cursor_before, cursor_after));
-            }
-        }
-
-        // Clear the visual block insert state
-        editor.set_visual_block_insert_state(None);
-        Some((start_line, end_line, col, is_append, move_to_end))
-    } else {
-        None
-    };
-
-    if let (Some((line_count, width)), Some(inserted_text)) = (
-        pending_visual_block_change,
-        visual_block_change_inserted_text,
-    ) {
-        editor.set_repeat_action(RepeatAction::ChangeVisualBlock {
-            line_count,
-            width,
-            inserted_text,
-        });
-    }
+    let block = editor.visual.block_insert.take();
+    // Whether the typed text was copied onto the other block lines (text with a line
+    // break stays on the first line, where Esc then leaves the cursor as usual).
+    let replicated = block.as_ref().is_some_and(|block| {
+        let inserted = replicate_block_insert(editor, block, session);
+        !inserted.contains('\n')
+    });
 
     // Mark buffer modified for LSP didChange — placed after visual block replay
     // so the server sees ALL changes (first line + replayed lines). The
@@ -291,38 +184,169 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
         return;
     }
 
-    // Move cursor left when exiting insert mode (unless at column 0)
-
-    // If we were in visual block mode, move cursor to appropriate line
-    if let Some((start_line, end_line, _col, is_append, move_to_end)) = should_move_to_end_line {
-        // For visual block, calculate the correct final cursor position
-        let target_line = if move_to_end { end_line } else { start_line };
-
-        if is_append {
-            // For append mode, position cursor on the last character of target line
-            if let Some(line_text) = editor.buffer().line_text(target_line) {
-                let line_len = line_text.chars().count();
-                let final_col = if line_len > 0 { line_len - 1 } else { 0 };
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(target_line, GraphemeCol(final_col));
-            }
-        } else {
-            // For insert mode, use the same column as on the first line
-            let cursor = editor.buffer().cursor();
-            let current_col = cursor.col().0;
-            let inserted_col = if current_col > 0 { current_col - 1 } else { 0 };
+    match block {
+        // vim: a visual-block I / A leaves the cursor at the block's top-left.
+        Some(BlockInsert {
+            start_line,
+            left_col,
+            change: None,
+            ..
+        }) if replicated => {
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(target_line, GraphemeCol(inserted_col));
+                .set_position(start_line, GraphemeCol(left_col));
+            editor.buffer_mut().validate_cursor_position();
         }
-    } else {
-        let cursor = editor.buffer_mut().cursor_mut();
-        if cursor.col().0 > 0 {
-            cursor.move_left(1);
+        // Otherwise the cursor steps back onto the last inserted character.
+        _ => {
+            let cursor = editor.buffer_mut().cursor_mut();
+            if cursor.col().0 > 0 {
+                cursor.move_left(1);
+            }
         }
+    }
+}
+
+/// Inserts the text typed in the insert session just finalized `count - 1` more times
+/// (after the cursor, for `o`/`O` on new lines below), as part of the same undo step,
+/// and makes `.` repeat the whole thing `count` times. Returns the (replaced) undo token.
+fn repeat_typed_text(
+    editor: &mut Editor,
+    session: Option<ChangeToken>,
+    count: usize,
+) -> Option<ChangeToken> {
+    let token = session?;
+    let entry_mode = match editor.buffer().change_manager().last_repeat_action.as_ref() {
+        Some(RepeatAction::InsertSession { entry_mode, .. }) => entry_mode.clone(),
+        _ => return Some(token),
+    };
+    let change = editor.pop_by_token(token)?;
+    let cursor_before = change.cursor_before();
+    let mut edits = change.into_edits()?;
+
+    // The first edit of `o`/`O` is the opened line itself, not typed text.
+    let opens_line = matches!(
+        entry_mode,
+        InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove
+    );
+    let typed = crate::edit::surviving_inserted_text(edits.get(usize::from(opens_line)..)?);
+    if typed.is_empty() {
+        let cursor_after = editor.cursor_position();
+        return Some(
+            editor
+                .buffer_mut()
+                .change_manager_mut()
+                .push_change(Change::recorded(edits, cursor_before, cursor_after)),
+        );
+    }
+
+    let ((), extra) = editor.buffer_mut().record(|buf| {
+        for _ in 1..count {
+            let line = buf.cursor().line();
+            if opens_line {
+                // The next copy goes on a new line below this one, indented like it.
+                let indent = buf
+                    .line_text(line)
+                    .map(|text| leading_str(&text).to_string())
+                    .unwrap_or_default();
+                let text = format!("\n{indent}{typed}");
+                let end = CharCol(buf.line_len(line));
+                buf.insert_text_at_positioning_cursor(line, end, &text);
+            } else {
+                let col = buf.cursor_char_col();
+                buf.insert_text_at_positioning_cursor(line, col, &typed);
+            }
+        }
+    });
+    edits.extend(extra);
+    let cursor_after = editor.cursor_position();
+    let token = editor
+        .buffer_mut()
+        .change_manager_mut()
+        .push_change(Change::recorded(edits, cursor_before, cursor_after));
+
+    if let Some(RepeatAction::InsertSession { count: repeats, .. }) = editor
+        .buffer_mut()
+        .change_manager_mut()
+        .last_repeat_action
+        .as_mut()
+    {
+        *repeats = count;
+    }
+    Some(token)
+}
+
+/// Visual-block I / A / c: replay the text typed on the first block line on
+/// the other lines, make the whole block (and the `c` delete) one undo step
+/// and install the block repeat for `.`. Returns the text that was typed.
+fn replicate_block_insert(
+    editor: &mut Editor,
+    block: &BlockInsert,
+    session: Option<ChangeToken>,
+) -> String {
+    let delete_width = block.change.map_or(0, |(width, _)| width);
+    let session = session.and_then(|token| editor.pop_by_token(token));
+    let inserted_text = session
+        .as_ref()
+        .map(Change::get_inserted_text)
+        .unwrap_or_default();
+
+    if let Some(session) = session {
+        // Undo returns to the block's top-left, where the session began.
+        let cursor_before = session.cursor_before();
+        let mut edits = session.into_edits().unwrap_or_default();
+        let column = block.column.offset_by(block.left_col);
+        // Text with a line break goes on the first line only (vim: `:help v_b_I`).
+        let sibling_lines = if inserted_text.contains('\n') {
+            0..0
+        } else {
+            block.start_line + 1..block.end_line + 1
+        };
+        let ((), sibling_edits) = editor
+            .buffer_mut()
+            .record(|buf| column.insert_on_lines(buf, sibling_lines, &inserted_text));
+        edits.extend(sibling_edits);
+        let delete_token = block.change.and_then(|(_, token)| token);
+        if let Some(delete) = delete_token.and_then(|token| editor.pop_by_token(token)) {
+            let mut merged = delete.into_edits().unwrap_or_default();
+            merged.extend(edits);
+            edits = merged;
+        }
+        let cursor_after = editor.cursor_position();
+        editor
+            .buffer_mut()
+            .change_manager_mut()
+            .push_change(Change::recorded(edits, cursor_before, cursor_after));
+    } else if delete_width == 0 {
+        // An I / A that typed nothing changed nothing; `.` keeps its target.
+        return inserted_text;
+    }
+
+    editor.set_repeat_action(RepeatAction::VisualBlockInsert {
+        line_count: block.end_line - block.start_line + 1,
+        delete_width,
+        column: block.column,
+        inserted_text: inserted_text.clone(),
+    });
+    inserted_text
+}
+
+/// Whether `key` leaves a completion session alone: typing into the word (the
+/// menu filters), Backspace, the keys that move through or accept the menu,
+/// and Ctrl-Space.
+fn keeps_completion_menu(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(c) if key.modifiers.contains(Modifiers::CONTROL) => {
+            matches!(c, 'n' | 'p' | 'y' | ' ')
+        }
+        KeyCode::Char(_)
+        | KeyCode::Backspace
+        | KeyCode::Tab
+        | KeyCode::Enter
+        | KeyCode::Up
+        | KeyCode::Down => true,
+        _ => false,
     }
 }
 
@@ -346,25 +370,37 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         return Ok(());
     }
 
+    if let Some(pending) = editor.editing.pending_literal.take() {
+        return handle_literal_key(editor, pending, key_event);
+    }
+
+    // Any key that is not typing into the word or driving the menu moves the
+    // cursor or rewrites the line (Ctrl-O, Ctrl-W, Ctrl-T...): the menu was
+    // built for the text before the cursor as it was, so it must go.
+    if !keeps_completion_menu(&key_event) {
+        editor.dismiss_completion();
+    }
+
+    let signature_help_was_active = editor.signature_help_active();
+    if !matches!(
+        key_event.code,
+        KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Tab | KeyCode::BackTab
+    ) {
+        editor.snippet_clear_pending();
+    }
     match key_event.code {
         KeyCode::Esc => {
-            if editor.completion_menu().is_visible() {
-                editor.hide_completion_menu();
-            }
+            editor.dismiss_completion();
             exit_insert_mode(editor);
         }
         // Ctrl-[ is equivalent to Esc
         KeyCode::Char('[') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            if editor.completion_menu().is_visible() {
-                editor.hide_completion_menu();
-            }
+            editor.dismiss_completion();
             exit_insert_mode(editor);
         }
         // Ctrl-C exits insert mode (like Esc but without triggering InsertLeave)
         KeyCode::Char('c') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            if editor.completion_menu().is_visible() {
-                editor.hide_completion_menu();
-            }
+            editor.dismiss_completion();
             exit_insert_mode(editor);
         }
         // Ctrl-W - Delete word backward
@@ -397,6 +433,17 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Ctrl-O - Execute one normal mode command, then return to insert
         KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            let cursor = *editor.buffer().cursor();
+            let len = editor.buffer().line_index(cursor.line()).grapheme_count();
+            let at_eol = cursor.col().0 >= len;
+            editor.editing.insert_normal_eol_line = at_eol.then(|| cursor.line());
+            // A goal column of "end of line" (`$`) survives the clamp as well.
+            let goal = if cursor.desired_col() == usize::MAX {
+                usize::MAX
+            } else {
+                len
+            };
+            editor.editing.insert_normal_eol_goal = at_eol.then_some(goal);
             finish_insert_mode(editor, true);
             editor.editing.insert_normal_pending = true;
         }
@@ -404,12 +451,16 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('n') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.completion_next();
+            } else {
+                editor.request_completion();
             }
         }
         // Ctrl-P - Previous completion item
         KeyCode::Char('p') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.completion_previous();
+            } else {
+                editor.request_completion();
             }
         }
         // Ctrl-Y - Accept completion (Vim behavior)
@@ -418,57 +469,65 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.accept_completion();
             }
         }
-        // Tab - Accept completion if menu is visible, otherwise insert tab
+        // Tab - Accept the completion (replacing the identifier under the
+        // cursor, IntelliJ style) if the menu is visible; otherwise jump to
+        // the next snippet tab stop; otherwise insert a tab.
         KeyCode::Tab if editor.completion_menu().is_visible() => {
-            editor.accept_completion();
+            editor.accept_completion_with(CompletionAcceptMode::Replace);
         }
         KeyCode::Tab => {
-            helpers::insert_tab(editor)?;
+            if !(editor.snippet_active() && editor.snippet_jump(true)) {
+                helpers::insert_tab(editor)?;
+            }
         }
-        KeyCode::Char(c) => {
-            helpers::electric_dedent_close_bracket(editor, c)?;
-            helpers::insert_char(editor, c)?;
-            // Basic autocomplete:
-            // - Trigger on '.' (member access) immediately
-            // - Trigger on '::' after typing the second ':' (Rust/C++ style paths)
-            // - Trigger when typing an identifier prefix of length >= 2
-            // - If menu is already visible, keep it updated while typing
-            if editor.completion_menu().is_visible() {
-                if is_completion_trigger_char(c) || is_completion_ident_char(c) {
-                    let prefix = editor.completion_prefix_from_trigger_col();
-                    editor.completion_menu_mut().filter(&prefix);
-                    editor.request_completion();
+        // Shift-Tab - previous snippet tab stop
+        KeyCode::BackTab => {
+            if editor.snippet_active() {
+                editor.snippet_jump(false);
+            }
+        }
+        // Ctrl-A - insert the text of the previous insert (the `.` register)
+        KeyCode::Char('a') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.dismiss_completion();
+            let text = editor.registers().get_last_inserted().to_string();
+            for ch in text.chars() {
+                if ch == '\n' {
+                    helpers::insert_newline(editor)?;
                 } else {
-                    editor.hide_completion_menu();
-                }
-            } else if is_completion_trigger_char(c) {
-                editor.request_completion();
-            } else if c == ':' {
-                let cursor = editor.buffer().cursor();
-                if cursor.col().0 >= 2 {
-                    let line_text = editor
-                        .buffer()
-                        .line_text(cursor.line())
-                        .unwrap_or_default()
-                        .to_string();
-                    if crate::unicode::grapheme_at_index(
-                        &line_text,
-                        cursor.col().0.saturating_sub(1),
-                    ) == Some(":")
-                        && crate::unicode::grapheme_at_index(
-                            &line_text,
-                            cursor.col().0.saturating_sub(2),
-                        ) == Some(":")
-                    {
-                        editor.request_completion();
-                    }
-                }
-            } else if is_completion_ident_char(c) {
-                let (_, prefix) = editor.completion_trigger_context();
-                if prefix.chars().count() >= 2 {
-                    editor.request_completion();
+                    helpers::insert_char(editor, ch)?;
                 }
             }
+        }
+        // Ctrl-V / Ctrl-Q - insert the next key (or a number) literally
+        KeyCode::Char('v' | 'q') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.dismiss_completion();
+            editor.editing.pending_literal = Some(PendingLiteral::Start);
+        }
+        // Ctrl-M / Ctrl-J - same as Enter
+        KeyCode::Char('m' | 'j') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.dismiss_completion();
+            helpers::insert_newline(editor)?;
+        }
+        // Ctrl-I - same as Tab
+        KeyCode::Char('i') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            helpers::insert_tab(editor)?;
+        }
+        // Any other Ctrl chord is not text: it does nothing instead of inserting its letter.
+        KeyCode::Char(_) if key_event.modifiers.contains(Modifiers::CONTROL) => {}
+        KeyCode::Char(c) => {
+            // A commit character accepts the highlighted item before it is
+            // typed itself (`foo.` accepts `foo` when the server says so).
+            if editor.completion_menu().is_visible() {
+                editor.try_commit_completion(c);
+            }
+            // First keystroke over a freshly entered snippet placeholder
+            // replaces its default text.
+            editor.snippet_replace_pending_placeholder();
+            helpers::electric_dedent_close_bracket(editor, c)?;
+            helpers::insert_char(editor, c)?;
+            // Auto-popup: keep an open menu filtered, or start one on
+            // identifier typing / server trigger characters.
+            editor.completion_after_typed_char(c);
         }
         KeyCode::Enter => {
             // If completion menu is visible, accept the selected completion
@@ -479,32 +538,35 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         KeyCode::Backspace => {
-            helpers::delete_char_before_cursor(editor)?;
-            if editor.completion_menu().is_visible() {
-                let prefix = editor.completion_prefix_from_trigger_col();
-                if prefix.is_empty() {
-                    // If we deleted back to the trigger column, keep showing member completions only
-                    editor.request_completion();
-                } else {
-                    editor.completion_menu_mut().filter(&prefix);
-                    editor.request_completion();
-                }
+            if !editor.snippet_replace_pending_placeholder() {
+                helpers::delete_char_before_cursor(editor)?;
             }
+            editor.completion_after_backspace();
         }
         KeyCode::Left => {
-            if editor.completion_menu().is_visible() {
-                editor.hide_completion_menu();
-            }
+            editor.dismiss_completion();
             let cursor = editor.buffer_mut().cursor_mut();
             if cursor.col().0 > 0 {
                 cursor.move_left(1);
             }
         }
         KeyCode::Right => {
-            if editor.completion_menu().is_visible() {
-                editor.hide_completion_menu();
-            }
+            editor.dismiss_completion();
             helpers::move_right(editor);
+        }
+        KeyCode::Delete => {
+            editor.dismiss_completion();
+            helpers::delete_char_at_cursor_insert(editor)?;
+        }
+        KeyCode::Home => {
+            editor.dismiss_completion();
+            editor.buffer_mut().cursor_mut().set_col(GraphemeCol::ZERO);
+        }
+        KeyCode::End => {
+            editor.dismiss_completion();
+            let line = editor.buffer().cursor().line();
+            let len = editor.buffer().line_index(line).grapheme_count();
+            editor.buffer_mut().cursor_mut().set_col(GraphemeCol(len));
         }
         KeyCode::Up => {
             if editor.completion_menu().is_visible() {
@@ -522,13 +584,332 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         _ => {}
     }
+    editor.snippet_after_key();
+    request_signature_help_after_key(editor, &key_event, signature_help_was_active);
     Ok(())
+}
+
+impl LiteralKind {
+    fn max_digits(self) -> usize {
+        match self {
+            Self::Decimal | Self::Octal => 3,
+            Self::Hex(digits) => digits,
+        }
+    }
+
+    fn radix(self) -> u32 {
+        match self {
+            Self::Decimal => 10,
+            Self::Octal => 8,
+            Self::Hex(_) => 16,
+        }
+    }
+
+    /// Whether `digit` continues the number spelled so far.
+    fn extends(self, digits: &str, digit: char) -> bool {
+        digit.is_digit(self.radix()) && digits.len() < self.max_digits()
+    }
+
+    /// The largest character code the kind can spell (`<C-v>256` is 255).
+    fn max_value(self) -> u32 {
+        match self {
+            Self::Decimal => 255,
+            Self::Octal => 0o377,
+            Self::Hex(_) => u32::MAX,
+        }
+    }
+}
+
+/// What a `<C-v>` sequence has typed so far becomes (`None` when it spells no
+/// insertable character: no digit at all, NUL, and line breaks are not inserted).
+fn literal_char(kind: LiteralKind, digits: &str) -> Option<char> {
+    let value = u32::from_str_radix(digits, kind.radix()).ok()?;
+    char::from_u32(value.min(kind.max_value())).filter(|c| !matches!(c, '\0' | '\n' | '\r'))
+}
+
+/// Insert-mode `<C-v>`: the next key is inserted as is (`<C-v><Tab>` is a real tab,
+/// `<C-v><C-a>` a control character), or starts a number (`<C-v>065`, `<C-v>x41`,
+/// `<C-v>u20ac`) that ends at its last digit or at the first key that is not one.
+fn handle_literal_key(
+    editor: &mut Editor,
+    pending: PendingLiteral,
+    key_event: KeyEvent,
+) -> Result<()> {
+    let ctrl = key_event.modifiers.contains(Modifiers::CONTROL);
+    match pending {
+        PendingLiteral::Start => match key_event.code {
+            KeyCode::Char(c) if ctrl => {
+                if c.is_ascii_alphabetic() {
+                    helpers::insert_char(editor, char::from(c.to_ascii_lowercase() as u8 & 0x1f))?;
+                }
+            }
+            KeyCode::Char(c) => {
+                let kind = match c {
+                    '0'..='9' => Some((LiteralKind::Decimal, String::from(c))),
+                    'o' | 'O' => Some((LiteralKind::Octal, String::new())),
+                    'x' | 'X' => Some((LiteralKind::Hex(2), String::new())),
+                    'u' => Some((LiteralKind::Hex(4), String::new())),
+                    'U' => Some((LiteralKind::Hex(8), String::new())),
+                    _ => None,
+                };
+                match kind {
+                    Some((kind, digits)) => {
+                        editor.editing.pending_literal =
+                            Some(PendingLiteral::Digits { kind, digits });
+                    }
+                    None => helpers::insert_char(editor, c)?,
+                }
+            }
+            KeyCode::Tab => helpers::insert_char(editor, '\t')?,
+            KeyCode::Esc => helpers::insert_char(editor, '\x1b')?,
+            _ => {}
+        },
+        PendingLiteral::Digits { kind, mut digits } => {
+            let next_digit = match key_event.code {
+                KeyCode::Char(c) if !ctrl && kind.extends(&digits, c) => Some(c),
+                _ => None,
+            };
+            if let Some(digit) = next_digit {
+                digits.push(digit);
+                if digits.len() < kind.max_digits() {
+                    editor.editing.pending_literal = Some(PendingLiteral::Digits { kind, digits });
+                } else if let Some(c) = literal_char(kind, &digits) {
+                    helpers::insert_char(editor, c)?;
+                }
+            } else {
+                // The number ends here; the key that ended it is typed as usual.
+                if let Some(c) = literal_char(kind, &digits) {
+                    helpers::insert_char(editor, c)?;
+                }
+                return handle_insert_mode(editor, key_event);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parameter hints: `(` and `,` open the popup; while it is open every edit or
+/// cursor move re-asks the server so the active parameter follows the cursor
+/// (the server answers with nothing once the cursor leaves the call).
+fn request_signature_help_after_key(editor: &mut Editor, key_event: &KeyEvent, was_active: bool) {
+    if editor.mode() != Mode::Insert {
+        return;
+    }
+    let retrigger = match key_event.code {
+        KeyCode::Char('(') | KeyCode::Char(',')
+            if !key_event.modifiers.contains(Modifiers::CONTROL) =>
+        {
+            true
+        }
+        KeyCode::Char(_)
+        | KeyCode::Backspace
+        | KeyCode::Delete
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Enter => was_active,
+        _ => false,
+    };
+    // Moving the cursor into an unfinished call (or jumping between the
+    // placeholders of an expanded method snippet) brings the popup back.
+    if !retrigger
+        && matches!(
+            key_event.code,
+            KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Tab
+                | KeyCode::BackTab
+        )
+    {
+        editor.request_signature_help_if_in_call();
+        return;
+    }
+    if retrigger {
+        editor.request_signature_help();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::editor::{ApplyPos, CursorPos, PendingChangeRepeat};
+
+    fn type_key(editor: &mut Editor, code: KeyCode) {
+        handle_insert_mode(editor, KeyEvent::new(code, Modifiers::NONE)).unwrap();
+    }
+
+    /// OV-00451: `(` and `,` open signature help; while it is open every edit
+    /// retriggers (the active parameter follows the cursor); Esc dismisses.
+    #[test]
+    fn signature_help_triggers_retriggers_and_dismisses() {
+        let mut editor = Editor::with_content("");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+
+        type_key(&mut editor, KeyCode::Char('f'));
+        assert!(
+            !editor.lsp.intents.signature_help,
+            "plain letters do not trigger"
+        );
+
+        type_key(&mut editor, KeyCode::Char('('));
+        assert!(editor.lsp.intents.signature_help, "`(` triggers");
+        editor.lsp.intents.signature_help = false;
+
+        // Simulate the popup being visible.
+        editor.lsp.state.signature_help = Some(Box::new(crate::editor::SignatureHelpState {
+            label: "f(int a, int b)".into(),
+            active_param: Some((2, 7)),
+            active_param_index: Some(0),
+            signature_index: 0,
+            signature_count: 1,
+            documentation: None,
+            parameter_documentation: None,
+            anchor: (0, 2),
+        }));
+        type_key(&mut editor, KeyCode::Char('1'));
+        assert!(
+            editor.lsp.intents.signature_help,
+            "typing retriggers while open"
+        );
+        editor.lsp.intents.signature_help = false;
+        type_key(&mut editor, KeyCode::Char(','));
+        assert!(editor.lsp.intents.signature_help, "`,` retriggers");
+        editor.lsp.intents.signature_help = false;
+        type_key(&mut editor, KeyCode::Backspace);
+        assert!(
+            editor.lsp.intents.signature_help,
+            "backspace retriggers while open"
+        );
+        editor.lsp.intents.signature_help = false;
+
+        type_key(&mut editor, KeyCode::Esc);
+        assert!(editor.signature_help().is_none(), "Esc dismisses the popup");
+        assert!(!editor.lsp.intents.signature_help);
+    }
+
+    /// OV-00474: moving the cursor (Left/Right/Up/Down/Tab) into the argument
+    /// list of an unfinished call shows the popup again, like VS Code; moving
+    /// out of it, or into a plain condition, does not.
+    #[test]
+    fn moving_back_into_an_unfinished_call_shows_signature_help() {
+        let mut editor = Editor::with_content("run(a, b)");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, crate::unicode::CharCol(9));
+
+        // After the `)`: not inside the call.
+        type_key(&mut editor, KeyCode::Right);
+        assert!(!editor.lsp.intents.signature_help);
+        // One step left is between `b` and `)`: inside the argument list.
+        type_key(&mut editor, KeyCode::Left);
+        assert!(editor.lsp.intents.signature_help, "Left into the call");
+        editor.lsp.intents.signature_help = false;
+        // Leaving the call again (Right, after the `)`) asks nothing new.
+        type_key(&mut editor, KeyCode::Right);
+        assert!(!editor.lsp.intents.signature_help);
+
+        // A condition is not a call.
+        let mut editor = Editor::with_content("if (a > b) {");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, crate::unicode::CharCol(9));
+        type_key(&mut editor, KeyCode::Left);
+        assert!(!editor.lsp.intents.signature_help);
+    }
+
+    #[test]
+    fn signature_help_scan_follows_call_syntax() {
+        use crate::editor::lsp_integration::lsp_modules::signature_help::text_ends_inside_call;
+        for inside in [
+            "foo(",
+            "foo(a, ",
+            "obj.method(1, bar(2), ",
+            "new Foo<>(x, (y + ",
+            "call (a,\n    b, ",
+            "f(g(1)(",
+            "list.<String>of(",
+            "{ foo(",
+        ] {
+            assert!(text_ends_inside_call(inside), "{inside:?}");
+        }
+        for outside in [
+            "foo(a)",
+            "foo(a); bar",
+            "if (a > ",
+            "while (x",
+            "= (a + b",
+            "foo(a) {",
+            "x = 1;",
+            "",
+        ] {
+            assert!(!text_ends_inside_call(outside), "{outside:?}");
+        }
+    }
+
+    /// A click in Insert mode keeps Insert mode but ends the insert session like
+    /// any cursor movement does.
+    // vim: real mouse click (nvim --clean, mouse=a): "abcdef"/"second", `iXY`,
+    // click on row 2 col 4, `ZZ<Esc>` -> "XYabcdef"/"secZZond"; `u` removes only
+    // "ZZ" (XY stays) and `.` repeats only "ZZ".
+    #[test]
+    fn pointer_click_in_insert_mode_starts_a_new_undo_and_repeat_unit() {
+        let mut editor = Editor::with_content("abcdef\nsecond");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        type_key(&mut editor, KeyCode::Char('X'));
+        type_key(&mut editor, KeyCode::Char('Y'));
+        editor.lsp.state.signature_help = Some(Box::new(crate::editor::SignatureHelpState {
+            label: "f(int a)".into(),
+            active_param: None,
+            active_param_index: None,
+            signature_index: 0,
+            signature_count: 1,
+            documentation: None,
+            parameter_documentation: None,
+            anchor: (0, 2),
+        }));
+
+        editor.place_cursor_from_pointer(1, 3);
+        assert_eq!(editor.mode(), Mode::Insert, "a click keeps Insert mode");
+        assert!(editor.signature_help().is_none(), "popups are dismissed");
+        type_key(&mut editor, KeyCode::Char('Z'));
+        type_key(&mut editor, KeyCode::Char('Z'));
+        exit_insert_mode(&mut editor);
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecZZond\n");
+
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecond\n");
+
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, GraphemeCol(3));
+        editor.repeat_last_change();
+        assert_eq!(editor.buffer().rope().to_string(), "XYaZZbcdef\nsecond\n");
+    }
+
+    /// Insert mode may click just past the last character; Normal mode may not.
+    #[test]
+    fn pointer_click_clamps_to_the_mode() {
+        let mut editor = Editor::with_content("abc");
+        editor.place_cursor_from_pointer(0, 99);
+        assert_eq!(editor.buffer().cursor().col().0, 2);
+
+        let mut editor = Editor::with_content("abc");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        editor.place_cursor_from_pointer(0, 99);
+        assert_eq!(editor.mode(), Mode::Insert);
+        assert_eq!(editor.buffer().cursor().col().0, 3);
+    }
 
     #[test]
     fn exit_insert_mode_pending_change_repeat_no_insert_no_delete_keeps_prior_undo() {

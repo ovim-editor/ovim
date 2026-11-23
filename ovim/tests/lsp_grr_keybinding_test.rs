@@ -28,9 +28,9 @@ fn gr_alone_arms_prefix_but_does_not_fire_references_intent() {
         "`gr` alone must NOT raise the find_references intent — it only arms the prefix"
     );
     assert_eq!(
-        test.editor.pending_command(),
-        Some('R'),
-        "`gr` must leave the LSP-prefix `R` as a pending command awaiting the next key"
+        test.editor.input_state(),
+        &ovim::editor::InputState::LspPrefix,
+        "`gr` must leave the LSP prefix pending, awaiting the next key"
     );
 }
 

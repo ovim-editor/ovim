@@ -1,206 +1,189 @@
-//! Debug panel rendering — stack trace, variables, and output.
+//! Debug panel rendering: call stack, variables, watches, breakpoints and
+//! exception filters as one scrollable list (see `ovim_core::dap::panel`).
 //!
-//! Shown when `debug_state.panels_visible` is true and a debug session is active.
+//! Shown while `debug_state.panels_visible` is true. `<Space>df` focuses it
+//! (mode `DEBUG`): the cursor row is highlighted and the list scrolls to keep
+//! it visible. Output of the debuggee lives in the run console.
 
 use crate::editor::Editor;
+use ovim_core::dap::panel::{PanelRow, RowKind};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
-/// Render the debug side panel (stack trace + variables).
 pub fn render_debug_side_panel(frame: &mut Frame, editor: &Editor, area: Rect) {
-    // Split vertically: stack trace (top 40%) + variables (bottom 60%)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(area);
-
-    render_stack_trace(frame, editor, chunks[0]);
-    render_variables(frame, editor, chunks[1]);
-}
-
-/// Render the debug output panel (bottom).
-pub fn render_debug_output(frame: &mut Frame, editor: &Editor, area: Rect) {
+    let focused = editor.mode() == crate::mode::Mode::DebugPanel;
     let state = editor.debug_state();
-
-    let title = format!(" Output ({}) ", state.output_lines.len());
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .title(title)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Show the last N lines that fit
-    let visible_height = inner.height as usize;
-    let start = state.output_lines.len().saturating_sub(visible_height);
-    let lines: Vec<Line> = state.output_lines[start..]
-        .iter()
-        .map(|l| Line::from(l.as_str().to_owned()))
-        .collect();
-
-    let paragraph = Paragraph::new(lines).style(Style::default().fg(Color::White));
-    frame.render_widget(paragraph, inner);
-}
-
-/// Render the stack trace section.
-fn render_stack_trace(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let state = editor.debug_state();
-
-    let status = if !state.session_active {
-        "inactive"
-    } else if state.is_running {
-        "running"
-    } else if let Some(ref reason) = state.stop_reason {
-        reason.as_str()
+    let title = if focused {
+        " Debug  j/k move · Enter act · d del · e toggle · a watch · </> resize "
     } else {
-        "stopped"
+        " Debug "
     };
-
-    let title = format!(" Call Stack ({}) ", status);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(Color::DarkGray));
-
+        .border_style(Style::default().fg(if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    if state.stack_frames.is_empty() {
-        let msg = if state.is_running {
-            "Running..."
-        } else if !state.session_active {
-            "No debug session"
-        } else {
-            "No stack trace"
-        };
-        let paragraph = Paragraph::new(msg).style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(paragraph, inner);
+    if inner.width < 4 || inner.height < 1 {
         return;
     }
 
-    let lines: Vec<Line> = state
-        .stack_frames
+    let rows = ovim_core::dap::panel::rows(state);
+    let height = inner.height as usize;
+    // Scroll to keep the cursor on screen (the renderer owns the view height).
+    let mut cursor = state.panel.cursor;
+    let mut scroll = state.panel.scroll.get();
+    ovim_core::dap::panel::clamp_view(&rows, &mut cursor, &mut scroll, height);
+    editor.debug_panel_view(height, scroll);
+
+    let width = inner.width as usize;
+    let lines: Vec<Line> = rows
         .iter()
         .enumerate()
-        .map(|(i, f)| {
-            let source = f
-                .source
-                .as_ref()
-                .and_then(|s| s.name.as_deref())
-                .unwrap_or("?");
-            let text = format!("{} {}:{}", f.name, source, f.line);
+        .skip(scroll)
+        .take(height)
+        .map(|(index, row)| row_line(row, focused && index == cursor, width))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
-            let style = if i == state.selected_frame {
+fn row_line(row: &PanelRow, highlighted: bool, width: usize) -> Line<'static> {
+    let indent = "  ".repeat(row.depth);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let base = Style::default().fg(Color::White);
+    match &row.kind {
+        RowKind::Header => {
+            return Line::from(Span::styled(
+                row.label.clone(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        RowKind::Note => {
+            return Line::from(Span::styled(
+                format!("{indent}{}", row.label),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        RowKind::Frame { selected, .. } => {
+            let style = if *selected {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                base
             };
-
-            let marker = if i == state.selected_frame {
-                "> "
+            spans.push(Span::styled(
+                format!("{}{}", if *selected { "> " } else { "  " }, row.label),
+                style,
+            ));
+        }
+        RowKind::Variable { var_ref, expanded }
+        | RowKind::Watch {
+            var_ref, expanded, ..
+        } => {
+            let marker = match (*var_ref > 0, *expanded) {
+                (true, true) => "▾ ",
+                (true, false) => "▸ ",
+                _ => "  ",
+            };
+            spans.push(Span::styled(format!("{indent}{marker}{}", row.label), base));
+            spans.push(Span::styled(" = ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                row.value.clone().unwrap_or_default(),
+                Style::default().fg(Color::Green),
+            ));
+            if let Some(type_) = &row.type_ {
+                spans.push(Span::styled(
+                    format!(" ({type_})"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+        RowKind::Breakpoint {
+            enabled,
+            verified,
+            conditional,
+            ..
+        } => {
+            let (glyph, color) = match (*enabled, *conditional) {
+                (false, _) => ("○", Color::DarkGray),
+                (true, true) => ("◆", Color::Red),
+                (true, false) if *verified => ("●", Color::Red),
+                (true, false) => ("●", Color::Rgb(180, 100, 100)),
+            };
+            spans.push(Span::styled(
+                format!("{indent}{glyph} "),
+                Style::default().fg(color),
+            ));
+            spans.push(Span::styled(
+                row.label.clone(),
+                if *enabled {
+                    base
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ));
+            if let Some(condition) = &row.value {
+                spans.push(Span::styled(
+                    format!("  {condition}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+        RowKind::Thread { selected, .. } => {
+            let style = if *selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                "  "
+                base
             };
-            Line::from(vec![Span::styled(marker, style), Span::styled(text, style)])
-        })
-        .collect();
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
-}
-
-/// Render the variables section.
-fn render_variables(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let state = editor.debug_state();
-
-    let title = " Variables ";
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if state.scopes.is_empty() {
-        let paragraph = Paragraph::new("No variables").style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(paragraph, inner);
-        return;
-    }
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    for scope in &state.scopes {
-        // Scope header
-        lines.push(Line::from(Span::styled(
-            format!("{}:", scope.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-
-        // Variables in this scope (with recursive expansion)
-        if let Some(vars) = state.variables.get(&scope.variables_reference) {
-            for var in vars {
-                render_variable_tree(&mut lines, state, var, 1);
+            spans.push(Span::styled(
+                format!(
+                    "{indent}{}{}",
+                    if *selected { "> " } else { "  " },
+                    row.label
+                ),
+                style,
+            ));
+            if let Some(note) = &row.value {
+                spans.push(Span::styled(
+                    format!("  {note}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
         }
-    }
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
-}
-
-/// Recursively render a variable and its children if expanded.
-fn render_variable_tree<'a>(
-    lines: &mut Vec<Line<'a>>,
-    state: &ovim_core::dap::state::DebugState,
-    var: &ovim_core::dap::types::DapVariable,
-    depth: usize,
-) {
-    let indent = "  ".repeat(depth);
-    let expand_marker = if var.variables_reference > 0 {
-        if state.expanded_refs.contains(&var.variables_reference) {
-            "▾ "
-        } else {
-            "▸ "
-        }
-    } else {
-        "  "
-    };
-
-    let type_str = var
-        .type_
-        .as_deref()
-        .map(|t| format!(" ({})", t))
-        .unwrap_or_default();
-
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{}{}{}", indent, expand_marker, var.name),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(" = ", Style::default().fg(Color::DarkGray)),
-        Span::styled(var.value.clone(), Style::default().fg(Color::Green)),
-        Span::styled(type_str, Style::default().fg(Color::DarkGray)),
-    ]));
-
-    if var.variables_reference > 0
-        && state.expanded_refs.contains(&var.variables_reference)
-        && depth < 10
-    {
-        if let Some(children) = state.variables.get(&var.variables_reference) {
-            for child in children {
-                render_variable_tree(lines, state, child, depth + 1);
-            }
+        RowKind::Exception { enabled, .. } => {
+            spans.push(Span::styled(
+                format!(
+                    "{indent}{} {}",
+                    if *enabled { "[x]" } else { "[ ]" },
+                    row.label
+                ),
+                base,
+            ));
         }
     }
+    if highlighted {
+        // Pad to the panel width so the highlight covers the whole row.
+        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        if used < width {
+            spans.push(Span::raw(" ".repeat(width - used)));
+        }
+        for span in &mut spans {
+            span.style = span.style.bg(Color::Rgb(50, 55, 80));
+        }
+    }
+    Line::from(spans)
 }

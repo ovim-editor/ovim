@@ -1,7 +1,7 @@
 //! OV-00340 / OV-00341: the modified flag must track the undo save point.
 //!
 //! Semantics derived from actual vim behavior, verified in `nvim --clean`
-//! (see notes/TESTING_VIM_SEMANTICS.md):
+//! (see docs/testing-vim-semantics.md):
 //! - edit, `u`                          -> &modified == 0  (undo to save point)
 //! - edit, `:w`, edit, `u`              -> &modified == 0
 //! - edit, `:w`, `u`                    -> &modified == 1  (below save point)

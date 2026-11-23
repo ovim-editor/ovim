@@ -1,9 +1,9 @@
 use crate::agent_runtime::{BranchLocator, ConversationLocator};
-use crate::ai::chat_types::ConversationTree;
+use crate::ai::chat_types::{ConversationTree, ToolCallInfo};
 use crate::buffer::BufferId;
 use crate::run_log::{
     BranchLifecycleEvent, ConversationKey, ConversationScope, EventEnvelope, EventKind,
-    MessageRole, RepositoryRegistration, RepositorySnapshot, RunEventSink,
+    MessageRole, RepositoryRegistration, RepositorySnapshot, RunEventSink, ToolOutcome,
 };
 use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -343,6 +343,13 @@ impl Editor {
             branch.branch_id.clone(),
         )
         .invalidate()?;
+        services
+            .catalog
+            .delete_provider_session(&crate::run_log::ProviderSessionKey {
+                provider: "claude_code".into(),
+                agent_id: binding.binding.root_agent_id.clone(),
+                branch_id: branch.branch_id.clone(),
+            })?;
         Ok(())
     }
 }
@@ -462,6 +469,7 @@ fn project_visible_messages(
 
     let mut conversation = ConversationTree::new();
     let mut nodes = HashMap::new();
+    let mut custom_diff_calls = HashSet::new();
     for event in events
         .iter()
         .filter(|event| causal.contains(&event.event_id))
@@ -473,20 +481,58 @@ fn project_visible_messages(
         ) {
             conversation = ConversationTree::new();
             nodes.clear();
+            custom_diff_calls.clear();
             continue;
         }
-        let EventKind::Message(message) = &event.kind else {
-            continue;
-        };
-        let node =
-            match message.role {
+        let node = match &event.kind {
+            EventKind::Message(message) => match message.role {
                 MessageRole::User => conversation.append_user_message(message.content.clone()),
                 MessageRole::Agent => conversation
                     .append_assistant_message(message.content.clone(), "Agent".to_owned()),
                 MessageRole::ReasoningSummary => conversation
                     .append_thinking_message(message.content.clone(), "Agent".to_owned()),
                 MessageRole::System => continue,
-            };
+            },
+            EventKind::ToolIntent(intent) if intent.tool_name == "show_custom_diff" => {
+                let Some(id) = event.provider_call_id.as_ref() else {
+                    continue;
+                };
+                custom_diff_calls.insert(id.clone());
+                conversation.append_assistant_message_with_tools(
+                    String::new(),
+                    "Agent".to_owned(),
+                    vec![ToolCallInfo {
+                        id: id.clone(),
+                        name: intent.tool_name.clone(),
+                        arguments: intent.arguments.clone(),
+                    }],
+                )
+            }
+            EventKind::ToolResult(result) => {
+                let Some(id) = event
+                    .provider_call_id
+                    .as_ref()
+                    .filter(|id| custom_diff_calls.contains(*id))
+                else {
+                    continue;
+                };
+                let content = if result.outcome == ToolOutcome::Completed {
+                    result
+                        .result
+                        .as_ref()
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                } else {
+                    result
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| "Diff unavailable".into())
+                };
+                conversation.append_tool_result(id.clone(), content)
+            }
+            _ => continue,
+        };
         if let Some(branch) = event
             .branch_id
             .as_ref()

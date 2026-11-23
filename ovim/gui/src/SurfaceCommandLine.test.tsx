@@ -63,3 +63,60 @@ describe("SurfaceCommandLine", () => {
         expect(dismiss).toHaveBeenCalledOnce();
     });
 });
+
+it("keeps failed command input focused and ignores results from a dismissed request", async () => {
+    const [serial, setSerial] = createSignal(1);
+    let finish!: (value: { ok: boolean }) => void;
+    const dismiss = vi.fn();
+    const execute = vi.fn(
+        () =>
+            new Promise<{ ok: boolean }>((resolve) => {
+                finish = resolve;
+            }),
+    );
+    const result = render(() => (
+        <SurfaceCommandLine
+            active
+            requestSerial={serial()}
+            surface="browser"
+            completions={[]}
+            onExecute={execute}
+            onDismiss={dismiss}
+        />
+    ));
+    const input = result.getByLabelText(
+        "browser command input",
+    ) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    fireEvent.input(input, { target: { value: "reload" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(input);
+    setSerial(2);
+    finish({ ok: true });
+    await Promise.resolve();
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(input.value).toBe("");
+});
+
+it("shows thrown errors without losing keyboard focus", async () => {
+    const result = render(() => (
+        <SurfaceCommandLine
+            active
+            requestSerial={1}
+            surface="browser"
+            completions={[]}
+            onExecute={async () => {
+                throw new Error("navigation failed");
+            }}
+            onDismiss={vi.fn()}
+        />
+    ));
+    const input = result.getByLabelText("browser command input");
+    fireEvent.submit(input.closest("form")!);
+    expect(await result.findByRole("alert")).toHaveProperty(
+        "textContent",
+        "Error: navigation failed",
+    );
+    await waitFor(() => expect(document.activeElement).toBe(input));
+});

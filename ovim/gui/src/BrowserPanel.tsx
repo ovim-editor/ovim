@@ -157,13 +157,14 @@ export default function BrowserPanel(props: BrowserPanelProps) {
 
     createEffect(() => {
         const next = session();
-        if (projectedSessionId !== (next?.sessionId ?? "")) {
+        const changedSession = projectedSessionId !== (next?.sessionId ?? "");
+        if (changedSession) {
             projectedSessionId = next?.sessionId ?? "";
             setError("");
             if (props.active && next && !next.url)
                 queueMicrotask(() => addressInput?.focus());
         }
-        if (document.activeElement !== addressInput)
+        if (changedSession || document.activeElement !== addressInput)
             setAddress(next?.url ?? "");
     });
 

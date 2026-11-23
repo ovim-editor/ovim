@@ -30,22 +30,31 @@ impl Editor {
     }
 
     pub fn ai_chat_reasoning_effort(&self) -> String {
-        let Some(chat) = self.ai_state.chat.as_ref() else {
-            return "default".into();
-        };
-        chat.reasoning_effort_override
-            .clone()
-            .or_else(|| {
-                self.ai_state
-                    .config
-                    .resolve_profile(&self.ai_chat_effective_profile())
-                    .and_then(|profile| profile.reasoning_effort.clone())
+        let selection = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.reasoning_effort_override.as_deref());
+        self.ai_chat_resolved_profile()
+            .and_then(|profile| {
+                profile
+                    .resolve_reasoning_effort(selection)
+                    .map(str::to_owned)
             })
+            .unwrap_or_else(|| "default".into())
+    }
+
+    pub fn ai_chat_default_reasoning_effort(&self) -> String {
+        self.ai_chat_resolved_profile()
+            .and_then(|profile| profile.resolve_reasoning_effort(None).map(str::to_owned))
             .unwrap_or_else(|| "default".into())
     }
 
     /// Picker value, kept separate from the effective profile-derived effort.
     pub fn ai_chat_reasoning_effort_selection(&self) -> String {
+        if self.ai_chat_reasoning_efforts() == ["default"] {
+            return "default".into();
+        }
         self.ai_state
             .chat
             .as_ref()
@@ -53,8 +62,25 @@ impl Editor {
             .unwrap_or_else(|| "default".into())
     }
 
+    pub fn ai_chat_reasoning_efforts(&self) -> &'static [&'static str] {
+        if self.ai_chat_uses_external_agent() {
+            if !crate::ai::claude_code::supports_effort(self.ai_chat_selected_model()) {
+                return &["default"];
+            }
+            &["default", "low", "medium", "high", "xhigh", "max"]
+        } else {
+            AI_CHAT_REASONING_EFFORTS
+        }
+    }
+
     pub fn set_ai_chat_reasoning_effort(&mut self, effort: &str) -> bool {
-        if !AI_CHAT_REASONING_EFFORTS.contains(&effort) {
+        if self.ai_chat_has_pending_work() {
+            self.set_status_message(
+                "Wait for or stop the active turn before changing reasoning effort",
+            );
+            return false;
+        }
+        if !self.ai_chat_reasoning_efforts().contains(&effort) {
             self.set_status_message(format!("Unknown reasoning effort: {effort}"));
             return false;
         }
@@ -64,7 +90,7 @@ impl Editor {
         chat.reasoning_effort_override = (effort != "default").then(|| effort.to_string());
         let effective = self.ai_chat_reasoning_effort();
         self.set_status_message(if effort == "default" {
-            format!("AI reasoning effort: {effective} (profile default)")
+            format!("AI reasoning effort: {effective} (default)")
         } else {
             format!("AI reasoning effort: {effective}")
         });
@@ -73,18 +99,152 @@ impl Editor {
 
     pub fn cycle_ai_chat_reasoning_effort(&mut self, forward: bool) -> bool {
         let current = self.ai_chat_reasoning_effort_selection();
-        let current = AI_CHAT_REASONING_EFFORTS
+        let efforts = self.ai_chat_reasoning_efforts();
+        let current = efforts
             .iter()
             .position(|effort| *effort == current)
             .unwrap_or(0);
         let next = if forward {
-            (current + 1) % AI_CHAT_REASONING_EFFORTS.len()
+            (current + 1) % efforts.len()
         } else if current == 0 {
-            AI_CHAT_REASONING_EFFORTS.len() - 1
+            efforts.len() - 1
         } else {
             current - 1
         };
-        self.set_ai_chat_reasoning_effort(AI_CHAT_REASONING_EFFORTS[next])
+        self.set_ai_chat_reasoning_effort(efforts[next])
+    }
+
+    pub fn ai_chat_permission_modes(&self) -> &'static [crate::ai::AiPermissionModeOption] {
+        self.ai_chat_resolved_profile()
+            .map(|profile| profile.permission_modes())
+            .unwrap_or_default()
+    }
+
+    pub fn ai_chat_permission_mode(&self) -> Option<&str> {
+        let profile = self.ai_chat_resolved_profile()?;
+        let selected = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.permission_mode_override.as_deref())
+            .or_else(|| {
+                self.ai_state
+                    .chat
+                    .is_none()
+                    .then(|| self.ai_chat_remembered_selection())
+                    .flatten()
+                    .and_then(|selection| selection.permission_mode.as_deref())
+            });
+        selected
+            .filter(|mode| profile.validate_permission_mode(mode).is_ok())
+            .or_else(|| profile.default_permission_mode())
+    }
+
+    /// The modes the pickers offer. A mode that needs confirmation appears
+    /// only while it is active, so no picker action can select it.
+    pub fn ai_chat_pickable_permission_modes(&self) -> Vec<crate::ai::AiPermissionModeOption> {
+        let active = self.ai_chat_permission_mode();
+        self.ai_chat_permission_modes()
+            .iter()
+            .filter(|option| !option.requires_confirmation || active == Some(option.id))
+            .copied()
+            .collect()
+    }
+
+    /// Whether the active permission mode disables the provider's approval
+    /// prompts. Frontends keep a warning visible while this holds.
+    pub fn ai_chat_permission_mode_skips_approvals(&self) -> bool {
+        self.ai_chat_permission_mode()
+            .is_some_and(crate::ai::claude_code::permission_mode_requires_confirmation)
+    }
+
+    pub fn set_ai_chat_permission_mode(&mut self, mode: &str) -> bool {
+        if self.ai_chat_has_pending_work() {
+            self.set_status_message(
+                "Wait for or stop the active turn before changing permission mode",
+            );
+            return false;
+        }
+        let Some(profile) = self.ai_chat_resolved_profile() else {
+            return false;
+        };
+        if let Err(error) = profile.validate_permission_mode(mode) {
+            self.set_status_message(error.to_string());
+            return false;
+        }
+        let confirm_first = profile
+            .permission_modes()
+            .iter()
+            .find(|option| option.id == mode)
+            .filter(|option| option.requires_confirmation)
+            .map(|option| option.label);
+        let already_active = self.ai_chat_permission_mode() == Some(mode);
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if let Some(label) = confirm_first.filter(|_| !already_active) {
+            if chat.pending_permission_confirmation.as_deref() != Some(mode) {
+                chat.pending_permission_confirmation = Some(mode.to_string());
+                self.set_status_message(format!(
+                    "{label} skips {}'s approval prompts for this chat. Run /permissions {mode} again to confirm.",
+                    profile.display_name()
+                ));
+                return false;
+            }
+        }
+        chat.pending_permission_confirmation = None;
+        chat.permission_mode_override = Some(mode.to_string());
+        chat.follow_chat_default = chat.opts.name != "query";
+        self.ai_state.chat_config_override = false;
+        if confirm_first.is_some() {
+            // Never persisted: the next chat and the next start use the
+            // remembered safe mode or the provider default.
+            self.set_status_message(format!(
+                "AI permission mode: {mode} (this chat only; not remembered)"
+            ));
+            self.mark_dirty();
+            return true;
+        }
+        let selection = crate::ai::chat_preference::ChatSelection {
+            profile: profile.name.clone(),
+            provider: profile.provider,
+            model: (profile.provider == crate::ai::AiProviderKind::ClaudeCode)
+                .then(|| profile.model.clone()),
+            permission_mode: Some(mode.to_string()),
+        };
+        match self.ai_state.chat_preference.remember(selection) {
+            Ok(()) => self.set_status_message(format!("AI permission mode: {mode}")),
+            Err(error) => {
+                crate::log_warn!("ai", "Could not save chat preference: {error:#}");
+                self.set_status_message(format!(
+                    "AI permission mode: {mode} (could not remember selection: {error})"
+                ));
+            }
+        }
+        self.mark_dirty();
+        true
+    }
+
+    /// Step through the pickable permission modes. The list does not wrap, so
+    /// stepping past either end is a no-op rather than a jump to the far end.
+    pub fn cycle_ai_chat_permission_mode(&mut self, forward: bool) -> bool {
+        let Some(current) = self.ai_chat_permission_mode().map(str::to_owned) else {
+            return false;
+        };
+        let modes = self.ai_chat_pickable_permission_modes();
+        let current = modes
+            .iter()
+            .position(|option| option.id == current)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1).min(modes.len().saturating_sub(1))
+        } else {
+            current.saturating_sub(1)
+        };
+        if next == current {
+            return false;
+        }
+        self.set_ai_chat_permission_mode(modes[next].id)
     }
 
     /// Get the messages for the current chat conversation.
@@ -155,6 +315,9 @@ impl Editor {
 
     /// Whether this chat bypasses model and user tool-approval gates.
     pub fn ai_chat_yolo_mode(&self) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            return false;
+        }
         self.ai_state
             .chat
             .as_ref()
@@ -165,6 +328,10 @@ impl Editor {
     /// Set the per-chat approval bypass. Enabling it also releases work that
     /// is already blocked on a folder, tool, or Terra decision.
     pub fn set_ai_chat_yolo_mode(&mut self, enabled: bool) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            self.set_status_message("Claude Code manages its own permissions");
+            return false;
+        }
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };
@@ -180,20 +347,11 @@ impl Editor {
             if self.ai_chat_has_pending_tool_approval() {
                 self.ai_chat_resolve_pending_tool_approval(true, false);
             }
-            let pending_classifier = self
-                .ai_state
-                .chat
-                .as_mut()
-                .and_then(|chat| chat.pending_auto_mode_classification.take());
+            let pending_classifier = self.ai_state.chat.as_mut().and_then(|chat| {
+                chat.take_parked_as::<super::ai_chat_state::PendingAutoModeClassification>()
+            });
             if let Some(pending) = pending_classifier {
-                self.execute_dynamic_tool_after_policy(
-                    pending.runtime_turn,
-                    pending.runtime_tool,
-                    pending.tool_call,
-                    pending.dynamic_response,
-                    None,
-                    false,
-                );
+                self.run_classified_shell(pending.tool_call, pending.continuation);
             }
         }
 
@@ -224,11 +382,33 @@ impl Editor {
 
     /// Whether a tool call is currently paused pending user approval.
     pub fn ai_chat_has_pending_tool_approval(&self) -> bool {
+        if self.external_permission_summary().is_some() && !self.ai_chat_has_external_question() {
+            return true;
+        }
         self.ai_state
             .chat
             .as_ref()
-            .map(|c| c.pending_tool_approval.is_some())
+            .map(|c| {
+                c.parked_as::<super::ai_chat_state::PendingToolApproval>()
+                    .is_some()
+            })
             .unwrap_or(false)
+    }
+
+    /// Whether the pending approval can be remembered ("allow and remember").
+    /// Only a parked tool approval supports it; external-agent permissions and
+    /// the no-repo folder approval resolve without a remember option.
+    pub fn ai_chat_pending_tool_approval_can_remember(&self) -> bool {
+        if self.ai_chat_has_pending_no_repo_folder_approval()
+            || (self.external_permission_summary().is_some()
+                && !self.ai_chat_has_external_question())
+        {
+            return false;
+        }
+        self.ai_state.chat.as_ref().is_some_and(|c| {
+            c.parked_as::<super::ai_chat_state::PendingToolApproval>()
+                .is_some()
+        })
     }
 
     /// Whether chat is waiting for first-time no-repo folder approval.
@@ -255,11 +435,14 @@ impl Editor {
 
     /// Human-readable summary of the pending approval, if any.
     pub fn ai_chat_pending_tool_approval_summary(&self) -> Option<String> {
+        if self.external_permission_summary().is_some() && !self.ai_chat_has_external_question() {
+            return self.external_permission_summary();
+        }
         let pending = self
             .ai_state
             .chat
             .as_ref()
-            .and_then(|c| c.pending_tool_approval.as_ref())?;
+            .and_then(|c| c.parked_as::<super::ai_chat_state::PendingToolApproval>())?;
         if pending.tool_call.name == "bash" {
             let command = pending
                 .tool_call

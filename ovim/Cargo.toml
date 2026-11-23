@@ -1,8 +1,10 @@
 [package]
 name = "ovim"
-version = "1.2.7"
+version = "1.8.0"
 edition = "2024"
 description = "Oxidized Vim — a snappy, batteries-included editor with terminal and native GUI frontends, Vim keybindings, Lua config, LSP, and AI built in."
+license = "MIT"
+repository = "https://github.com/ovim-editor/ovim"
 
 [[bin]]
 name = "ovim-gui"
@@ -47,13 +49,9 @@ tempfile = "3.14"
 ignore = "0.4"
 unicode-segmentation = "1.12"
 open = "5"
-flate2 = "1"
-tar = "0.4"
-zip = "2"
 tauri = { version = "2", optional = true, features = ["unstable"] }
-# Native folder picker for "Open Project…". Used from Rust only, so no Tauri
-# plugin ACL/capability file is needed for the webview to reach it.
-rfd = { version = "0.17", optional = true }
+portable-pty = { version = "0.9", optional = true }
+rfd = { version = "0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
@@ -62,10 +60,15 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 sysinfo = "0.32"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, optional = true, features = ["NSApplication", "NSEvent", "NSMenu", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, optional = true, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSString", "NSUserDefaults", "NSValue"] }
+
 [features]
 default = ["lua", "gui"]
 lua = ["mlua", "ovim-core/lua"]
-gui = ["dep:tauri", "dep:rfd"]
+gui = ["dep:tauri", "dep:portable-pty", "dep:rfd", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 key-debug = []
 metrics = ["prometheus", "ovim-core/metrics"]
 # Statically link OpenSSL for portable release binaries

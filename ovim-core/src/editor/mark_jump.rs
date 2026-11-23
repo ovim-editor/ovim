@@ -17,68 +17,59 @@ fn clamp_grapheme_col(buffer: &Buffer, line_idx: usize, col: usize) -> usize {
     col.min(line_len.saturating_sub(1))
 }
 
+/// Marks that belong to a buffer: `a`-`z` and the Visual marks `<` and `>`.
+/// The others (`A`-`Z`) are global and carry a file.
+pub(super) fn is_local_mark(name: char) -> bool {
+    name.is_ascii_lowercase() || matches!(name, '<' | '>')
+}
+
 impl Editor {
     /// Sets a mark at the current cursor position
     pub fn set_mark(&mut self, name: char) -> bool {
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col().0;
+        let cursor_col = self.buffer().cursor().col();
+        if is_local_mark(name) {
+            self.buffer_mut()
+                .set_local_mark(name, cursor_line, cursor_col);
+            return true;
+        }
         let file_path = self.buffer().file_path().map(|s| s.to_string());
         self.nav
             .marks
-            .set_mark(name, cursor_line, cursor_col, file_path.as_deref())
+            .set_global_mark(name, cursor_line, cursor_col.0, file_path.as_deref())
     }
 
     /// Jumps to a mark (exact position with backtick)
     pub fn jump_to_mark(&mut self, name: char) -> bool {
-        // Special exact-position marks
-        match name {
-            // `.` - last change position
-            '.' => {
-                if let Some(change) = self.last_change() {
-                    let pos = change.cursor_after();
-                    self.buffer_mut()
-                        .cursor_mut()
-                        .set_position(pos.line, pos.col.saturating_sub(1));
-                    self.center_cursor_in_viewport();
-                    return true;
-                }
-            }
-            // `^ - last insert exit position (cursor-on-char semantics)
-            '^' => {
-                if let Some(change) = self.last_change() {
-                    let inserted = change.get_inserted_text();
-                    if !inserted.is_empty() {
-                        let pos = change.cursor_after();
-                        self.buffer_mut()
-                            .cursor_mut()
-                            .set_position(pos.line, pos.col.saturating_sub(1));
-                        self.center_cursor_in_viewport();
-                        return true;
-                    }
-                }
-
-                if let Some((line, col)) = self.editing.last_insert_position {
-                    self.buffer_mut()
-                        .cursor_mut()
-                        .set_position(line, GraphemeCol(col.saturating_sub(1)));
-                    self.center_cursor_in_viewport();
-                    return true;
-                }
-            }
-            _ => {}
+        // Special exact-position marks: `.` where the last change started
+        // (the newest changelist entry), `^` where Insert mode was last
+        // stopped. Both clamp to the cursor-on-char range like vim.
+        let special = match name {
+            '.' => self.last_edit_position().map(|pos| (pos.line, pos.col.0)),
+            '^' => self.editing.last_insert_position,
+            _ => None,
+        };
+        if let Some((line, col)) = special {
+            let line = line.min(self.buffer().line_count().saturating_sub(1));
+            let col = clamp_grapheme_col(self.buffer(), line, col);
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
+            self.center_cursor_in_viewport();
+            return true;
         }
 
-        // Try local mark first (a-z)
-        if name.is_ascii_lowercase() {
-            if let Some(mark) = self.nav.marks.get_mark(name) {
+        // Try local mark first (a-z, < and >)
+        if is_local_mark(name) {
+            if let Some((mark_line, mark_col)) = self.buffer().local_mark(name) {
                 // OV-00190: clamp to current buffer bounds. The mark may point
                 // past EOF if lines were deleted after it was set; uncapped,
                 // `set_position` would land the cursor outside the rope and
                 // subsequent motions / rendering would panic or display
                 // garbage. Same shape as the global-mark branch below.
                 let max_line = self.buffer().line_count().saturating_sub(1);
-                let clamped_line = mark.line.min(max_line);
-                let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, mark.col);
+                let clamped_line = mark_line.min(max_line);
+                let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, mark_col.0);
 
                 self.buffer_mut()
                     .cursor_mut()
@@ -132,14 +123,14 @@ impl Editor {
             return false;
         }
 
-        // Try local mark first (a-z)
-        if name.is_ascii_lowercase() {
-            if let Some(mark) = self.nav.marks.get_mark(name) {
+        // Try local mark first (a-z, < and >)
+        if is_local_mark(name) {
+            if let Some((mark_line, _)) = self.buffer().local_mark(name) {
                 // OV-00190: clamp the mark line to current buffer bounds so a
                 // line deleted after the mark was set doesn't land the cursor
                 // past EOF. Mirrors the global-mark branch below.
                 let max_line = self.buffer().line_count().saturating_sub(1);
-                let clamped_line = mark.line.min(max_line);
+                let clamped_line = mark_line.min(max_line);
 
                 // Find first non-blank character on the line (char index → grapheme)
                 let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line)
@@ -209,37 +200,97 @@ impl Editor {
         false
     }
 
-    /// Adds current position to jump list
-    pub fn add_jump(&mut self) {
+    /// The cursor position as a jump-list entry.
+    fn current_jump_entry(&self) -> super::marks::JumpEntry {
         let cursor = self.buffer().cursor();
-        self.nav.jump_list.add_jump(cursor.line(), cursor.col().0);
+        super::marks::JumpEntry::new(
+            self.buffer().file_path().map(|p| p.to_string()),
+            cursor.line(),
+            cursor.col().0,
+        )
+    }
+
+    /// Records the current position in the jump list. Call this ONCE, right
+    /// before a jump (Vim's `setpcmark`).
+    pub fn add_jump(&mut self) {
+        let entry = self.current_jump_entry();
+        self.nav.context_mark = Some(entry.clone());
+        self.nav.jump_list.add_jump(entry);
+    }
+
+    /// Runs a jump motion (`%`, `{`, `)`, `H`, `n`, ...): when it moves the cursor,
+    /// the position it left goes into the jump list (Vim's `setpcmark`) so `<C-o>`
+    /// returns to it.
+    pub fn record_jump_if_moved<R>(&mut self, motion: impl FnOnce(&mut Self) -> R) -> R {
+        let before = self.current_jump_entry();
+        let result = motion(self);
+        if self.current_jump_entry() != before {
+            self.nav.context_mark = Some(before.clone());
+            self.nav.jump_list.add_jump(before);
+        }
+        result
+    }
+
+    /// Where `''` and `` ` ` `` go: the position before the latest jump, which is
+    /// the start of the buffer before the first one.
+    pub fn context_mark_position(&self) -> super::marks::JumpEntry {
+        self.nav.context_mark.clone().unwrap_or_else(|| {
+            super::marks::JumpEntry::new(self.buffer().file_path().map(|p| p.to_string()), 0, 0)
+        })
+    }
+
+    /// `''` (`linewise`) and `` ` ` ``: jumps to the position before the latest jump.
+    /// Where it jumped from becomes that position, so repeating it toggles.
+    pub fn jump_to_context_mark(&mut self, linewise: bool) -> bool {
+        let target = self.context_mark_position();
+        self.add_jump();
+        if !self.go_to_jump_entry(target) {
+            return false;
+        }
+        if linewise {
+            Motions::first_non_blank(self.buffer_mut());
+        }
+        true
+    }
+
+    /// Moves to a jump-list entry, switching buffers when it is in another file.
+    fn go_to_jump_entry(&mut self, entry: super::marks::JumpEntry) -> bool {
+        if let Some(file) = entry.file.as_deref() {
+            let same_file = self.buffer().file_path().is_some_and(|current| {
+                super::buffer_manager::paths_identify_same_file(current, file)
+            });
+            if !same_file && self.load_file(file).is_err() {
+                self.set_status_message(format!("Jump failed: cannot open {file}"));
+                return false;
+            }
+        }
+        let max_line = self.buffer().line_count().saturating_sub(1);
+        let line = entry.line.min(max_line);
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(entry.col));
+        self.buffer_mut().validate_cursor_position();
+        // Center cursor after jump (Vim behavior)
+        self.center_cursor_in_viewport();
+        self.mark_dirty();
+        true
     }
 
     /// Jumps back in the jump list (Ctrl-O)
     pub fn jump_back(&mut self) -> bool {
-        if let Some((line, col)) = self.nav.jump_list.jump_back() {
-            self.buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
-            // Center cursor after jump (Vim behavior)
-            self.center_cursor_in_viewport();
-            true
-        } else {
-            false
+        let here = self.current_jump_entry();
+        match self.nav.jump_list.jump_back(here) {
+            Some(entry) => self.go_to_jump_entry(entry),
+            None => false,
         }
     }
 
     /// Jumps forward in the jump list (Ctrl-I)
     pub fn jump_forward(&mut self) -> bool {
-        if let Some((line, col)) = self.nav.jump_list.jump_forward() {
-            self.buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
-            // Center cursor after jump (Vim behavior)
-            self.center_cursor_in_viewport();
-            true
-        } else {
-            false
+        let here = self.current_jump_entry();
+        match self.nav.jump_list.jump_forward(here) {
+            Some(entry) => self.go_to_jump_entry(entry),
+            None => false,
         }
     }
 
@@ -251,6 +302,30 @@ impl Editor {
     /// Gets the last find motion
     pub fn get_last_find(&self) -> Option<(char, FindType, FindDirection)> {
         self.nav.last_find
+    }
+
+    /// `;`/`,` repeating a `t`/`T`. Like Vim without `cpo-;`, a single repeat skips
+    /// a target that is right next to the cursor instead of staying in front of it.
+    fn repeat_till(&mut self, ch: char, count: usize, direction: FindDirection) -> bool {
+        let till = match direction {
+            FindDirection::Forward => Motions::till_char_forward,
+            FindDirection::Backward => Motions::till_char_backward,
+        };
+        if count != 1 {
+            return till(self.buffer_mut(), ch, count);
+        }
+        let col = self.buffer().cursor().col();
+        let stepped = match direction {
+            FindDirection::Forward => col.0 + 1,
+            FindDirection::Backward if col > GraphemeCol::ZERO => col.0 - 1,
+            FindDirection::Backward => return false,
+        };
+        self.buffer_mut().cursor_mut().set_col(GraphemeCol(stepped));
+        if till(self.buffer_mut(), ch, count) {
+            return true;
+        }
+        self.buffer_mut().cursor_mut().set_col(col);
+        false
     }
 
     /// Repeats the last character-find motion (`;`/`,` in Vim).
@@ -279,42 +354,10 @@ impl Editor {
                     Motions::find_char_backward(self.buffer_mut(), ch, count)
                 }
                 (FindType::Till, FindDirection::Forward) => {
-                    if !reverse {
-                        // For ';' after `t`, skip past current target before repeating.
-                        let col = self.buffer().cursor().col();
-                        self.buffer_mut()
-                            .cursor_mut()
-                            .set_col(GraphemeCol(col.0 + 1));
-                        if !Motions::till_char_forward(self.buffer_mut(), ch, count) {
-                            self.buffer_mut().cursor_mut().set_col(col);
-                            false
-                        } else {
-                            true
-                        }
-                    } else {
-                        Motions::till_char_forward(self.buffer_mut(), ch, count)
-                    }
+                    self.repeat_till(ch, count, FindDirection::Forward)
                 }
                 (FindType::Till, FindDirection::Backward) => {
-                    if !reverse {
-                        // For ';' after `T`, skip past current target before repeating.
-                        let col = self.buffer().cursor().col();
-                        if col > GraphemeCol::ZERO {
-                            self.buffer_mut()
-                                .cursor_mut()
-                                .set_col(GraphemeCol(col.0 - 1));
-                            if !Motions::till_char_backward(self.buffer_mut(), ch, count) {
-                                self.buffer_mut().cursor_mut().set_col(col);
-                                false
-                            } else {
-                                true
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        Motions::till_char_backward(self.buffer_mut(), ch, count)
-                    }
+                    self.repeat_till(ch, count, FindDirection::Backward)
                 }
             };
         }
@@ -323,14 +366,41 @@ impl Editor {
         moved
     }
 
-    /// Gets the mark manager (for reading marks)
+    /// Gets the mark manager (the global marks `A`-`Z`)
     pub fn marks(&self) -> &MarkManager {
         &self.nav.marks
+    }
+
+    /// Where the buffer-local mark `name` points: a line and a grapheme column.
+    pub fn local_mark(&self, name: char) -> Option<(usize, usize)> {
+        let (line, col) = self.buffer().local_mark(name)?;
+        Some((line, col.0))
+    }
+
+    /// Every mark that is set, for `:marks`: (name, line, column, file) with
+    /// the file only on global marks.
+    pub fn list_marks(&self) -> Vec<(char, usize, usize, Option<String>)> {
+        let mut marks: Vec<_> = self
+            .buffer()
+            .local_marks()
+            .into_iter()
+            .map(|(name, line, col)| (name, line, col.0, None))
+            .collect();
+        let mut global: Vec<_> = self.nav.marks.iter_global().collect();
+        global.sort_by_key(|(name, _)| *name);
+        marks.extend(
+            global
+                .into_iter()
+                .map(|(name, mark)| (name, mark.line, mark.col, mark.file_path.clone())),
+        );
+        marks
     }
 
     /// Pushes current position to tag stack before LSP navigation (gd/gD/gy)
     /// Called just before jumping to definition/implementation/type
     pub fn push_tag(&mut self) {
+        // A tag jump is a jump: Ctrl-O must return here as well as Ctrl-T.
+        self.add_jump();
         if let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) {
             let cursor = self.buffer().cursor();
             let entry = TagEntry::new(file_path, cursor.line(), cursor.col().0);

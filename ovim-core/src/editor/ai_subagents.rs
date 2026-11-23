@@ -6,17 +6,18 @@
 
 use crate::agent_runtime::{
     builtin_subagent_model_metadata, AgentApprovalBroker, AgentApprovalKey, AgentApprovalResponse,
-    AgentApprovalResponseDecision, AgentCapability, AgentControlPlaneSnapshot, AgentDispatchRecord,
-    AgentFuture, AgentKindName, AgentLoopBudget, AgentLoopInputFactory, AgentProviderAdapter,
-    AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig, AgentToolCall, AgentToolError,
-    AgentToolExtension, AgentToolResult, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
-    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegatedAgentPolicy,
-    DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity,
-    DispatchRequest, FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider,
-    ReasoningEffort, RequestedModelRoute, ScopedTool, SendAgentMessageRequest,
-    SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog,
-    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy, MAX_HANDOFF_ATTACHMENTS,
-    MAX_HANDOFF_ATTACHMENT_BYTES, MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES,
+    AgentApprovalResponseDecision, AgentApprovalSnapshot, AgentCapability,
+    AgentControlPlaneSnapshot, AgentDispatchRecord, AgentFuture, AgentKindName, AgentLoopBudget,
+    AgentLoopInputFactory, AgentProviderAdapter, AgentRoleTemplate, AgentSnapshot, AgentSupervisor,
+    AgentSupervisorConfig, AgentToolCall, AgentToolError, AgentToolExtension, AgentToolResult,
+    AgentWorkspaceManager, CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex,
+    CompletionContract, DelegatedAgentKind, DelegatedAgentPolicy, DelegationContextMode,
+    DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
+    FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
+    RequestedModelRoute, ScopedTool, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
+    SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
+    WorkspaceStrategy, MAX_HANDOFF_ATTACHMENTS, MAX_HANDOFF_ATTACHMENT_BYTES,
+    MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -261,6 +262,7 @@ impl AiSubagentService {
     /// Built-in Lua profiles load after legacy `ai.toml`; without this refresh
     /// the service fingerprint and child catalog describe the pre-Lua config,
     /// which makes parent controls fail closed in every real editor startup.
+    #[cfg(any(feature = "lua", test))]
     pub(crate) fn reconfigure_if_idle(&mut self, config: &AiConfig) -> Result<(), String> {
         if self.ensure_compatible(config).is_ok() {
             return Ok(());
@@ -1452,6 +1454,44 @@ impl Editor {
             .and_then(|id| snapshot.oldest_pending_approval_for(id))
             .or_else(|| snapshot.oldest_pending_approval())
             .ok_or_else(|| "there is no pending delegated-agent approval".to_string())?;
+        self.respond_agent_approval(&snapshot, agent, approval, allow)
+    }
+
+    /// Resolve one specific pending child approval, identified by the request
+    /// event the frontend displayed. Unlike the oldest-pending shortcuts this
+    /// never retargets: if that request was already resolved (or a different
+    /// one became oldest in the meantime) the call fails instead of answering
+    /// an approval the user has not seen.
+    pub fn ai_agent_resolve_approval_request(
+        &mut self,
+        request_event_id: &str,
+        allow: bool,
+    ) -> Result<(), String> {
+        let snapshot = self
+            .ai_agent_current_snapshot()?
+            .ok_or_else(|| "there is no delegated-agent run for this chat".to_string())?;
+        let (agent, approval) = snapshot
+            .agents
+            .iter()
+            .flat_map(|agent| {
+                agent
+                    .approvals
+                    .iter()
+                    .filter(|approval| approval.state == "pending")
+                    .map(move |approval| (agent, approval))
+            })
+            .find(|(_, approval)| approval.request_event_id.as_str() == request_event_id)
+            .ok_or_else(|| "that delegated-agent approval is no longer pending".to_string())?;
+        self.respond_agent_approval(&snapshot, agent, approval, allow)
+    }
+
+    fn respond_agent_approval(
+        &mut self,
+        snapshot: &AgentControlPlaneSnapshot,
+        agent: &AgentSnapshot,
+        approval: &AgentApprovalSnapshot,
+        allow: bool,
+    ) -> Result<(), String> {
         self.ai_agent_respond_approval(
             &snapshot.run_id,
             &agent.agent_id,
@@ -1962,6 +2002,9 @@ impl Editor {
     /// tools. Merely registering a profile or opening a chat never exposes
     /// them; the durable root binding must be active and exact.
     pub(crate) fn ai_subagent_parent_tools_visible(&self) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            return false;
+        }
         self.active_subagent_root().is_ok()
             && self
                 .ai_state
@@ -2194,19 +2237,17 @@ impl Editor {
         let task = tokio::spawn(async move {
             let _ = sender.send(prepared.execute().await);
         });
-        let chat = self
-            .ai_state
-            .chat
-            .as_mut()
-            .expect("active chat checked above");
-        chat.pending_subagent_control = Some(super::ai_chat_state::PendingSubagentControl {
+        if self.park_ai_turn(super::ai_chat_state::PendingSubagentControl {
             tool_call: call,
             continuation,
             receiver,
             task,
-        });
-        chat.waiting = true;
-        self.set_status_message("Waiting for delegated-agent activity");
+        }) {
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.waiting = true;
+            }
+            self.set_status_message("Waiting for delegated-agent activity");
+        }
         Ok(())
     }
 
@@ -2214,8 +2255,7 @@ impl Editor {
         let user_steering = self.ai_state.chat.as_ref().is_some_and(|chat| {
             !chat.queued_inputs.is_empty()
                 && chat
-                    .pending_subagent_control
-                    .as_ref()
+                    .parked_as::<super::ai_chat_state::PendingSubagentControl>()
                     .is_some_and(|pending| pending.tool_call.name == WAIT_AGENT_TOOL)
         });
         let received = if user_steering {
@@ -2223,12 +2263,9 @@ impl Editor {
                 json!({ "outcome": "user_steering", "updates": [] }).to_string(),
             ))
         } else {
-            let Some(pending) = self
-                .ai_state
-                .chat
-                .as_mut()
-                .and_then(|chat| chat.pending_subagent_control.as_mut())
-            else {
+            let Some(pending) = self.ai_state.chat.as_mut().and_then(|chat| {
+                chat.parked_as_mut::<super::ai_chat_state::PendingSubagentControl>()
+            }) else {
                 return false;
             };
             match pending.receiver.try_recv() {
@@ -2243,7 +2280,7 @@ impl Editor {
             .ai_state
             .chat
             .as_mut()
-            .and_then(|chat| chat.pending_subagent_control.take())
+            .and_then(|chat| chat.take_parked_as::<super::ai_chat_state::PendingSubagentControl>())
             .expect("pending delegated-agent control exists");
         if user_steering {
             pending.task.abort();
@@ -2256,53 +2293,13 @@ impl Editor {
         {
             result = ToolResult::Error(error);
         }
-        match pending.continuation {
-            super::ai_chat_state::ToolExecutionContinuation::Dynamic {
-                runtime_tool,
-                runtime_turn,
-                response,
-            } => {
-                self.finish_dynamic_tool(
-                    &runtime_turn,
-                    &runtime_tool,
-                    &pending.tool_call,
-                    response,
-                    result,
-                );
-                self.set_status_message(String::new());
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.waiting = true;
-                }
-                true
-            }
-            super::ai_chat_state::ToolExecutionContinuation::Batch {
-                runtime_tool,
-                runtime_turn,
-                remaining_tool_calls,
-                model_name,
-            } => {
-                if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
-                    && let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result)
-                {
-                    self.ai_runtime_fail_turn(format!(
-                        "failed to record delegated-agent tool result: {error}"
-                    ));
-                    self.clear_streaming_state();
-                    return true;
-                }
-                self.record_tool_event_summary(&pending.tool_call, &result);
-                let result_content =
-                    self.format_tool_result_with_target(&pending.tool_call, &result);
-                if let Some(conversation) = self.conversation_mut() {
-                    conversation.append_tool_result(pending.tool_call.id, result_content);
-                }
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.tool_call_count = chat.tool_call_count.saturating_add(1);
-                }
-                self.set_status_message(String::new());
-                self.execute_tool_call_batch(remaining_tool_calls, model_name)
-            }
-        }
+        self.set_status_message(String::new());
+        self.resume_tool_continuation(
+            pending.tool_call,
+            pending.continuation,
+            result,
+            "delegated-agent tool",
+        )
     }
 
     fn consume_ai_subagent_updates(&self, payload: &str) -> Result<(), String> {
@@ -2867,27 +2864,25 @@ impl Editor {
         fn flatten(
             output: &mut Vec<SnapshotSymbol>,
             path: &RepoPath,
-            symbols: &[lsp_types::DocumentSymbol],
+            symbols: &[crate::navigation_types::OutlineSymbol],
         ) {
             for symbol in symbols {
+                // The name's position (0-based), else the symbol's first line.
+                let (line, column) = symbol
+                    .selection
+                    .unwrap_or((symbol.start_line.saturating_sub(1), 0));
                 output.push(SnapshotSymbol {
                     name: symbol.name.clone(),
-                    kind: format!("{:?}", symbol.kind).to_lowercase(),
+                    kind: symbol.kind.clone(),
                     path: path.clone(),
-                    line: symbol.range.start.line as usize + 1,
-                    column: symbol.range.start.character as usize + 1,
+                    line: line + 1,
+                    column: column + 1,
                 });
-                if let Some(children) = symbol.children.as_deref() {
-                    flatten(output, path, children);
-                }
+                flatten(output, path, &symbol.children);
             }
         }
         let mut captured = Vec::new();
-        flatten(
-            &mut captured,
-            &path,
-            &self.lsp.state.available_document_symbols,
-        );
+        flatten(&mut captured, &path, self.outline_symbols());
         captured
     }
 
@@ -4037,14 +4032,100 @@ mod tests {
         assert_eq!(payload["agent_ids"][0], agent_id);
     }
 
+    /// Fake provider whose session waits inside its second `next_event` call
+    /// until the test releases it. While it waits, the child is live and has
+    /// one more provider call ahead, so a message queued then must be delivered
+    /// at that call.
+    struct PausingFakeProvider {
+        inner: FakeProviderAdapter,
+        paused: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::agent_runtime::AgentProviderAdapter for PausingFakeProvider {
+        fn start(
+            &self,
+            request: crate::agent_runtime::AgentProviderStart,
+        ) -> crate::agent_runtime::AgentFuture<
+            '_,
+            Result<
+                Box<dyn crate::agent_runtime::AgentProviderSession>,
+                crate::agent_runtime::AgentProviderError,
+            >,
+        > {
+            Box::pin(async move {
+                let inner = self.inner.start(request).await?;
+                Ok(Box::new(PausingFakeSession {
+                    inner,
+                    calls: 0,
+                    paused: self.paused.clone(),
+                    release: self.release.clone(),
+                })
+                    as Box<dyn crate::agent_runtime::AgentProviderSession>)
+            })
+        }
+    }
+
+    struct PausingFakeSession {
+        inner: Box<dyn crate::agent_runtime::AgentProviderSession>,
+        calls: usize,
+        paused: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::agent_runtime::AgentProviderSession for PausingFakeSession {
+        fn binding(&self) -> &crate::agent_runtime::ProviderBinding {
+            self.inner.binding()
+        }
+
+        fn next_event(
+            &mut self,
+        ) -> crate::agent_runtime::AgentFuture<
+            '_,
+            Result<
+                crate::agent_runtime::AgentProviderEvent,
+                crate::agent_runtime::AgentProviderError,
+            >,
+        > {
+            Box::pin(async move {
+                self.calls += 1;
+                if self.calls == 2 {
+                    self.paused.notify_one();
+                    self.release.notified().await;
+                }
+                self.inner.next_event().await
+            })
+        }
+
+        fn deliver_message(
+            &mut self,
+            message_event_id: &EventId,
+            content: &str,
+        ) -> crate::agent_runtime::AgentFuture<
+            '_,
+            Result<(), crate::agent_runtime::AgentProviderError>,
+        > {
+            self.inner.deliver_message(message_event_id, content)
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn send_message_queues_to_live_child_and_projects_delivery() {
         let (_repository, _storage, mut editor) = enabled_editor();
         let mut service = AiSubagentService::new(&editor.ai_state.config);
-        service.provider = Arc::new(
-            FakeProviderAdapter::new("restart")
-                .with_tick_duration(std::time::Duration::from_millis(100)),
-        );
+        // In the "restart" script the child's provider calls return started,
+        // checkpoint, then handoff. A message is delivered only at the start of
+        // a call, so the child pauses inside the checkpoint call until the
+        // message is queued. Without the pause, a busy machine can let the
+        // child reach the handoff call first, and the message is then
+        // rightly rejected at the terminal boundary.
+        let paused = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        service.provider = Arc::new(PausingFakeProvider {
+            inner: FakeProviderAdapter::new("restart"),
+            paused: paused.clone(),
+            release: release.clone(),
+        });
         *editor.ai_state.subagents = service;
         attach_root_turn(&mut editor);
         let ToolResult::Success(spawned) =
@@ -4065,18 +4146,13 @@ mod tests {
             .unwrap()
             .clone();
         let agent = AgentId::parse(agent_id.clone()).unwrap();
-        loop {
-            if matches!(
-                run.supervisor.state(&agent).unwrap(),
-                Some(
-                    crate::agent_runtime::DispatchState::Starting
-                        | crate::agent_runtime::DispatchState::Running
-                )
-            ) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), paused.notified())
+            .await
+            .expect("child should reach its checkpoint call");
+        assert_eq!(
+            run.supervisor.state(&agent).unwrap(),
+            Some(crate::agent_runtime::DispatchState::Running)
+        );
         let ToolResult::Success(queued) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
             id: "tool-message".into(),
             name: SEND_MESSAGE_TOOL.into(),
@@ -4091,6 +4167,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&queued).unwrap()["outcome"],
             "queued"
         );
+        release.notify_one();
         assert!(run
             .supervisor
             .wait_for_idle(std::time::Duration::from_secs(2))
@@ -4104,7 +4181,11 @@ mod tests {
             panic!("list should include message delivery")
         };
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
-        assert_eq!(listed["messages"][0]["state"], "delivered");
+        assert_eq!(
+            listed["messages"][0]["state"], "delivered",
+            "{}",
+            listed["messages"][0]
+        );
         assert_eq!(listed["messages"][0]["consumed"], true);
     }
 

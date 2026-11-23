@@ -27,9 +27,10 @@
 //!   writer task -- see [`write_in_order`].
 
 use super::bridge::{GuiTransport, GuiTransportFuture, EDITOR_STOPPED};
-use super::protocol::{GuiCommand, GuiReply, GuiReplyKind, GuiSnapshot, SNAPSHOT_EVENT};
+use super::protocol::{GuiCommand, GuiReply, GuiReplyKind, SNAPSHOT_EVENT};
 use super::reconnect::{supervise, Failure, GuiConnection, Link};
 use super::ssh::RemoteLaunch;
+use super::GuiSnapshot;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use ovim_core::session::{SessionCapability, SessionInfo};
@@ -259,7 +260,7 @@ struct Envelope {
 /// what makes the session receive them in issue order, since the answer cannot
 /// arrive before the editor has taken the command in. The cost is that the
 /// ordered lane carries one command per round trip; see the module notes in
-/// `planning/remote-editing/PLAN.md` for why that is the right trade here and
+/// `docs/engineering/remote-editing-2026-09/PLAN.md` for why that is the right trade here and
 /// what would lift it.
 ///
 /// The connection is re-checked here rather than only at
@@ -732,8 +733,8 @@ mod tests {
     use crate::api::security::{secure_router, ApiSecurity};
     use crate::editor::Editor;
     use crate::gui::bridge::tests::{every_command_once, exercise_every_helper};
-    use crate::gui::protocol::GuiVectorSource;
     use crate::gui::reconnect::ConnectionLoss;
+    use crate::gui::GuiVectorSource;
     use crate::gui::{protocol, GuiBridge};
     use axum::extract::State;
     use axum::http::{HeaderMap, StatusCode as AxumStatus};
@@ -784,7 +785,7 @@ mod tests {
         revision: Mutex<u64>,
         /// How long a diff query takes, standing in for the Git walk the real
         /// session runs on its blocking pool.
-        diff_delay: Mutex<Duration>,
+        query_delay: Mutex<Duration>,
     }
 
     impl StubSession {
@@ -822,8 +823,8 @@ mod tests {
         }
 
         /// Make every diff query take `delay`, as a repository walk would.
-        fn hold_diffs_for(&self, delay: Duration) {
-            *self.diff_delay.lock().unwrap() = delay;
+        fn hold_queries_for(&self, delay: Duration) {
+            *self.query_delay.lock().unwrap() = delay;
         }
 
         /// How long to sit on `command` before recording it as arrived.
@@ -834,8 +835,8 @@ mod tests {
                     .and_then(|milliseconds| milliseconds.parse().ok())
                     .map(Duration::from_millis)
                     .unwrap_or_default(),
-                GuiCommand::DiffReview { .. } | GuiCommand::DiffFilePatch { .. } => {
-                    *self.diff_delay.lock().unwrap()
+                GuiCommand::VectorSource | GuiCommand::WorkspaceDirectory => {
+                    *self.query_delay.lock().unwrap()
                 }
                 _ => Duration::ZERO,
             }
@@ -945,11 +946,16 @@ mod tests {
                 file_name: "close.strok".to_string(),
             })))
             .into_response(),
-            GuiReplyKind::DiffReview => {
-                Json(GuiReply::DiffReview(Ok(protocol::sample_diff_review()))).into_response()
-            }
-            GuiReplyKind::DiffPatch => Json(GuiReply::DiffPatch(Ok(
-                "@@ -1 +1 @@\n-old\n+new\n".to_string()
+            GuiReplyKind::WorkspaceDirectory => Json(GuiReply::WorkspaceDirectory(Ok(
+                std::path::PathBuf::from("/srv/project"),
+            )))
+            .into_response(),
+            GuiReplyKind::ChatInputState => Json(GuiReply::ChatInputState(Ok(
+                crate::gui::GuiChatInputState {
+                    input: "draft".to_string(),
+                    cursor: 5,
+                    revision: 2,
+                },
             )))
             .into_response(),
             GuiReplyKind::Clipboard => Json(GuiReply::Clipboard(Ok(protocol::GuiClipboardText {
@@ -1027,7 +1033,7 @@ mod tests {
             streams: Mutex::new(0),
             refuse_stream: Mutex::new(None),
             revision: Mutex::new(0),
-            diff_delay: Mutex::new(Duration::ZERO),
+            query_delay: Mutex::new(Duration::ZERO),
         });
         let routes = Router::new()
             .route("/gui/command", post(stub_command))
@@ -1100,11 +1106,15 @@ mod tests {
                 rows: 40,
             },
             GuiCommand::VectorSource,
-            GuiCommand::DiffReview { spec: None },
-            GuiCommand::DiffFilePatch {
-                spec: None,
-                path: "src/main.rs".to_string(),
+            GuiCommand::WorkspaceDirectory,
+            GuiCommand::UpdateChatInput {
+                expected_input: String::new(),
+                expected_cursor: 0,
+                input: "draft".to_string(),
+                cursor: 5,
+                action: None,
             },
+            GuiCommand::ReadClipboard,
             GuiCommand::SelectTab { index: 3 },
         ] {
             let reply = transport
@@ -1117,7 +1127,7 @@ mod tests {
                 "{command:?}"
             );
         }
-        assert_eq!(stub.received().len(), 5);
+        assert_eq!(stub.received().len(), 6);
     }
 
     #[tokio::test]
@@ -1199,7 +1209,7 @@ mod tests {
 
         // The sweep ends with a one-way shutdown, which by definition is not
         // waited for.
-        let expected = every_command_once();
+        let expected = every_command_once(true);
         let arrived = Arc::clone(&stub);
         eventually(|| arrived.received().len() == expected.len()).await;
         assert_eq!(stub.received(), expected);
@@ -1248,17 +1258,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_repository_walk_does_not_hold_up_the_keys_typed_during_it() {
-        // The reason the ordered queue is not simply every command. A diff
-        // review walks Git objects on the session's blocking pool and can take
-        // seconds; the keys typed while a diff panel refreshes must not wait
-        // behind it. A query changes no editor state, so letting it be
-        // overtaken cannot change what anything else does.
+    async fn a_slow_query_does_not_hold_up_the_keys_typed_during_it() {
+        // The reason the ordered queue is not simply every command. A
+        // read-only query can be slow to answer, and the keys typed while it
+        // is outstanding must not wait behind it. A query changes no editor
+        // state, so letting it be overtaken cannot change what anything else
+        // does.
         let (stub, endpoint) = stub_session().await;
-        stub.hold_diffs_for(Duration::from_millis(600));
+        stub.hold_queries_for(Duration::from_millis(600));
         let transport = RemoteTransport::open(endpoint).await.unwrap();
 
-        let review = transport.send(GuiCommand::DiffReview { spec: None });
+        let review = transport.send(GuiCommand::WorkspaceDirectory);
         let typed = async {
             let started = std::time::Instant::now();
             let outcome = transport
@@ -1270,7 +1280,7 @@ mod tests {
         };
         let (review, (typed, waited)) = futures::future::join(review, typed).await;
 
-        review.expect("the review answers once its walk is done");
+        review.expect("the query answers once its hold is over");
         typed.expect("the key is answered on its own");
         assert!(
             waited < Duration::from_millis(300),

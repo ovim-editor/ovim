@@ -9,11 +9,13 @@
 //! - `ResourceOp` — filesystem snapshots for workspace LSP operations; not
 //!   repeatable via `.`.
 //!
-//! Dot-repeat goes through `RepeatAction` (see `repeat_action.rs`), not
-//! through `Change`. `last_change` and `last_repeat_action` are mutually
-//! exclusive: pushing a `Change` clears `last_repeat_action`, setting a
-//! `RepeatAction` clears `last_change`. Dot-repeat checks `RepeatAction`
-//! first and falls back to replaying the recorded edits forward.
+//! Dot-repeat goes only through `RepeatAction` (see `repeat_action.rs`):
+//! recorded edits hold absolute offsets and are never replayed by `.`.
+//! Pushing an undo entry leaves the repeat action alone. The other things
+//! vim derives from "the last change" have their own state: `'.` / `g;` the
+//! changelist (`last_edit_position`), `` `^ `` the insert-exit position, `".`
+//! the register set when an insert session ends, and visual-block
+//! replication the session's `ChangeToken`.
 //!
 //! Insert-mode sessions (`i` / `a` / `I` / `A` / `o` / `O`) open a
 //! `ChangeBuilder` to remember `entry_mode` + `cursor_before` across event
@@ -23,6 +25,7 @@
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;
+use crate::motion_range::{MotionRange, Wise};
 use crate::repeat_action::RepeatAction;
 use crate::textobjects::{TextObjectRange, TextObjects};
 use crate::unicode::{CharCol, GraphemeCol};
@@ -102,11 +105,24 @@ pub enum TextObjectType {
 }
 
 impl TextObjectType {
-    /// A change can insert inside an empty pair or quote even though there is
-    /// no text for a delete or visual selection to operate on.
+    /// A change can insert inside an empty pair or quote, or on an empty line
+    /// (`ciw`), even though there is no text for a delete or visual selection to
+    /// operate on.
     pub fn resolve_for_change(&self, buffer: &Buffer) -> Option<TextObjectRange> {
         if let Some(range) = self.resolve(buffer) {
             return Some(range);
+        }
+        let line = buffer.cursor().line();
+        if matches!(self, Self::Word { inner: true, .. })
+            && line < buffer.line_count()
+            && buffer.line_len(line) == 0
+        {
+            return Some(TextObjectRange {
+                start_line: line,
+                start_col: CharCol::ZERO,
+                end_line: line,
+                end_col: CharCol::ZERO,
+            });
         }
         let around = match self {
             Self::Paired {
@@ -123,9 +139,202 @@ impl TextObjectType {
                 end_col: around.start_col + 1,
                 ..around
             })
+        } else if matches!(self, Self::Paired { .. })
+            && around.end_line == around.start_line + 1
+            && around.end_col.0 == 1
+            && around.start_col.0 + 1 >= buffer.line_len(around.start_line)
+        {
+            // `{` at the end of a line with `}` alone at the start of the next: a
+            // change inserts at the start of the closing line.
+            Some(TextObjectRange {
+                start_line: around.end_line,
+                start_col: CharCol::ZERO,
+                end_line: around.end_line,
+                end_col: CharCol::ZERO,
+            })
         } else {
             None
         }
+    }
+
+    /// Like [`Self::resolve`] with a `[count]` (`d2aw`, `c3ip`, `d2i(`): words and
+    /// paragraphs extend over the next `count - 1` objects, bracket pairs select
+    /// the `count`-th enclosing pair. Other objects ignore the count. The cursor
+    /// is left where it was.
+    pub fn resolve_counted(&self, buffer: &mut Buffer, count: usize) -> Option<TextObjectRange> {
+        let first = self.resolve(buffer)?;
+        if count <= 1 {
+            return Some(first);
+        }
+        let saved = *buffer.cursor();
+        let range = match self {
+            Self::Word { .. } | Self::Paragraph { .. } | Self::Sentence { .. } => {
+                // Each further object starts where the previous one ended; running out
+                // of objects fails the whole command, as in vim.
+                let mut range = first;
+                let mut complete = true;
+                for _ in 1..count {
+                    let moved = Self::move_past(buffer, range);
+                    match moved.then(|| self.resolve(buffer)).flatten() {
+                        Some(next) => {
+                            range.end_line = next.end_line;
+                            range.end_col = next.end_col;
+                        }
+                        None => {
+                            complete = false;
+                            break;
+                        }
+                    }
+                }
+                complete.then_some(range)
+            }
+            Self::Paired { open, close, inner } => {
+                Self::nth_enclosing_pair(buffer, *open, *close, *inner, count)
+            }
+            _ => Some(first),
+        };
+        buffer.cursor_mut().set_position(saved.line(), saved.col());
+        range
+    }
+
+    /// `resolve_for_change` for a counted object.
+    pub fn resolve_for_change_counted(
+        &self,
+        buffer: &mut Buffer,
+        count: usize,
+    ) -> Option<TextObjectRange> {
+        if count <= 1 {
+            self.resolve_for_change(buffer)
+        } else {
+            self.resolve_counted(buffer, count)
+        }
+    }
+
+    /// The range a delete, yank or change of this object acts on and whether it acts on
+    /// whole lines. Vim applies its exclusive-motion rules (`:help exclusive`) to the
+    /// inner part of a bracket pair that ends at the start of a line: the end retreats
+    /// to the end of the previous line, and starting in the indent makes it linewise
+    /// (`di{` on a block leaves the braces on their own lines). Paragraphs are linewise.
+    pub fn resolve_for_operator(
+        &self,
+        buffer: &mut Buffer,
+        count: usize,
+        change: bool,
+    ) -> Option<(TextObjectRange, bool)> {
+        let range = if change {
+            self.resolve_for_change_counted(buffer, count)
+        } else {
+            self.resolve_counted(buffer, count)
+        }?;
+        match self {
+            Self::Paragraph { .. } => Some((range, true)),
+            // A range that ends where a line ends is exclusive at the start
+            // of the next line: `:help exclusive` then decides whether the
+            // operator takes whole lines (`dis` on a one-sentence line).
+            Self::Paired { inner: true, .. } | Self::Sentence { .. } => {
+                let mut end = (range.end_line, range.end_col);
+                if matches!(self, Self::Sentence { .. })
+                    && end.1 .0 >= buffer.line_len(end.0)
+                    && end.0 + 1 < buffer.line_count()
+                {
+                    end = (end.0 + 1, CharCol::ZERO);
+                }
+                let classified =
+                    MotionRange::from_exclusive(buffer, (range.start_line, range.start_col), end);
+                Some(match classified.wise {
+                    Wise::Linewise => (
+                        TextObjectRange {
+                            start_line: classified.start.0,
+                            start_col: CharCol::ZERO,
+                            end_line: classified.end.0 + 1,
+                            end_col: CharCol::ZERO,
+                        },
+                        true,
+                    ),
+                    Wise::Charwise => (
+                        TextObjectRange {
+                            start_line: classified.start.0,
+                            start_col: classified.start.1,
+                            end_line: classified.end.0,
+                            end_col: classified.end.1,
+                        },
+                        false,
+                    ),
+                })
+            }
+            _ => Some((range, false)),
+        }
+    }
+
+    /// The next `count` objects after `selected`, for the objects that follow
+    /// one another (words, paragraphs, sentences): what repeating the object
+    /// in Visual mode adds to the selection (`vipip`, `vawaw`). The cursor is
+    /// left where it was.
+    pub(crate) fn resolve_after(
+        &self,
+        buffer: &mut Buffer,
+        selected: TextObjectRange,
+        count: usize,
+    ) -> Option<TextObjectRange> {
+        if !matches!(
+            self,
+            Self::Word { .. } | Self::Paragraph { .. } | Self::Sentence { .. }
+        ) {
+            return None;
+        }
+        let saved = *buffer.cursor();
+        let range = Self::move_past(buffer, selected)
+            .then(|| self.resolve_counted(buffer, count))
+            .flatten();
+        buffer.cursor_mut().set_position(saved.line(), saved.col());
+        range
+    }
+
+    /// Puts the cursor on the first character after `range` (the start of the next
+    /// line when the range ends at the end of its line, or is linewise). `false` at the
+    /// buffer end.
+    fn move_past(buffer: &mut Buffer, range: TextObjectRange) -> bool {
+        let line_len = buffer.line_len(range.end_line);
+        if range.end_col.0 == 0 && range.end_line > range.start_line {
+            // Exclusive end at the start of a line: that line is the next object's.
+            buffer.set_cursor_char_col(range.end_line, crate::unicode::CharCol::ZERO);
+            true
+        } else if range.end_col.0 < line_len {
+            buffer.set_cursor_char_col(range.end_line, range.end_col);
+            true
+        } else if range.end_line + 1 < buffer.line_count() {
+            buffer.set_cursor_char_col(range.end_line + 1, crate::unicode::CharCol::ZERO);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The `count`-th pair of `open`/`close` around the cursor, counting outward.
+    fn nth_enclosing_pair(
+        buffer: &mut Buffer,
+        open: char,
+        close: char,
+        inner: bool,
+        count: usize,
+    ) -> Option<TextObjectRange> {
+        let mut around = TextObjects::paired_delimiters(buffer, open, close, true)?;
+        for _ in 1..count {
+            // Look for the next pair from just before this one's opening delimiter.
+            let rope = buffer.rope();
+            let open_offset = rope.line_to_char(around.start_line) + around.start_col.0;
+            let before = open_offset.checked_sub(1)?;
+            let line = rope.char_to_line(before);
+            let col = before - rope.line_to_char(line);
+            buffer.set_cursor_char_col(line, crate::unicode::CharCol(col));
+            around = TextObjects::paired_delimiters_around(buffer, open, close, true, false)?;
+        }
+        if !inner {
+            return Some(around);
+        }
+        // The inner text of that pair: resolve from its opening delimiter.
+        buffer.set_cursor_char_col(around.start_line, around.start_col);
+        TextObjects::paired_delimiters(buffer, open, close, false)
     }
 
     /// Resolve this text object to a range at the current cursor position.
@@ -410,35 +619,6 @@ impl Change {
         }
     }
 
-    /// Repeats this change at the current cursor position
-    pub fn repeat(&mut self, buffer: &mut Buffer) {
-        match self {
-            Self::Recorded {
-                edits,
-                cursor_after,
-                ..
-            } => {
-                // Re-execute by applying edits forward.
-                //
-                // NB: `edits` store absolute char offsets, so replay lands at
-                // the original position — not re-anchored to the current
-                // cursor. Callers that need cursor re-anchoring (e.g., the
-                // Normal-mode bracketed paste, normal-mode operators) set a
-                // `RepeatAction` instead; `repeat_last_change` routes through
-                // that path first and only falls back here for fallthrough.
-                for edit in edits.iter() {
-                    edit.apply(buffer);
-                }
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_after.line, cursor_after.col);
-            }
-            Self::ResourceOp { .. } => {
-                // Intentionally non-repeatable via `.`.
-            }
-        }
-    }
-
     pub(crate) fn snapshot_file(path: &Path) -> Option<Vec<u8>> {
         if !path.exists() || path.is_dir() {
             return None;
@@ -512,23 +692,6 @@ impl Change {
         }
     }
 
-    /// Gets the cursor position after this change — the stored grapheme-space
-    /// cursor snapshot captured when the change was recorded.
-    pub fn cursor_after(&self) -> CursorPos {
-        match self {
-            Self::Recorded { cursor_after, .. } => *cursor_after,
-            Self::ResourceOp { cursor_after, .. } => *cursor_after,
-        }
-    }
-
-    /// Sets cursor_before on this change (used by repeat to record undo position).
-    pub fn set_cursor_before(&mut self, pos: CursorPos) {
-        match self {
-            Self::Recorded { cursor_before, .. } => *cursor_before = pos,
-            Self::ResourceOp { cursor_before, .. } => *cursor_before = pos,
-        }
-    }
-
     /// Consumes this change and returns its edit list when it is a
     /// `Recorded`, or `None` otherwise. Used by flows that need to merge a
     /// popped insert-session change's edits into a new Recorded (e.g.,
@@ -537,14 +700,6 @@ impl Change {
         match self {
             Self::Recorded { edits, .. } => Some(edits),
             _ => None,
-        }
-    }
-
-    /// Sets cursor_after on this change (used by repeat to record redo position).
-    pub fn set_cursor_after(&mut self, pos: CursorPos) {
-        match self {
-            Self::Recorded { cursor_after, .. } => *cursor_after = pos,
-            Self::ResourceOp { cursor_after, .. } => *cursor_after = pos,
         }
     }
 }
@@ -617,7 +772,7 @@ impl UndoOutcome {
     }
 }
 
-/// Token returned by `push_change_returning_token` / `push_recorded_undo`.
+/// Token returned by `push_change` / `push_recorded_undo`.
 /// Stores the pushed entry's sequence number so `pop_by_token` can verify
 /// that the exact expected change is still at the top of the stack. A raw
 /// stack index is NOT sufficient identity: after an undo plus a new edit,
@@ -643,7 +798,6 @@ pub struct ChangeManager {
     pub undo_stack: Vec<UndoEntry>,
     pub redo_stack: Vec<UndoEntry>,
     pub current_builder: Option<ChangeBuilder>,
-    pub last_change: Option<Change>,
     /// Sequence number of the undo-stack top when the buffer was last
     /// saved (0 = the empty stack). None if the saved state is not
     /// identifiable with any stack state (never saved, or an untracked
@@ -658,10 +812,13 @@ pub struct ChangeManager {
     pub change_list: Vec<CursorPos>,
     /// Current index in changelist (None when empty)
     pub change_list_index: Option<usize>,
-    /// Semantic repeat action for dot-repeat (mutually exclusive with last_change)
+    /// Semantic repeat action for dot-repeat
     pub last_repeat_action: Option<RepeatAction>,
     /// Explicit register used by the last delete/change/paste command.
     pub last_repeat_register: Option<char>,
+    /// Bumped whenever a command (re)defines the dot-repeat, so the input
+    /// dispatcher can tell "recorded the same action again" from "recorded none".
+    repeat_generation: u64,
 }
 
 impl Default for ChangeManager {
@@ -676,7 +833,6 @@ impl ChangeManager {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             current_builder: None,
-            last_change: None,
             save_point: Some(0), // Start at save point (empty stack, seq 0)
             next_seq: 1,
             last_edit_position: None,
@@ -684,6 +840,32 @@ impl ChangeManager {
             change_list_index: None,
             last_repeat_action: None,
             last_repeat_register: None,
+            repeat_generation: 0,
+        }
+    }
+
+    /// Defines what `.` repeats (`None` when the last change cannot be repeated).
+    pub fn set_repeat_action(&mut self, action: Option<RepeatAction>) {
+        self.last_repeat_action = action;
+        self.repeat_generation += 1;
+    }
+
+    /// Notes that `.` just ran its action again, without redefining it.
+    pub fn note_repeat_ran(&mut self) {
+        self.repeat_generation += 1;
+    }
+
+    /// Snapshot for [`Self::forget_unrecorded_change`]: how many undo entries
+    /// were ever pushed and how often the dot-repeat was (re)defined.
+    pub fn repeat_checkpoint(&self) -> (u64, u64) {
+        (self.next_seq, self.repeat_generation)
+    }
+
+    /// A command that edited the text since `checkpoint` without defining a
+    /// dot-repeat must not leave an older command behind for `.` to replay.
+    pub fn forget_unrecorded_change(&mut self, checkpoint: (u64, u64)) {
+        if self.next_seq != checkpoint.0 && self.repeat_generation == checkpoint.1 {
+            self.last_repeat_action = None;
         }
     }
 
@@ -699,38 +881,39 @@ impl ChangeManager {
         }
     }
 
-    /// Adds a change to the undo stack when no insert session is active.
-    ///
-    /// During an active insert session the buffer's recording captures the
-    /// edits and `finalize_change_building` pushes a single
-    /// `Change::Recorded` covering the whole session — so this method is a
-    /// no-op while building. Direct (non-session) callers still land their
-    /// change on the undo stack as `last_change`.
-    pub fn add_change(&mut self, change: Change) {
-        if self.current_builder.is_some() {
-            return;
-        }
-        self.push_change(change);
-    }
-
-    /// Pushes a change to the undo stack
-    pub fn push_change(&mut self, change: Change) {
-        self.push_change_with_token(change);
-    }
-
-    /// Pushes an undo entry while preserving current dot-repeat templates.
-    ///
-    /// This is for non-repeat operations (LSP edits, replayed recorded undo, resource ops)
-    /// that must be undoable without becoming the new `.` target.
+    /// Pushes an undo entry and notes its position in the changelist. The
+    /// dot-repeat action is left alone: commands that repeat set it.
     ///
     /// Returns a token identifying the pushed entry (see `pop_by_token`).
-    pub fn push_undo_change_preserving_repeat(&mut self, change: Change) -> ChangeToken {
+    pub fn push_change(&mut self, change: Change) -> ChangeToken {
         self.note_edit_position(change.edit_position());
         let seq = self.next_seq;
         self.next_seq += 1;
         self.undo_stack.push(UndoEntry { change, seq });
         self.redo_stack.clear();
         ChangeToken(seq)
+    }
+
+    /// Make every change pushed after the stack top was `since` (see
+    /// [`Self::undo_mark`]) one undo step, like vim does for `:normal` over
+    /// a range or `:g`. Filesystem `ResourceOp` entries stay separate.
+    pub fn group_since(&mut self, since: u64) {
+        // Distinct from the small ids agent turns use, and from any other
+        // group: sequence numbers are never reused.
+        let group = u64::MAX - since;
+        for entry in self.undo_stack.iter_mut().rev() {
+            if entry.seq <= since {
+                break;
+            }
+            if let Change::Recorded { undo_group_id, .. } = &mut entry.change {
+                *undo_group_id = Some(group);
+            }
+        }
+    }
+
+    /// The current undo position, for [`Self::group_since`].
+    pub fn undo_mark(&self) -> u64 {
+        self.top_seq()
     }
 
     /// Sequence number of the current undo-stack top (0 = empty stack).
@@ -884,29 +1067,6 @@ impl ChangeManager {
         self.save_point = None;
     }
 
-    /// Gets a reference to the last change
-    pub fn last_change(&self) -> Option<&Change> {
-        self.last_change.as_ref()
-    }
-
-    /// Pops the last change from the undo stack (without applying undo)
-    /// Used when replacing a change with a composite version
-    pub fn pop_last_change(&mut self) -> Option<Change> {
-        self.undo_stack.pop().map(|entry| entry.change)
-    }
-
-    /// Pushes a change and returns a token that can be used with `pop_by_token`.
-    pub fn push_change_returning_token(&mut self, change: Change) -> ChangeToken {
-        self.push_change_with_token(change)
-    }
-
-    fn push_change_with_token(&mut self, change: Change) -> ChangeToken {
-        let token = self.push_undo_change_preserving_repeat(change.clone());
-        self.last_change = Some(change);
-        self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
-        token
-    }
-
     /// Pops a change only if the token identifies the current stack top.
     /// Returns None if the token is stale (the expected change wasn't
     /// there). Matches on the entry's sequence number, not its index —
@@ -997,7 +1157,7 @@ mod save_point_tests {
         let mut buf = Buffer::new_from_str("");
         let mut cm = std::mem::take(buf.change_manager_mut());
 
-        let token = cm.push_change_returning_token(insert_change(0, "a"));
+        let token = cm.push_change(insert_change(0, "a"));
         assert!(cm.undo(&mut buf).is_done()); // token's change rotated to redo
         cm.push_change(insert_change(0, "b")); // same index, different change
 
@@ -1012,7 +1172,7 @@ mod save_point_tests {
     #[test]
     fn pop_by_token_pops_matching_top() {
         let mut cm = ChangeManager::new();
-        let token = cm.push_change_returning_token(insert_change(0, "a"));
+        let token = cm.push_change(insert_change(0, "a"));
         assert!(cm.pop_by_token(token).is_some());
         assert!(cm.undo_stack.is_empty());
     }

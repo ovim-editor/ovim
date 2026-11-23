@@ -12,6 +12,8 @@ pub(super) const KEY_BRIDGE_SCRIPT: &str = concat!(
 #[serde(rename_all = "snake_case")]
 pub(super) enum GuiBrowserKeyIntent {
     Command,
+    NextWorkbenchTab,
+    PreviousWorkbenchTab,
     NewTab,
     RestoreTab,
     CloseTab,
@@ -76,6 +78,8 @@ pub(super) fn browser_key_request(url: &Url, token: &str) -> Option<BrowserKeyRe
         return None;
     }
     let intent = match segments.next()? {
+        "next_workbench_tab" => GuiBrowserKeyIntent::NextWorkbenchTab,
+        "previous_workbench_tab" => GuiBrowserKeyIntent::PreviousWorkbenchTab,
         "command" => GuiBrowserKeyIntent::Command,
         "new_tab" => GuiBrowserKeyIntent::NewTab,
         "restore_tab" => GuiBrowserKeyIntent::RestoreTab,

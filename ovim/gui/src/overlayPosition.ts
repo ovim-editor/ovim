@@ -8,6 +8,12 @@ export type AnchoredOverlay = {
 export const anchoredOverlayPosition = (options: {
     anchorX: number;
     anchorY: number;
+    /**
+     * Where the overlay's bottom edge goes when it flips above the anchor.
+     * Defaults to anchorY; pass the top of the anchor line so a flipped popup
+     * does not cover the cursor line it describes.
+     */
+    aboveY?: number;
     containerWidth: number;
     containerHeight: number;
     preferredWidth: number;
@@ -34,7 +40,7 @@ export const anchoredOverlayPosition = (options: {
     );
     const left = Math.min(Math.max(padding, options.anchorX), maximumLeft);
     const below = options.anchorY + gap;
-    const above = options.anchorY - height - gap;
+    const above = (options.aboveY ?? options.anchorY) - height - gap;
     const top =
         below + height <= options.containerHeight - padding || above < padding
             ? Math.min(

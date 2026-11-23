@@ -41,60 +41,73 @@ fn typing_then_completion_then_typing_then_undo_corrupts_buffer() {
         "fo".to_string(),
     );
 
-    // accept_completion pauses the insert-mode recording session, applies
-    // its own record() block as a separate Recorded entry, then resumes
-    // the paused session — whose retained [Insert{8,"f"}, Insert{9,"o"}]
-    // now reference offsets that no longer match the rope.
+    // The completion joins the insert session: its edits are recorded in
+    // order with the typed ones, so every offset still matches the rope at
+    // the moment it is undone or redone.
     t.editor.accept_completion();
     assert_eq!(
         t.editor.buffer().line_text(0).unwrap(),
         "let x = fooBarBazExtended"
     );
 
-    // Type one more character — recorded with the *current* offset, into
-    // the same resumed session that still carries the stale pre-completion
-    // edits.
+    // Type one more character into the same session.
     t.type_text("Y");
     assert_eq!(
         t.editor.buffer().line_text(0).unwrap(),
         "let x = fooBarBazExtendedY"
     );
-
-    // Exit insert mode — finalize_change_building combines the stale
-    // pre-completion edits with the fresh post-completion edit into a
-    // single Recorded entry.
     t.keys("<Esc>");
 
-    // First undo should roll the insert-mode session back to the
-    // post-completion state ("let x = fooBarBazExtended"). The LSP
-    // completion was pushed as a separate Recorded entry, so it should
-    // still be visible after one undo.
+    // Typing, completing and typing on are ONE insert: one undo removes all
+    // of it (vim: `ofoo<C-n> baz<Esc>` then `u` removes the whole line).
     t.keys("u");
     assert_eq!(
         t.editor.buffer().line_text(0).unwrap(),
-        "let x = fooBarBazExtended",
-        "after one undo: insert session should roll back to post-completion state"
+        "let x = ",
+        "one undo takes the whole insert back, without corrupting the rope"
     );
 
-    // Second undo should roll back the LSP completion to "let x = fo".
-    t.keys("u");
-    assert_eq!(
-        t.editor.buffer().line_text(0).unwrap(),
-        "let x = fo",
-        "after second undo: LSP completion should roll back"
-    );
-
-    // Redo twice should round-trip back to the final state.
-    t.keys("<C-r>");
-    assert_eq!(
-        t.editor.buffer().line_text(0).unwrap(),
-        "let x = fooBarBazExtended",
-        "after first redo: completion reapplied"
-    );
+    // Redo round-trips back to the final state.
     t.keys("<C-r>");
     assert_eq!(
         t.editor.buffer().line_text(0).unwrap(),
         "let x = fooBarBazExtendedY",
-        "after second redo: session reapplied"
+        "redo reapplies the whole insert"
+    );
+
+    // And undo/redo can be repeated without drift.
+    t.keys("u");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "let x = ");
+    t.keys("<C-r>");
+    assert_eq!(
+        t.editor.buffer().line_text(0).unwrap(),
+        "let x = fooBarBazExtendedY"
+    );
+}
+
+/// `.` repeats the insert with the completed text, as vim does.
+/// Reference: `nvim --clean`: `ofoo<C-n> baz<Esc>` over a buffer holding
+/// `foobar`, then `.`, gives a second `foobar baz` line.
+#[test]
+fn dot_repeats_an_insert_that_used_a_completion() {
+    let mut t = EditorTest::new("let x = \nlet y = ");
+    t.keys("A");
+    t.type_text("fo");
+    let trigger_col = "let x = ".chars().count();
+    t.editor.completion_menu_mut().show(
+        vec![completion_item("fooBar")],
+        trigger_col,
+        "fo".to_string(),
+    );
+    t.editor.accept_completion();
+    t.type_text("!");
+    t.keys("<Esc>");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "let x = fooBar!");
+
+    t.keys("j.");
+    assert_eq!(
+        t.editor.buffer().line_text(1).unwrap(),
+        "let y = fooBar!",
+        "the repeat types the completed word, not just what was typed after it"
     );
 }

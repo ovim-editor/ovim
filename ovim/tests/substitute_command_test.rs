@@ -62,7 +62,7 @@ fn global_substitute_converts_backrefs() {
     // Use :g with substitute that has a capture group. Vim capture refs in the
     // replacement are `\1`/`\2` (a literal `$` is literal text, e.g. dollar
     // amounts), so use the Vim spelling here.
-    test.command(":g/[0-9]/s/([a-z]+)([0-9]+)/\\2\\1/");
+    test.command(":g/[0-9]/s/\\([a-z]\\+\\)\\([0-9]\\+\\)/\\2\\1/");
     assert_eq!(test.buffer_content(), "123foo\n456bar\n789baz\n");
 }
 
@@ -92,4 +92,221 @@ fn substitute_case_insensitive() {
     let mut test = EditorTest::new("Hello HELLO hello");
     test.command(":%s/hello/hi/gi");
     assert_eq!(test.buffer_content(), "hi hi hi\n");
+}
+
+// nvim --clean: `:%s/[0-9]//gn` on "a1b2", "c3", "d" reports
+// "3 matches on 2 lines" and leaves the buffer, cursor and modified flag alone.
+#[test]
+fn n_flag_counts_matches_without_editing() {
+    let mut test = EditorTest::new("a1b2\nc3\nd\n");
+    test.command("%s/[0-9]//gn");
+    assert_eq!(test.buffer_content(), "a1b2\nc3\nd\n");
+    assert_eq!(test.editor.status_message(), "3 matches on 2 lines");
+    assert!(!test.editor.is_modified());
+    test.assert_cursor(0, 0);
+}
+
+// nvim --clean: without `g` only the first match of each line counts
+// ("2 matches on 2 lines"), a single match reads "1 match on 1 line", and the
+// cursor stays where it was.
+#[test]
+fn n_flag_counts_one_match_per_line_without_g() {
+    let mut test = EditorTest::new("a1b2\nc3\nd\n");
+    test.keys("j");
+    test.command("%s/[0-9]//n");
+    assert_eq!(test.editor.status_message(), "2 matches on 2 lines");
+    test.assert_cursor(1, 0);
+    test.command("%s/1//n");
+    assert_eq!(test.editor.status_message(), "1 match on 1 line");
+    assert_eq!(test.buffer_content(), "a1b2\nc3\nd\n");
+}
+
+// nvim --clean: `:%s/z//n` is "E486: Pattern not found: z"; with the `e`
+// flag it is silent. `n` ignores `c` (no prompt) and works in a
+// nomodifiable buffer.
+#[test]
+fn n_flag_reports_e486_unless_e_and_ignores_confirm_and_modifiable() {
+    let mut test = EditorTest::new("a1b2\nc3\nd\n");
+    test.command("%s/z//n");
+    assert_eq!(test.editor.status_message(), "E486: Pattern not found: z");
+    test.command("%s/z//ne");
+    assert_eq!(test.buffer_content(), "a1b2\nc3\nd\n");
+    test.command("set nomodifiable");
+    test.command("%s/1//ngc");
+    assert_eq!(test.editor.status_message(), "1 match on 1 line");
+    test.assert_mode(ovim::mode::Mode::Normal);
+}
+
+// nvim --clean: `:%s/,/ | /g` on "a,b,c" gives "a | b | c": a bar inside the
+// replacement is text, not a command separator.
+#[test]
+fn bar_in_the_replacement_is_literal() {
+    let mut test = EditorTest::new("a,b,c\n");
+    test.command("%s/,/ | /g");
+    assert_eq!(test.buffer_content(), "a | b | c\n");
+}
+
+// nvim --clean: an unterminated replacement owns the rest of the line:
+// `:s/a/X|Y` turns "ab" into "X|Yb".
+#[test]
+fn unterminated_replacement_owns_the_rest_of_the_line() {
+    let mut test = EditorTest::new("ab\n");
+    test.command("s/a/X|Y");
+    assert_eq!(test.buffer_content(), "X|Yb\n");
+}
+
+// nvim --clean: a bar after the closing delimiter still chains commands:
+// `:s/a/X/ | s/b/Z/` gives "XZ".
+#[test]
+fn bar_after_the_closing_delimiter_chains_commands() {
+    let mut test = EditorTest::new("ab\n");
+    test.command("s/a/X/ | s/b/Z/");
+    assert_eq!(test.buffer_content(), "XZ\n");
+    let mut test = EditorTest::new("a b\n");
+    test.command("s/a/X/g|s/b/Y/");
+    assert_eq!(test.buffer_content(), "X Y\n");
+}
+
+// nvim --clean: inside `:g/b/`, an empty `:s` pattern is the :g pattern, so
+// `:g/b/s//X/` on "abc", "b", "zzz" gives "aXc", "X", "zzz" (not E35).
+#[test]
+fn global_sets_the_pattern_an_empty_substitute_pattern_reuses() {
+    let mut test = EditorTest::new("abc\nb\nzzz\n");
+    test.command("g/b/s//X/");
+    assert_eq!(test.buffer_content(), "aXc\nX\nzzz\n");
+}
+
+// nvim --clean: after `/zzz`, `:2s/b/B/` makes `b` the last search pattern, so
+// `n` from line 2 lands on the next `b` (line 3) instead of searching `zzz`.
+#[test]
+fn substitute_becomes_the_pattern_of_n() {
+    let mut test = EditorTest::new("x\nab\nb\nzzz\nb\n");
+    test.keys("/zzz<CR>gg");
+    test.command("2s/b/B/");
+    test.keys("n");
+    test.assert_cursor(2, 0);
+}
+
+// nvim --clean: `:g/b/y` makes `b` the last search pattern: from the top,
+// `n` goes to the first line with a `b`.
+#[test]
+fn global_becomes_the_pattern_of_n() {
+    let mut test = EditorTest::new("x\nb1\nzzz\nb2\n");
+    test.keys("/zzz<CR>gg");
+    test.command("g/b/y");
+    test.keys("n");
+    test.assert_cursor(1, 0);
+}
+
+// nvim --clean: `:g/b/s/a/X/` on "ab", "b", "b" changes one line, and the
+// message counts that line, not the three that matched `b`.
+#[test]
+fn global_substitute_reports_the_lines_it_changed() {
+    let mut test = EditorTest::new("ab\nb\nb\n");
+    test.command("g/b/s/a/X/");
+    assert_eq!(test.buffer_content(), "Xb\nb\nb\n");
+    assert_eq!(test.editor.status_message(), "Substituted on 1 line(s)");
+}
+
+// nvim --clean: with 'ignorecase', `:%s/foo/bar/g` on "Foo foo" and "FOO"
+// replaces all three; with 'smartcase' too, `:%s/Foo/bar/g` is exact and only
+// the first word changes.
+#[test]
+fn substitute_honours_ignorecase_and_smartcase() {
+    let mut test = EditorTest::new("Foo foo\nFOO\n");
+    test.command("set ic");
+    test.command("%s/foo/bar/g");
+    assert_eq!(test.buffer_content(), "bar bar\nbar\n");
+
+    let mut test = EditorTest::new("Foo foo\nFOO\n");
+    test.command("set ic scs");
+    test.command("%s/Foo/bar/g");
+    assert_eq!(test.buffer_content(), "bar foo\nFOO\n");
+}
+
+// nvim --clean: the `i` flag matches case-insensitively without 'ignorecase',
+// and `I` matches exactly with it.
+#[test]
+fn substitute_flags_override_ignorecase() {
+    let mut test = EditorTest::new("Foo foo\n");
+    test.command("s/foo/bar/i");
+    assert_eq!(test.buffer_content(), "bar foo\n");
+
+    let mut test = EditorTest::new("Foo foo\n");
+    test.command("set ic");
+    test.command("s/foo/bar/I");
+    assert_eq!(test.buffer_content(), "Foo bar\n");
+}
+
+// nvim --clean: `\c` makes the pattern ignore case and `\C` match it exactly,
+// whatever 'ignorecase' says: `:s/foo\c/bar/` turns "FOO" into "bar", and
+// with 'ignorecase' `:s/foo\C/bar/` leaves "Foo" alone (E486).
+#[test]
+fn case_escapes_in_the_substitute_pattern() {
+    let mut test = EditorTest::new("FOO\n");
+    test.command("s/foo\\c/bar/");
+    assert_eq!(test.buffer_content(), "bar\n");
+
+    let mut test = EditorTest::new("Foo\n");
+    test.command("set ic");
+    test.command("s/foo\\C/bar/");
+    assert_eq!(test.buffer_content(), "Foo\n");
+    assert_eq!(
+        test.editor.status_message(),
+        "E486: Pattern not found: foo\\C"
+    );
+}
+
+// nvim --clean: `\&` is a literal ampersand (`:s/a/\&x/` turns "abc" into
+// "&xbc"), `\\` one backslash, and a backslash before any other character is
+// dropped (`\z` gives "z", `\|` a bar).
+#[test]
+fn escaped_replacement_characters_are_literal() {
+    for (command, expected) in [
+        ("s/a/\\&x/", "&xbc\n"),
+        ("s/a/[&]/", "[a]bc\n"),
+        ("s/b/\\\\/", "a\\c\n"),
+        ("s/b/\\z/", "azc\n"),
+        ("s/b/\\|/", "a|c\n"),
+    ] {
+        let mut test = EditorTest::new("abc");
+        test.command(command);
+        assert_eq!(test.buffer_content(), expected, "{command}");
+    }
+}
+
+// nvim --clean: `\u` capitalizes the next character, `\U` ... `\E` shouts,
+// `\L` and `\l` lower; `\L\u&` capitalizes a lower-cased match.
+#[test]
+fn case_changing_replacement_tokens() {
+    for (text, command, expected) in [
+        ("hello world", "s/\\w\\+/\\u&/g", "Hello World\n"),
+        ("hello world", "s/\\w\\+/\\U&/g", "HELLO WORLD\n"),
+        ("HELLO WORLD", "s/\\w\\+/\\L&/", "hello WORLD\n"),
+        ("HELLO WORLD", "s/\\w\\+/\\l&/g", "hELLO wORLD\n"),
+        ("HELLO WORLD", "s/\\w\\+/\\L\\u&/g", "Hello World\n"),
+        ("hello", "s/hello/\\Ufoo\\ebar/", "FOObar\n"),
+        ("abc ab", "s/ab/\\U&x\\Ey/g", "ABXyc ABXy\n"),
+    ] {
+        let mut test = EditorTest::new(text);
+        test.command(command);
+        assert_eq!(test.buffer_content(), expected, "{command}");
+    }
+}
+
+// nvim --clean: `\U\1\E \2` upper-cases group one only.
+#[test]
+fn case_changing_tokens_apply_to_groups() {
+    let mut test = EditorTest::new("hello world");
+    test.command("s/\\(\\w\\+\\) \\(\\w\\+\\)/\\U\\1\\E \\2/");
+    assert_eq!(test.buffer_content(), "HELLO world\n");
+}
+
+// The tokens also apply to each confirmed match of `:s///c`.
+#[test]
+fn case_changing_tokens_apply_when_confirming() {
+    let mut test = EditorTest::new("ab ab");
+    test.command("s/a/\\U&x/gc");
+    test.keys("a");
+    assert_eq!(test.buffer_content(), "AXb AXb\n");
 }

@@ -354,6 +354,15 @@ async fn run_prompt_step(
     let mut content = String::new();
     while let Some(chunk) = rx.recv().await {
         match chunk {
+            crate::ai::StreamChunk::ExternalEditorRequest { .. }
+            | crate::ai::StreamChunk::ExternalEditorCancelled(_)
+            | crate::ai::StreamChunk::ExternalToolStart(_)
+            | crate::ai::StreamChunk::ExternalToolResult { .. }
+            | crate::ai::StreamChunk::ExternalPermission { .. }
+            | crate::ai::StreamChunk::ExternalSession(_)
+            | crate::ai::StreamChunk::ExternalPermissionCancelled => {
+                anyhow::bail!("External agent events cannot enter Ovim's workflow inference loop");
+            }
             crate::ai::StreamChunk::Content(delta) => content.push_str(&delta),
             crate::ai::StreamChunk::Done => break,
             crate::ai::StreamChunk::Error(err) => {

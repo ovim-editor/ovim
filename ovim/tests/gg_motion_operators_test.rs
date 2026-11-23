@@ -349,3 +349,19 @@ fn test_d2G_with_count() {
 
     assert_eq!(test.buffer_content(), "line 3\nline 4\n");
 }
+
+// nvim --clean: "foo bar baz" cursor on 'b', `dgw` / `dgu` / `dgK` cancel the
+// whole command (gw and gu are operators, K no motion); a following `x`
+// deletes the 'b' as usual.
+#[test]
+fn operator_then_g_non_motion_cancels_the_command() {
+    for keys in ["dgw", "dgu", "dgK", "ygx", "dg<Esc>"] {
+        let mut test = EditorTest::new("foo bar baz");
+        test.set_cursor(0, 4);
+        test.keys(keys);
+        assert_eq!(test.buffer_content(), "foo bar baz\n", "{keys}");
+        assert!(test.editor.input_state().is_normal(), "{keys}");
+        test.keys("x");
+        assert_eq!(test.buffer_content(), "foo ar baz\n", "{keys} then x");
+    }
+}

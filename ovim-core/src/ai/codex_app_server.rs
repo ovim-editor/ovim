@@ -1293,7 +1293,7 @@ mod tests {
         AiProfileConfig {
             name: "codex_test".into(),
             provider: AiProviderKind::CodexAppServer,
-            model: "gpt-5.6-luna".into(),
+            model: "gpt-6-luna".into(),
             base_url: None,
             api_key: None,
             api_key_env: None,
@@ -1445,7 +1445,7 @@ mod tests {
         let cwd = Path::new("/tmp/project");
         let params = thread_resume_params(&profile(), cwd, "thread-7");
         assert_eq!(params["threadId"], "thread-7");
-        assert_eq!(params["model"], "gpt-5.6-luna");
+        assert_eq!(params["model"], "gpt-6-luna");
         assert_eq!(params["approvalPolicy"], "never");
         assert_eq!(params["sandbox"], "read-only");
         assert!(params.get("developerInstructions").is_none());

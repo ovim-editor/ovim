@@ -3,7 +3,9 @@
 use ovim_core::browser::{BrowserError, BrowserErrorKind};
 use std::sync::{Arc, Mutex, Weak};
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
-use tauri::{Emitter, EventTarget, LogicalPosition, LogicalSize, Url, Webview, WebviewUrl};
+use tauri::{
+    Emitter, EventTarget, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewUrl,
+};
 
 use super::bridge::{
     browser_key_request, key_bridge_control_script, key_bridge_find_script, key_bridge_script,
@@ -76,6 +78,19 @@ impl BrowserHost {
                             GuiBrowserKeyMode::Normal,
                         ),
                         _ => {
+                            // DOM focus inside main cannot take native keyboard
+                            // focus away from the child browser webview.
+                            if matches!(
+                                request.intent,
+                                GuiBrowserKeyIntent::Command
+                                    | GuiBrowserKeyIntent::FocusAddress
+                                    | GuiBrowserKeyIntent::NextWorkbenchTab
+                                    | GuiBrowserKeyIntent::PreviousWorkbenchTab
+                            ) {
+                                if let Some(main) = command_parent.get_webview("main") {
+                                    let _ = main.set_focus();
+                                }
+                            }
                             let _ = command_parent.emit_to(
                                 EventTarget::webview("main"),
                                 "ovim://browser-key",

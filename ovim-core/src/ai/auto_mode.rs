@@ -332,7 +332,8 @@ pub fn analyze_shell_proposal(
 
     let all_commands_known_safe = !commands.is_empty()
         && commands.iter().all(|command| read_only_allowlist(command))
-        && safe_multi_tool_invocations(&words, &commands);
+        && safe_multi_tool_invocations(&words, &commands)
+        && safe_read_only_arguments(proposal, &commands);
     if !all_commands_known_safe && !commands.is_empty() && !destructive && !deploy && !network {
         signals.insert(RiskSignal::UnknownCommand);
     }
@@ -505,7 +506,7 @@ fn extract_command_words(command: &str) -> Vec<String> {
             in_for_values = false;
             continue;
         }
-        if matches!(token.as_str(), "|" | "||" | "&&" | ";" | "\n") {
+        if matches!(token.as_str(), "|" | "||" | "&" | "&&" | ";" | "\n") {
             expect_command = true;
             in_for_values = false;
             continue;
@@ -518,31 +519,32 @@ fn extract_command_words(command: &str) -> Vec<String> {
             skip_redirection_target = false;
             continue;
         }
-        let normalized = command_basename(&token);
-        if normalized.is_empty() || token.contains('=') && !token.starts_with('=') {
+        if token.is_empty() || is_environment_assignment(&token) {
             continue;
         }
-        if normalized == "for" {
+        if token == "for" {
             in_for_values = true;
             expect_command = false;
             continue;
         }
-        if in_for_values || matches!(normalized.as_str(), "do" | "then" | "else") {
-            if matches!(normalized.as_str(), "do" | "then" | "else") {
+        if in_for_values || matches!(token.as_str(), "do" | "then" | "else") {
+            if matches!(token.as_str(), "do" | "then" | "else") {
                 expect_command = true;
                 in_for_values = false;
             }
             continue;
         }
-        if matches!(normalized.as_str(), "if" | "while" | "until" | "!") {
+        if matches!(token.as_str(), "if" | "while" | "until" | "!") {
             expect_command = true;
             continue;
         }
-        if matches!(normalized.as_str(), "fi" | "done" | ")" | "`") {
+        if matches!(token.as_str(), "fi" | "done" | ")" | "`") {
             continue;
         }
         if expect_command {
-            commands.push(normalized);
+            // Only literal PATH lookups can inherit the local allowlist.
+            // `/tmp/ls`, `./ls`, and `$PROGRAM` can execute arbitrary code.
+            commands.push(token);
             expect_command = false;
         }
     }
@@ -661,7 +663,7 @@ pub(crate) fn shell_tokens(command: &str) -> Vec<String> {
             index += 2;
             continue;
         }
-        if matches!(character, '|' | ';' | '>' | '<' | '(' | ')' | '`') {
+        if matches!(character, '|' | '&' | ';' | '>' | '<' | '(' | ')' | '`') {
             push_word(&mut tokens, &mut word);
             tokens.push(character.to_string());
             index += 1;
@@ -688,15 +690,6 @@ fn lexical_words(command: &str) -> Vec<String> {
         .collect()
 }
 
-fn command_basename(token: &str) -> String {
-    token
-        .rsplit('/')
-        .next()
-        .unwrap_or(token)
-        .trim_start_matches('$')
-        .to_ascii_lowercase()
-}
-
 fn read_only_allowlist(command: &str) -> bool {
     matches!(
         command,
@@ -717,6 +710,59 @@ fn read_only_allowlist(command: &str) -> bool {
             | "uniq"
             | "wc"
     )
+}
+
+/// The executable name alone does not establish a read-only invocation.
+/// Environment overrides can replace PATH or inject code; several inspection
+/// tools also expose explicit program-execution and output-file options.
+/// Ambiguous forms go through the normal objective-based classifier.
+fn safe_read_only_arguments(proposal: &ShellProposal, commands: &[String]) -> bool {
+    let tokens = shell_tokens(&proposal.command);
+    if tokens.iter().any(|token| is_environment_assignment(token)) {
+        return false;
+    }
+    // Only literal project paths qualify for the local shortcut. Expansion
+    // can point elsewhere or synthesize effectful options, so it needs the
+    // same classifier review as an explicit outside-project operand.
+    let root = super::path_policy::canonicalize_or_normalize(&proposal.project_root);
+    if tokens.iter().any(|token| {
+        let operand = token
+            .split_once('=')
+            .map_or(token.as_str(), |(_, value)| value);
+        if operand.contains(['$', '`']) || operand.starts_with('~') {
+            return true;
+        }
+        let path = super::path_policy::canonicalize_or_normalize(&proposal.cwd.join(operand));
+        !path.starts_with(&root) || super::path_policy::is_sensitive_path(&path)
+    }) {
+        return false;
+    }
+    let has = |name: &str| commands.iter().any(|command| command == name);
+    !tokens.iter().any(|token| {
+        let short_flags = token
+            .strip_prefix('-')
+            .filter(|flags| !flags.starts_with('-'));
+        (has("rg") && (token == "--pre" || token.starts_with("--pre=")))
+            || (has("fd")
+                && (short_flags.is_some_and(|flags| flags.contains(['x', 'X']))
+                    || matches!(token.as_str(), "--exec" | "--exec-batch")
+                    || token.starts_with("--exec=")
+                    || token.starts_with("--exec-batch=")))
+            || (has("sort")
+                && (short_flags.is_some_and(|flags| flags.contains('o'))
+                    || token.starts_with("--o")))
+            || (has("git")
+                && (matches!(token.as_str(), "--ext-diff" | "--textconv")
+                    || token.starts_with("--output")))
+    })
+}
+
+fn is_environment_assignment(token: &str) -> bool {
+    token.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 fn safe_multi_tool_invocations(words: &[String], commands: &[String]) -> bool {
@@ -832,10 +878,10 @@ mod tests {
     }
 
     #[test]
-    fn rich_read_only_pipeline_is_locally_safe() {
+    fn rich_read_only_pipeline_preserves_commands_but_reviews_dynamic_operands() {
         let command = r#"for f in `fd analytics`; (echo "\n# $f"; head -n 10 "$f"; echo "..."; echo "LOC: $(tokei -o json "$f" | jq '.Total.code')")"#;
         let analysis = analyze_shell_proposal(&proposal(command), &Default::default());
-        assert_eq!(analysis.disposition, StaticDisposition::LocallySafe);
+        assert_eq!(analysis.disposition, StaticDisposition::ModelReviewRequired);
         assert!(analysis
             .syntax_features
             .contains(&ShellSyntaxFeature::Pipeline));
@@ -860,6 +906,66 @@ mod tests {
                 .disposition,
             StaticDisposition::ModelReviewRequired
         );
+    }
+
+    #[test]
+    fn executable_aliases_background_commands_and_effectful_flags_need_review() {
+        for command in [
+            "./ls",
+            "/tmp/untrusted/rg pattern file",
+            "$INSPECTOR/ls",
+            "LS",
+            "pwd & ./untrusted",
+            "pwd & ./untrusted=program",
+            "PATH=/tmp/untrusted ls",
+            "LD_PRELOAD=./hook.so pwd",
+            "rg --pre ./untrusted pattern file",
+            "rg --pre=./untrusted pattern file",
+            "fd -x ./untrusted",
+            "fd -Hx ./untrusted",
+            "fd --exec=./untrusted",
+            "sort -o outside.txt input.txt",
+            "sort -ooutside.txt input.txt",
+            "sort -rooutside.txt input.txt",
+            "sort --out=outside.txt input.txt",
+            "sort --output=outside.txt input.txt",
+            "git diff --ext-diff",
+            "git show --textconv HEAD:file",
+            "git log --output=outside.txt",
+            "cat /outside/file.txt",
+            "cat ../outside/file.txt",
+            "cat /home/user/.aws/credentials",
+            "cat ~/.aws/credentials",
+            "cat $FILE",
+            "sort $OPTIONS input.txt",
+        ] {
+            let analysis = analyze_shell_proposal(&proposal(command), &Default::default());
+            assert!(
+                analysis.disposition.requires_model_review(),
+                "{command}: {analysis:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn literal_project_reads_are_local_but_symlink_escapes_need_review() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("file.txt"), "inside\n").unwrap();
+        std::fs::write(outside.path().join("file.txt"), "outside\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join("linked")).unwrap();
+        let mut request = proposal("cat file.txt | head -n 10");
+        request.cwd = project.path().to_path_buf();
+        request.project_root = project.path().to_path_buf();
+        assert_eq!(
+            analyze_shell_proposal(&request, &Default::default()).disposition,
+            StaticDisposition::LocallySafe
+        );
+        request.command = "cat linked/file.txt".into();
+        assert!(analyze_shell_proposal(&request, &Default::default())
+            .disposition
+            .requires_model_review());
     }
 
     #[test]

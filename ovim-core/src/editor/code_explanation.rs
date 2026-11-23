@@ -41,6 +41,15 @@ pub enum CodeExplanationStep {
         end_line: usize,
         comment: String,
     },
+    Diff {
+        title: String,
+        old_path: Option<String>,
+        new_path: Option<String>,
+        patch: Arc<str>,
+        /// Inclusive presentation rows occupied by the selected change.
+        focus: (usize, usize),
+        comment: String,
+    },
 }
 
 /// Stable presentation data for both the terminal UI and headless snapshots.
@@ -65,12 +74,23 @@ pub enum CodeExplanationPageView {
         end_line: usize,
         comment: String,
     },
+    Diff {
+        title: String,
+        old_path: Option<String>,
+        new_path: Option<String>,
+        comment: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeExplanationDiscussionView {
     Navigating {
+        /// 1-based position of the visible exchange (or the thread length
+        /// when no exchange is open).
         question_count: usize,
+        /// Number of exchanges on the current step, so frontends can bound
+        /// earlier/later navigation and show "Question N of M".
+        exchange_total: usize,
         latest_question: Option<String>,
         latest_answer: Option<String>,
         latest_failed: bool,

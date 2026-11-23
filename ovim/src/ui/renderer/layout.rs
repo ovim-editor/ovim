@@ -1,10 +1,8 @@
 use crate::editor::Editor;
+use crate::frontend::layout::GutterWidths;
 use ratatui::layout::Rect;
 
-/// Width of the sign column (git signs, diagnostics). Always present.
-pub const SIGN_WIDTH: usize = 2;
-/// Spacing between gutter and text content.
-pub const GUTTER_SPACING: usize = 1;
+pub use crate::frontend::layout::{GUTTER_SPACING, SIGN_WIDTH};
 
 /// Single source of truth for buffer layout dimensions within a render frame.
 ///
@@ -36,6 +34,10 @@ pub struct BufferLayout {
     pub line_num_width: usize,
     /// Width of the blame column (0 when blame is off).
     pub blame_width: usize,
+    /// Width of the fold marker column (0 when hidden), between the blame
+    /// column and the sign column.
+    pub fold_width: usize,
+    pub scrollbar_area: Option<Rect>,
 }
 
 impl BufferLayout {
@@ -49,29 +51,20 @@ impl BufferLayout {
     /// rect wider than the centered code-box. `area` is the centered band;
     /// `render_area` is the rect that includes the right diagnostic margin.
     pub fn compute_with_render_area(editor: &Editor, area: Rect, render_area: Rect) -> Self {
-        let show_numbers = editor.options.number || editor.options.relative_number;
-        let line_count = editor.buffer().line_count();
-        let line_num_width = if show_numbers {
-            line_count.to_string().len().max(3)
-        } else {
-            0
-        };
-
-        // Blame column width: bracket(1) + space(1) + hash(5) + space(1) + author(truncated) + space(1)
-        let blame_width = if editor.options.blame {
-            if let Some(blame) = editor.buffer().git_blame() {
-                // 1 bracket + 1 space + 5 hash + 1 space + author + 1 trailing space
-                let author_len = blame.max_author_len().min(15);
-                1 + 1 + 5 + 1 + author_len.max(3) + 1
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        // Sign column is always present (git signs, diagnostics).
-        let gutter_width = blame_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
+        let scrollbar_area = (editor.is_diff_buffer() && area.width > 1)
+            .then(|| Rect::new(area.right() - 1, area.y, 1, area.height));
+        let mut area = area;
+        let mut render_area = render_area;
+        if scrollbar_area.is_some() {
+            area.width -= 1;
+            render_area.width = area.right().saturating_sub(render_area.x);
+        }
+        let GutterWidths {
+            line_number: line_num_width,
+            blame: blame_width,
+            fold: fold_width,
+            total: gutter_width,
+        } = GutterWidths::of(editor);
         let text_width = (area.width as usize).saturating_sub(gutter_width);
 
         Self {
@@ -81,6 +74,8 @@ impl BufferLayout {
             text_width,
             line_num_width,
             blame_width,
+            fold_width,
+            scrollbar_area,
         }
     }
 

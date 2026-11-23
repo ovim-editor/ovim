@@ -25,6 +25,7 @@ impl Editor {
 
     /// Clear hover info
     pub fn clear_hover(&mut self) {
+        self.lsp.state.blame_mouse_hover = false;
         self.lsp.state.hover_info = None;
         self.lsp.state.hover_scroll = 0;
         self.lsp.state.hover_h_scroll = 0;
@@ -166,6 +167,7 @@ impl Editor {
         let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
 
         // Spawn hover request in background (non-blocking)
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = if server_ids.len() > 1 {
@@ -173,8 +175,10 @@ impl Editor {
             } else {
                 lsp.hover(&uri, line, character, &language_id).await
             };
-            let _ = tx
-                .send(result.map(|text| crate::editor::lsp_slot::HoverResult { hover_text: text }));
+            let _ = tx.send(result.map(|text| crate::editor::lsp_slot::HoverResult {
+                hover_text: text,
+                origin,
+            }));
         });
 
         // Fire into the hover slot (cancels any previous in-flight hover)

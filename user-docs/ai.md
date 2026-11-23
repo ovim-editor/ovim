@@ -36,7 +36,18 @@ OAuth refresh tokens rotate, so two applications using the same credential
 lineage can periodically invalidate each other. Codex CLI may be installed and
 signed in separately, but it is not required for Ovim.
 
-The built-in defaults use `gpt-5.6-sol` at medium effort for chat and
+Select `/model codex_astra` to use `gpt-6-astra` at medium reasoning effort.
+The profile supports low, medium, high, xhigh, and max effort.
+
+The first time you open chat (`<Space><Space>`) without a remembered choice or
+a chat profile in your own configuration, Ovim asks how to run inference:
+**Claude** (Claude Agent on your Claude subscription, recommended), **Codex**
+(your ChatGPT plan, with Ovim as the agent harness), or another provider from
+the model picker. The choice is remembered; change it any time from the model
+picker. Dismissing the question keeps the built-in default for that session,
+which is the Claude Agent.
+
+The built-in Codex profiles use `gpt-6.1-sol` at medium effort for chat and
 `gpt-5.6-terra` at low effort for read-only queries. With
 the default `codex` provider, Ovim—not Codex app-server—is the agent harness.
 Ovim sends its own tool schemas, records tool intent, applies auto-mode policy,
@@ -44,22 +55,29 @@ executes approved effects in the repository, and returns results for the next
 inference round. Codex's read-only workspace sandbox is therefore not involved
 in repository reads or writes.
 
+For direct OpenAI API profiles, `openai_fast` uses `gpt-6-luna` and `openai`
+uses `gpt-6-sol`. Both use `none` reasoning effort for tool calls through
+Chat Completions. `openai_frontier` remains on `gpt-5.2` until Ovim supports
+GPT-6 Astra tool calls through the Responses API; `codex_astra` provides Astra
+through the Codex route.
+
 When Ovim starts outside Git, an editable chat asks before treating the current
 folder as its project boundary. Approving creates a durable, folder-scoped chat
 identity and enables shell and mutation tools only within that folder. Denying
 or dismissing the prompt keeps those tools disabled. Read-only chats never gain
 shell or mutation access, even for an approved folder.
 
-On the first direct-Codex chat, Ovim offers to enable live web search through
-[Exa](https://dashboard.exa.ai/api-keys). Paste an Exa API key into the dialog,
-or click the link to sign in and create one. The dialog is dismissible and can
-always be reopened with `/exa`. Ovim stores the key beside `codex-auth.json` as
+Web search in Ovim's own harness uses [Exa](https://dashboard.exa.ai/api-keys).
+Nothing asks for it up front: the first time an agent calls `web_search` or
+`web_fetch` without a key, Ovim offers the Exa dialog. Paste an Exa API key, or
+click the link to sign in and create one. Dismissing it stops the offer; reopen
+it any time with `/exa`. Claude Agent chats use Claude's own web tools instead. Ovim stores the key beside `codex-auth.json` as
 `ovim/exa-auth.json` in the platform config directory, using an atomic,
 owner-only file on Unix. Set `EXA_API_KEY` to supply a key without storing it;
 the environment value takes precedence.
 
-The Ovim harness exposes `web_search` and `web_fetch` only while a usable key is
-configured. A rejected or revoked stored key reopens the setup dialog. Credit
+Profiles with network scope (such as `codex_sol`) expose `web_search` and
+`web_fetch`; without a key they answer with setup instructions. A rejected or revoked stored key reopens the setup dialog. Credit
 or budget exhaustion links to Exa's dashboard without discarding the key, and
 temporary rate limits and server failures receive one bounded retry. Web tools
 are read-only Ovim operations: they do not invoke a shell and do not require a
@@ -147,16 +165,34 @@ GUI host and the profile's network scope are both present.
 
 Auto mode is the default. Read-only local inspection and tests run immediately;
 context-dependent commands are reviewed by subscription-backed Terra at low
-effort. Terra treats routine project-local formatting, building, linting, and
+effort. The same review gates every provider that can run shell commands
+(direct Codex, OpenAI, Anthropic, Ollama, and Codex app-server): no shell
+program outside the read-only allowlist runs until Terra allows it. Terra treats
+routine project-local formatting, building, linting, and
 testing as authorized when they are reasonable steps toward your requested
 implementation objective. Elevated privileges, credential access,
 outside-project effects, remote-code pipelines, ambiguous authorization, and
-classifier failures pause for you. Press Enter or Ctrl-Y to allow once, Ctrl-A
-to allow the requested folder for the chat, or Esc/Ctrl-N to deny. Installed
+classifier failures pause for you. Terra runs through Codex's app-server, so it
+needs Codex CLI signed in; when it is unavailable, every command it would review
+pauses for your approval instead. Ovim removes provider credential variables
+such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `EXA_API_KEY`, and each profile's
+`api_key_env` from the environment it gives shell commands. Press Enter or
+Ctrl-Y to allow once, Ctrl-A to allow the requested folder for the chat, or
+Esc/Ctrl-N to deny. Installed
 skill packages and source files in Cargo's local registry cache are trusted
 read-only inputs and do not trigger outside-project approval prompts. To opt
 out of auto mode, set `tool_approval_mode = "sensitive_prompt"` or
 `"always_prompt"` in legacy `ai.toml`.
+
+In `sensitive_prompt` mode, Ctrl-A on a path prompt remembers that folder for
+path tools only. Ctrl-A on a shell prompt allows every shell command for the
+rest of the chat session, not just the one shown; a `SHELL ALLOWED` badge stays
+in the chat header while the grant holds, and `/clear` (or restarting Ovim)
+revokes it.
+The two grants are independent: a remembered folder never approves a shell
+command, and the shell grant never opens a path. Auto mode ignores Ctrl-A for
+shell commands because Terra reviews each one, and `always_prompt` never
+remembers.
 
 An exact temporary file created by the active chat keeps that session's
 authority for later reads, edits, `chmod +x`, and execution. Ovim uses the
@@ -191,12 +227,13 @@ broken into smaller steps, but required mastery is not relaxed. Questions focus
 on behavior, invariants, realistic failure modes, and verification rather than
 line-number or syntax trivia.
 
-When the panel is wide enough, the selected model profile and reasoning effort
-appear immediately to the left of `COMPREHENSION`. Click either control to open
-the combined picker downward. Up/Down changes the active value, Tab switches
-between model and effort, and Enter closes the picker. An effort selected here
-overrides the profile for this chat only; `default` returns to the profile's
-configured effort.
+When the panel is wide enough, the selected provider, model, reasoning effort,
+and any provider permission mode appear immediately to the left of
+`COMPREHENSION`. Click the control to open the run-settings picker. Provider,
+model, effort, and permissions use separate controls; the model choices are
+limited to the selected provider. An effort selected here overrides the
+profile for this chat only; `default` returns to the profile's configured
+effort.
 
 After the user demonstrates the critical concepts, Ovim binds a checkpoint to
 the repository's current index and worktree content. Meaningful subsequent
@@ -216,6 +253,13 @@ Chat conversations are owned by Ovim. Each inference request replays the active
 conversation branch, tool calls and results, and provider-encrypted reasoning
 state. Forking or clearing a conversation therefore changes Ovim's branch
 without depending on a hidden provider thread.
+
+Before a request goes to a remote provider, Ovim redacts common high-risk
+tokens (API keys, bearer tokens, private-key blocks, cloud and GitHub tokens)
+from chat messages, tool results, and the editor snapshot it attaches every
+turn. When the active file is one the sensitive-path policy blocks (`.env`
+files, SSH and TLS key material, `.ssh` and `.aws` contents), the snapshot names
+the file but withholds its code, selection, and diagnostics for every provider.
 
 Agent turns have no tool-call ceiling by default; the lightning indicator in
 the status line is a count, not a countdown. A profile may opt into a finite
@@ -276,7 +320,7 @@ turn ends.
 Every spawn names an exact catalog model and reasoning effort. Ovim derives the
 catalog from configured provider profiles and rejects invalid pairs before
 allocating durable state. The catalog ID is `profile/model`, for example
-`codex_sol/gpt-5.6-sol`. `codex_app_server` profiles are excluded because their
+`codex_sol/gpt-6.1-sol`. `codex_app_server` profiles are excluded because their
 nested provider session cannot be safely reconstructed in the child harness.
 
 The built-in harness allows explorer and reviewer trees to depth two, with at
@@ -399,6 +443,180 @@ Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
 `ai.toml` still works, but it is legacy compatibility.
 
+## Claude Agent
+
+Select **Claude Agent** (the built-in `claude_code` profile) from the model picker, or enter
+`/model claude_code`. Both GUI Ovim and terminal Ovim keep their normal chat
+interface. The official Claude Agent SDK runs your installed, unmodified
+Claude Code executable. Claude owns its tools, permissions, settings, skills,
+context management, and authentication.
+
+Install Node.js 18.18 or newer and Claude Code on your PATH, then sign in using
+Claude's own terminal flow:
+
+```sh
+claude auth login
+```
+
+The SDK is not bundled with Ovim. The first Claude Agent chat installs the
+pinned version (`@anthropic-ai/claude-agent-sdk` 0.3.278) with npm into
+`~/.cache/ovim/claude-agent-sdk/` and checks it against a known hash; later
+chats reuse it. Ovim does not read Claude credential files or implement its own
+Claude login.
+Your usual Claude environment and user settings apply. Account or
+organization restrictions reported by Claude also apply in Ovim.
+
+A repository's own Claude configuration is trust-gated. The SDK skips Claude
+Code's folder-trust dialog, so a cloned repository's `.claude/settings.json`
+hooks and permission rules, `CLAUDE.md`, and `.mcp.json` would otherwise run or
+pre-approve commands unprompted. Ovim loads these project and local settings
+only in editable chats, and only when Claude Code has already trusted the folder
+or one of its ancestors (`hasTrustDialogAccepted` in `~/.claude.json`, or in
+`$CLAUDE_CONFIG_DIR/.claude.json`). Read-only queries use user settings alone.
+Ovim never records trust itself. When an editable chat starts in an untrusted
+folder that has project Claude configuration, the chat shows a one-time note;
+run `claude` in that folder once and accept its trust prompt to enable the
+project settings.
+
+Codex remains the shipped default. Choosing a profile or Claude model in the
+GUI or terminal picker (including `/model`) remembers it for new chats across
+projects and restarts. Queries and configured profiles are unchanged. The
+preference is stored in Ovim's local data directory (`~/.local/share/ovim/chat-preference.json`
+on Linux); `OVIM_CHAT_PREFERENCE_FILE` can override that location. Missing,
+invalid, or no-longer-configured selections fall back to configured defaults.
+A failed save is reported in the status message; the live choice still works.
+
+Explicit settings in `init.lua` take precedence on startup and `:reload`.
+To always start chat with Claude Agent:
+
+```lua
+vim.ai.contexts.chat = "claude_code"
+```
+
+`vim.ai.default_profile` also overrides the remembered choice and sets query
+defaults. An explicitly configured profile model beats its remembered model.
+A picker change still takes effect immediately; reloading configuration restores
+the explicit settings. A profile passed to `vim.ai.open_chat` applies only to that
+chat and does not replace the saved preference.
+
+The model picker in both the GUI and terminal offers Claude Agent entries for
+`default`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`, and
+`claude-haiku-5-5`. Select a row to change the model within
+the same profile. In terminal Ovim, `/model` opens the picker; arrow keys select
+and Enter returns to the composer. With the Claude profile active, `/model opus`
+(or an explicit model ID) also changes the model. Named Ovim profiles take
+precedence, so `/model codex_sol` still switches providers.
+
+These exact IDs were checked against [Anthropic's model reference](https://platform.claude.com/docs/en/models/overview)
+on 2026-09-29. They are not a list of your account's entitlements. Other aliases,
+such as `fable`, and deployment-specific IDs can be entered with `/model`; the
+`haiku` alias selects `claude-haiku-5-5`.
+Claude enforces model availability. The older `claude-haiku-4-5-20251001` is no
+longer in the picker and does not expose reasoning effort; Ovim omits any
+previously selected effort when it is used. `default` leaves the model unset, using your usual Claude
+configuration. Ovim remembers the last selected profile/model pair. Selecting
+a profile by name uses its configured model. Stop an active turn before changing
+the selection.
+Ovim's model defaults are Medium for Fable 5.1, Opus 5.5, and Haiku 5.5, and High for Sonnet 5.5,
+following [Anthropic's effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort)
+for Opus/Sonnet and choosing Medium for Fable's interactive use. An explicit
+`/effort` selection overrides the profile's `reasoning_effort`, which in turn
+overrides the model default. Choose Default effort to restore that precedence.
+The `default` model and unrecognized custom IDs leave effort to Claude unless
+an effort is explicitly configured. Haiku 4.5 ignores effort overrides.
+
+To keep a model choice after restarting, configure it explicitly:
+
+```lua
+vim.ai.setup({
+  default_profile = "claude_code",
+  profiles = {
+    claude_code = { provider = "claude_code", model = "sonnet" },
+  },
+})
+```
+
+Claude profiles add a **Permissions** section to the GUI and terminal run
+settings. The default is **Auto**. The six modes are Auto, Manual (`default`),
+Accept edits, Plan, Don't ask, and Bypass permissions. Auto asks Claude's
+permission classifier to decide prompts and depends on support from the active
+Claude account/runtime. Manual asks for protected operations. Accept edits
+approves file edits while retaining other prompts. Plan explores and plans but
+can still ask before a file change. Don't ask denies calls that would need a
+prompt. Bypass permissions skips ordinary approval prompts; Claude policy and
+hook restrictions still apply. The exact stable IDs are available with
+`/permissions auto|default|acceptEdits|plan|dontAsk|bypassPermissions`.
+
+The terminal picker steps through the first five modes with the arrow keys and
+stops at either end instead of wrapping. Bypass permissions is never a picker
+choice. Enable it by running `/permissions bypassPermissions` twice: the first
+run only explains and asks for confirmation, and any other permission change
+cancels it. Bypass applies to the current chat only and is never saved, so a new
+chat or a restart returns to the remembered mode (Auto by default). While it is
+active, a red `BYPASS` badge stays in the chat header in the terminal and the
+GUI. Run `/permissions auto` (or any other mode) to turn it off.
+
+Changing the permission mode is blocked during an active turn. The choice is
+stored beside the selected provider/model in `chat-preference.json`, except
+Bypass permissions; older preference files use Auto. Switching to a provider without permission modes
+removes the control and cannot carry a Claude mode into that provider. The
+selected mode is part of Claude's native-session fingerprint, so a mode change
+does not resume a checkpoint created under another mode.
+
+Permission prompts offer **Allow once** and **Deny** in the GUI; terminal users
+press Enter or Escape. Claude's questions appear in the conversation: type an
+answer, an option number, or comma-separated numbers for a multiple-selection
+question. Escape stops the active turn. Closing the panel keeps it running;
+closing Ovim stops its runtime process tree.
+
+Read-only queries expose Claude's Read, Glob, and Grep tools plus Ovim's
+context and navigation MCP tools. Other configured MCP servers are excluded. Editable chats use Claude's normal permission rules. Ovim's YOLO,
+Terra approval classifier, comprehension gates, and delegated-agent tools do
+not govern Claude tools. They are not exposed as Claude controls. `/compact`
+goes to Claude Code once a native session exists. Ovim appends brief editor
+integration guidance to Claude's standard prompt. Use Claude's settings for
+further customization, rather than Ovim inference-profile prompt or tool overrides.
+
+Ovim supplies the current editor snapshot and attached context as user input.
+Everything Ovim sends to Claude (your messages, earlier conversation, the
+snapshot, and editor tool results) gets the same token redaction as other remote
+providers, and a sensitive active file's content is withheld. Claude's own tools
+read files under Claude's permission rules, not Ovim's.
+The private MCP connection also exposes editor tools:
+
+- `workspace_context` refreshes the active/open files, cursor, selection,
+  diagnostics and bounded editor snapshot, including unsaved visible content.
+- `open_file` shows an existing file in the current workspace, optionally at a
+  line/column, preserving unsaved buffers. File creation and paths escaping the
+  workspace (including symlink escapes) are rejected.
+- `explain_with_codebase` presents an interactive concept/code/diff
+  walkthrough. Claude waits until you finish, dismiss it, or ask a question.
+  Questions return to the running Claude turn. Completed walkthroughs support replay.
+  Diff pages use `read_diff` snapshot IDs and old/new block slices, and show
+  the selected change with surrounding frozen source context and an explanation.
+- `read_diff` reads a saved snapshot of the comparison used by `<leader>gd`,
+  respecting `pullbase` and its directory overrides.
+- `show_custom_diff` arranges snapshot ranges into labelled replacements,
+  deletions, and additions, including across files. Related-source references
+  explain copies without assigning a source line twice. The review opens
+  immediately and can be reopened from chat.
+
+The connection is bound to the originating editor turn and cannot discover or
+control other Ovim sessions. It closes when that turn ends. Claude's normal
+permission flow applies; the server also enforces its limited tool and path scope.
+
+Claude edits files on disk; Ovim's usual external-change handling reconciles
+open buffers and preserves unsaved edits. Native sessions resume only when the
+branch, configuration, and visible conversation match the saved checkpoint.
+After interrupted work, a branch change, or a provider switch, Ovim can start a
+new native session using the visible conversation as context. `/clear` starts
+a fresh conversation. Profile, effort, and permission changes wait until the current turn
+has finished or been stopped.
+
+For current subscription conditions, see Anthropic's
+[Agent SDK usage guidance](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+and [authentication rules](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).
+
 ## Codex configuration
 
 ```lua
@@ -411,13 +629,13 @@ vim.ai.setup({
   profiles = {
     codex_sol = {
       provider = "codex",
-      model = "gpt-5.6-sol",
+      model = "gpt-6.1-sol",
       reasoning_effort = "medium",
       scope_network = true,
     },
     codex_luna = {
       provider = "codex",
-      model = "gpt-5.6-luna",
+      model = "gpt-6-luna",
       reasoning_effort = "max",
     },
     codex_terra = {
@@ -452,6 +670,12 @@ top right of the editor; a paused approval uses an attention badge instead.
 Press Ctrl-C with the chat open to stop the current generation without closing
 or clearing the conversation; any partial response remains in history.
 
+In terminal chat, click a rendered Markdown link to open it. Website links open
+in your default browser; project-file links open in Ovim. File links can include
+`:line:column` or `#Lline` locations. Relative paths use the workspace root (or
+the chat's original file directory when there is no repository). Drag across a
+link to select and copy text instead. Opening a file preserves the conversation.
+
 Persisted conversations are not restored automatically when starting a new
 Ovim process. This avoids accidentally sending a large historical conversation
 to a provider. Start Ovim with `--resume` only when you explicitly want to
@@ -471,11 +695,17 @@ Typing `/` or a partial command name opens an autocomplete popup. Use Up/Down
 to choose, then Tab or Enter to insert the command; click selection is also
 supported. Enter again executes a completed command.
 
-- `/model` opens the profile picker.
+A message is a command only when its first word is `/` followed by a lowercase
+letter and then letters, digits, `_`, or `-`. Anything else is ordinary text, so
+a message such as `/usr/lib/x fails to load` is sent to the model as written.
+
+- `/model` opens the profile and model picker.
 - `/model codex_sol` switches directly to a named profile.
 - `/effort` opens the combined picker on reasoning effort.
 - `/effort default|none|low|medium|high|xhigh|max` sets the per-chat effort.
   Provider support remains model-specific; current Codex models accept `max`.
+- `/permissions` opens the provider permission section. Supplying a stable mode
+  ID selects it directly when the active provider supports it.
 - `/clear` clears the current conversation and starts a fresh provider context.
 - `/compact` creates a structured checkpoint for older model context and keeps
   an approximately 8k-token recent complete-turn tail. `/compact aggressive`
@@ -524,7 +754,7 @@ Process output is intentionally ephemeral and bounded. Ovim retains at most
 older output is marked as discarded or expired while the durable tool result
 remains in conversation history.
 
-Walkthroughs combine concept pages and code pages in one linear sequence.
+Walkthroughs combine concept, code, and diff pages in one linear sequence.
 Concept pages use a larger centered panel for an introduction, prerequisite
 mental model, transition, or synthesis that does not belong to one source
 range. Their body is limited by the current terminal dimensions, and the agent
@@ -537,15 +767,27 @@ walkthrough snapshots are retained for replay in a 10 MiB, oldest-first cache,
 so later buffer edits, external file changes, renames, or deletions do not replace
 cached code. Files of 5 MiB or larger are deliberately not retained and are read
 from the current buffer or disk when their page is shown; this keeps a single
-large source from displacing useful tutorials. Both page types aim to teach one
-new idea at a time and introduce only the context needed for the next page.
+large source from displacing useful tutorials.
+
+Diff pages show the selected change with surrounding source captured by
+`read_diff`. Ovim fits this context above the explanation card while keeping the
+selected additions and removals distinct. Ordinary replacements share unchanged
+context; partial slices and reassigned changes use labeled before/after source
+excerpts with their original line ranges. Context stays frozen on replay even
+when the working file changes or is deleted. If a snapshot has no surrounding
+source or the selected change fills the available space, the page shows just
+the selected change. Every page aims to teach one new idea at a time and
+introduce only the context needed for the next page.
 
 Move between pages with Left/Right (or `h`/`l`). Press Space to ask about the
 current page; its explanation is attached as quoted context, Enter sends,
 Shift-Enter adds a line, and Escape cancels the draft. The root chat agent
 answers in the walkthrough using the conversation it already built. Questions
 expand into the available terminal space; use Up/Down (or `k`/`j`) or the mouse
-wheel to read an answer that is longer than the card. Questions and answers
+wheel to read an answer that is longer than the card. Press Esc while reading
+an answer to return to the same step; the answer keeps streaming in the
+background. Press `t` to reopen that step’s thread and `[` / `]` to browse its
+questions. Esc from the step dismisses the walkthrough. Questions and answers
 remain in normal conversation history after the walkthrough ends, so they are
 available when the agent returns to implementation. Walkthrough
 questions permit read-only investigation but reject navigation, mutations,
@@ -667,8 +909,9 @@ vim.ai.setup({
   profiles = {
     openai = {
       provider = "openai",
-      model = "gpt-4.1-mini",
+      model = "gpt-6-luna",
       api_key_env = "OPENAI_API_KEY",
+      reasoning_effort = "none",
       temperature = 0.2,
       max_tokens = 2048,
       edit_mode = "format",
@@ -677,6 +920,19 @@ vim.ai.setup({
   },
 })
 ```
+
+When a Lua profile omits `provider`, Ovim infers it from the model name. Codex
+model names (`gpt-6-*`, `gpt-5.6-*`) select the Codex login unless the profile
+names an API key (`api_key` or `api_key_env`) or `OPENAI_API_KEY` is set, in
+which case they use the OpenAI API as older configurations did. Set `provider`
+explicitly so the choice never depends on the environment.
+
+If an Anthropic reply stops because it reached `max_tokens`, was refused, or
+overflowed the context window, Ovim reports that in the chat instead of
+presenting the partial reply as complete, and it never runs a tool call whose
+arguments were cut off. Thinking models spend `max_tokens` on reasoning before
+they answer, so the built-in `anthropic` and `anthropic_frontier` profiles use
+16384; give a custom Anthropic profile a similar budget.
 
 Built-in AI keybindings:
 
@@ -694,6 +950,148 @@ Ovim keeps the selection highlighted and places the existing AI composer directl
 it; the selected patch and your message are sent through the normal project chat.
 No external diff application or background review server is required.
 
+For refactors, ask the agent to show how code moved between files. It first calls
+`read_diff`, then uses `show_custom_diff` to pair related old and new code. Every
+original addition and removal stays represented; changes the agent does not pair
+remain in their original order. This changes the review presentation only.
+
+Use **Open diff** on the chat entry to reopen the saved review. In the terminal,
+select the tool result in chat history and press Enter, or click its open action.
+Use `K` / `J` in either frontend to reveal surrounding captured code above /
+below the current diff block, twenty lines at a time. The GUI also provides gutter
+arrows without extra control rows. Expansion preserves the saved pairings and
+change counts; older reviews without captured source cannot expand.
+
+Replay uses the saved content, including after the source files change or the
+chat is restored. `<leader>gd` opens the current comparison and reapplies the
+saved restructuring when the comparison is verified to match, including after
+switching between `ovim` and `ovim-gui`. Opening the same comparison restores it
+without `--resume` or the original chat session. A match requires the resolved
+base, exact patch/source mapping, and full byte fingerprints of the compared
+files; mtimes and whitespace-normalized equality are not enough. Use **Remove
+overlay** to see the regular diff, or **Apply overlay** to bring it back.
+
+Refinements are written immediately to the shared application data directory
+(`$XDG_DATA_HOME/ovim/diff-reviews`, normally `~/.local/share/ovim/diff-reviews` on
+Linux; override with `OVIM_DIFF_REVIEWS_DIR`). Storage is private and separate
+from the Git working tree. Each worktree retains up to 20 comparisons within
+128 MiB, with a 32 MiB limit per saved review; a new refinement of the same
+comparison replaces the previous one. Concurrent instances publish atomically.
+Layout, cursor, expansion and overlay-toggle state remain local to each instance.
+Older captures without byte fingerprints, truncated comparisons, unreadable
+endpoints, submodules and endpoints over the 32 MiB capture limit cannot be
+automatically verified; their frozen review can still be opened explicitly.
+
+After further edits, the live diff marks the saved restructuring as unverified and
+offers **View saved review**. **Return to live diff** keeps the saved arrangement
+available. Undoing back to the original comparison makes it usable again on
+refresh or reopening. In the terminal, `o` toggles the overlay (or returns from a
+saved view), and `O` opens the saved review.
+
+In the GUI, every file is part of one continuous diff. Scroll with the mouse or
+Up/Down arrows; use Left/Right arrows to jump to the previous or next change
+fragment, including changes in another file. The same navigation works in
+side-by-side and unified layouts. `n` / `N` and `]c` / `[c` also jump between
+changes; `]f` / `[f` jump to file or section boundaries.
+
+Custom reviews opened by the agent or replayed from chat start in **Guided**,
+where split sections and their explanations appear in the agent's order.
+Opening the regular Git review starts in **Files**, even when a saved overlay
+is applied. Switch views at any time.
+In **Files**, when similar lines are matched at different before and after
+locations, **Show moved-code matches**
+adds an embedded comparison with both paths and line ranges. A match can include
+edits; it does not mean the lines are identical. Switch between **Before context**
+and **After context** to choose which saved surrounding code appears beside the
+change. Scroll inside the comparison to inspect it. **Guided** reads all the
+agent's paired sections, explanations, and remaining changes in one continuous
+review; **Files** shows changes in file order. The terminal shows paired sections
+with both source paths. Old-side navigation opens a labeled snapshot excerpt.
+Older saved reviews and large files may have limited surrounding context.
+
+In both the GUI and terminal curated review, press `w` (or click **Hide equal
+changes** in the GUI) to hide equal paired changes, treating spaces and tabs as
+insignificant. Entire equal sections disappear; real edits
+inside mixed pairs stay visible. This follows the agent's pairings even across
+separate hunks in **Files**, and also works in **Guided**, both layouts, navigation,
+and image exports. Pairs across different files are filtered too.
+Toggle it off to restore every pair; the saved review and change totals are preserved.
+The terminal shows the active filter above the sections and keeps it through layout
+changes, refreshes, and reopening reviews during the session.
+
+Use **Export image** in the GUI to save the complete **Files** or **Guided** view,
+including files and sections outside the viewport. The export is one dark PNG,
+with the selected layout, pairings, expanded context, visible agent notes, and equal-change filter. Images include descriptions,
+source paths, line numbers, change totals, and the comparison base when available.
+Moved ranges appear with nearby saved context. The export records the selected
+review, so an outdated saved review retains its original contents. It helps reviewers
+inspect correspondence during a refactor; it does not prove semantic equivalence.
+Large exports may take longer and depend on available browser memory.
+
+Agents should use the block IDs returned by `read_diff`, rather than generating
+a replacement patch. Finish edits before reading the diff; after further edits,
+read a fresh snapshot. Continue reading with `snapshot_id` and `next_cursor`
+until `next_cursor` is null. Like `<leader>gd`, the snapshot uses files on disk,
+not unsaved buffer edits. Pairings accept an optional zero-based `offset` and `count`
+on each side to select part of a block. The `pairings` array is an ordered list
+of sections: use both `old` and `new` for a replacement, `old` alone for a
+labelled deletion, or `new` alone for an addition. At least one side is required.
+Splitting an existing block into disjoint slices lets a deleted check stand apart
+from a nearby but unrelated addition. Pair lengths need not match.
+
+A section may also include `related_to`, using the same block/range syntax.
+This displays a snapshot-derived source location to explain a copy, extraction,
+or deduplication. It is only a reference: it does not assign the referenced lines
+again, classify code as unchanged, or establish semantic equivalence. Several
+sections may reference the same source, including a range already owned by
+another section. A section cannot reference its own lines.
+
+Each pairing may include an optional `message` of up to 2,000 characters of
+plain text. Use it to explain why the before and after ranges belong together
+or what the reader should check. The short `label` remains the section heading.
+Messages can span lines; blank messages and control characters other than tabs
+and newlines are rejected. In **Guided**, an **Agent note** appears above that
+pairing in both GUI layouts and in the terminal. The GUI **Notes** button or
+`a` key shows and hides notes; `a` also works in the terminal. Notes start
+visible when present. The control is absent when the review has no messages,
+and **Files** stays the canonical code view. Hiding notes never changes the
+saved comparison or its change totals.
+
+For example, after reading the corresponding blocks:
+
+```json
+{
+  "snapshot_id": "<snapshot returned by read_diff>",
+  "title": "Respondent lookup cleanup",
+  "pairings": [
+    {
+      "label": "Remove duplicate permission check",
+      "old": {"block_id": "removed_10", "offset": 0, "count": 1}
+    },
+    {
+      "label": "Move respondent lookup",
+      "message": "The lookup now runs after validation so callers share one guard.",
+      "old": {"block_id": "removed_10", "offset": 1, "count": 1},
+      "new": {"block_id": "added_30", "offset": 0, "count": 1}
+    },
+    {
+      "label": "Additional respondent copy",
+      "new": {"block_id": "added_30", "offset": 1, "count": 1},
+      "related_to": {"block_id": "removed_10", "offset": 1, "count": 1}
+    }
+  ]
+}
+```
+
+The GUI's **Guided** view and both terminal layouts display these sections;
+**Files** retains canonical file order. Every canonical added and removed line
+must occur exactly once, with its original text, kind, and source path. Reusing
+owned ranges, wrong-side assignments, invalid references, and altered lines are
+rejected. Unassigned changes remain visible automatically. One-sided sections
+stay visible with **Hide equal changes**; a reference is never an equal pairing.
+Labels cannot change these rules. Binary and metadata-only changes remain visible,
+and incomplete diffs exceeding the review size limit cannot be reassigned.
+
 ## Legacy `ai.toml` (Still Supported)
 
 If you prefer TOML or need compatibility:
@@ -706,8 +1104,9 @@ default_profile = "openai"
 
 [profiles.openai]
 provider = "open_ai"
-model = "gpt-4.1-mini"
+model = "gpt-6-luna"
 api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "none"
 temperature = 0.2
 max_tokens = 2048
 extraction = "json"

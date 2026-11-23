@@ -2,7 +2,7 @@ use crate::language_catalog::{
     DynamicLanguageSpec, DynamicLspSpec, DynamicParserSpec, LanguageCatalog, RegistrationOwner,
 };
 use anyhow::Result;
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, LuaSerdeExt, Table, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +13,10 @@ pub fn setup_ovim_api(
     catalog: Arc<LanguageCatalog>,
     source: LuaSourceContext,
 ) -> Result<()> {
-    let ovim = lua.create_table()?;
+    let ovim = match lua.globals().get::<_, Value>("ovim")? {
+        Value::Table(table) => table,
+        _ => lua.create_table()?,
+    };
     let languages = lua.create_table()?;
     let register = lua.create_function(move |_lua, table: Table| {
         reject_unknown(
@@ -135,6 +138,49 @@ pub fn setup_ovim_api(
     })?;
     languages.set("register", register)?;
     ovim.set("languages", languages)?;
+    let lsp = lua.create_table()?;
+    // ovim.lsp.configure("java" | { "java", "kotlin" }, {
+    //   initialization_options = {...}, settings = {...} })
+    let configure = lua.create_function(move |lua, (languages, options): (Value, Table)| {
+        reject_unknown(
+            &options,
+            "lsp options",
+            &["initialization_options", "settings"],
+        )?;
+        let languages: Vec<String> = match languages {
+            Value::String(name) => vec![name.to_str()?.to_string()],
+            Value::Table(list) => list
+                .sequence_values::<String>()
+                .collect::<mlua::Result<Vec<_>>>()?,
+            _ => return Err(mlua::Error::external(
+                "ovim.lsp.configure: the first argument must be a language id or an array of them",
+            )),
+        };
+        if languages.is_empty() {
+            return Err(mlua::Error::external(
+                "ovim.lsp.configure: no language given",
+            ));
+        }
+        let to_json = |key: &str| -> mlua::Result<Option<serde_json::Value>> {
+            match options.get::<_, Value>(key)? {
+                Value::Nil => Ok(None),
+                value @ Value::Table(_) => lua.from_value(value).map(Some),
+                _ => Err(mlua::Error::external(format!(
+                    "ovim.lsp.configure: {key} must be a table"
+                ))),
+            }
+        };
+        crate::lsp::user_settings::configure(
+            &languages,
+            crate::lsp::user_settings::UserLspSettings {
+                initialization_options: to_json("initialization_options")?,
+                settings: to_json("settings")?,
+            },
+        );
+        Ok(())
+    })?;
+    lsp.set("configure", configure)?;
+    ovim.set("lsp", lsp)?;
     lua.globals().set("ovim", ovim)?;
     Ok(())
 }
@@ -189,6 +235,41 @@ fn required_strings(table: &Table, key: &str, path: &str) -> mlua::Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lsp_configure_stores_user_options_for_each_language() {
+        let temp = tempfile::tempdir().unwrap();
+        let init = temp.path().join("init.lua");
+        std::fs::write(
+            &init,
+            r#"
+                ovim.lsp.configure({ "lua-cfg-a", "lua-cfg-b" }, {
+                  initialization_options = { hyperion = { buildToolClasspath = true } },
+                  settings = { hyperion = { buildToolClasspath = true }, n = 2 },
+                })
+                ovim.lsp.configure("lua-cfg-a", { settings = { n = 3 } })
+            "#,
+        )
+        .unwrap();
+        let catalog = LanguageCatalog::built_in();
+        let mut context = crate::lua::LuaContext::new().unwrap();
+        setup_ovim_api(context.lua(), catalog, context.source_context()).unwrap();
+        context.execute_file(&init).unwrap();
+
+        use crate::lsp::user_settings::{initialization_options, workspace_settings};
+        assert_eq!(
+            initialization_options("lua-cfg-b", None),
+            Some(serde_json::json!({"hyperion": {"buildToolClasspath": true}}))
+        );
+        assert_eq!(
+            workspace_settings("lua-cfg-a", None),
+            Some(serde_json::json!({"hyperion": {"buildToolClasspath": true}, "n": 3}))
+        );
+        assert_eq!(workspace_settings("lua-cfg-b", None).unwrap()["n"], 2);
+
+        std::fs::write(&init, "ovim.lsp.configure('x', { bogus = {} })").unwrap();
+        assert!(context.execute_file(&init).is_err());
+    }
 
     #[test]
     fn registration_uses_the_declaring_file_and_rejects_unknown_fields() {

@@ -21,21 +21,24 @@ env:
 
 jobs:
   # Fails fast, before four release builds burn runner minutes, if the crate
-  # versions don't match the tag being built. Guards against tagging a release
-  # whose binaries report the previous version.
+  # or app versions don't match the tag being built. Guards against tagging a
+  # release whose binaries report the previous version.
   verify-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - name: Check crate versions match tag
+      - name: Check crate and app versions match tag
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           expected="${tag#v}"
           status=0
-          for manifest in ovim/Cargo.toml ovim-core/Cargo.toml; do
-            actual="$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)"
+          for manifest in ovim/Cargo.toml ovim-core/Cargo.toml ovim/tauri.conf.json ovim/gui/package.json; do
+            case "$manifest" in
+              *.json) actual="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$manifest" | head -1)" ;;
+              *) actual="$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)" ;;
+            esac
             if [ "$actual" != "$expected" ]; then
               echo "::error file=$manifest::version is $actual, expected $expected (from tag $tag)"
               status=1
@@ -50,11 +53,11 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             arch_pattern: "arm64"
           # Cross-compiled from the arm64 runner; macos-13 (Intel) queues are unusable
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             arch_pattern: "x86_64"
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
@@ -67,7 +70,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -89,6 +92,19 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Build
         run: cargo build --release --locked -p ovim --features vendored --target ${{ matrix.target }}
+      - name: Build standalone terminal
+        # Keep the GUI binary above, but replace the terminal binary with a
+        # headless build so its archive does not require GTK/WebKit on Linux.
+        run: cargo build --release --locked -p ovim --bin ovim --no-default-features --features lua,vendored --target ${{ matrix.target }}
+      - name: Verify terminal dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          dependencies="$(readelf -d "target/${{ matrix.target }}/release/ovim")"
+          if echo "$dependencies" | grep -E 'NEEDED.*(libgtk|libgdk|libwebkit|libjavascriptcoregtk|libsoup)'; then
+            echo "::error::The terminal binary must not require GUI libraries"
+            exit 1
+          fi
       - name: Verify native GUI target
         shell: bash
         run: |
@@ -97,10 +113,23 @@ jobs:
             echo "::error::$gui_binary is too small to be the Ovim GUI executable"
             exit 1
           fi
-          if ! grep -aFq "Only one file or directory can be opened at startup" "$gui_binary"; then
-            echo "::error::$gui_binary does not contain the Ovim GUI entry point"
-            exit 1
-          fi
+          # Scan raw bytes: native executables are not locale-encoded text.
+          python3 - "$gui_binary" <<'PYVERIFY'
+          import pathlib
+          import sys
+          binary = pathlib.Path(sys.argv[1])
+          marker = b"the native GUI editor"
+          if marker not in binary.read_bytes():
+              sys.exit(f"::error::{binary} does not contain the Ovim GUI entry point")
+          print(f"Verified native GUI entry point: {binary}")
+          PYVERIFY
+      - name: Retain failed GUI verification binary
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-gui-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/ovim-gui
+          if-no-files-found: ignore
       - name: Bundle native desktop package
         shell: bash
         run: |

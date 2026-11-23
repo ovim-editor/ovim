@@ -2,10 +2,24 @@
 
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal, onMount } from "solid-js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 
-afterEach(cleanup);
+beforeEach(() => {
+    vi.stubGlobal(
+        "ResizeObserver",
+        class {
+            observe() {}
+            disconnect() {}
+        },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1200);
+});
+afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+});
 
 const panel = (
     id: ContextPanelDefinition["id"],
@@ -128,4 +142,58 @@ describe("ContextDock", () => {
         expect(screen.getByRole("tab", { name: "AI chat" })).toBe(tab);
         expect(mounts).toBe(1);
     });
+
+    it("keeps a terminal surface mounted while another context panel is active", () => {
+        let mounts = 0;
+        const Terminal = () => {
+            onMount(() => mounts++);
+            return <input aria-label="Shell input" />;
+        };
+        render(() => (
+            <ContextDock
+                panels={[
+                    {
+                        ...panel("terminal", "Terminal"),
+                        component: Terminal,
+                        keepMounted: true,
+                    },
+                    panel("ai", "AI chat"),
+                ]}
+            />
+        ));
+        const input = screen.getByRole("textbox", { name: "Shell input" });
+
+        fireEvent.click(screen.getByRole("tab", { name: "AI chat" }));
+        expect(input.isConnected).toBe(true);
+        expect(input.closest("[hidden]")).toBeTruthy();
+        fireEvent.click(screen.getByRole("tab", { name: "Terminal" }));
+        expect(screen.getByRole("textbox", { name: "Shell input" })).toBe(
+            input,
+        );
+        expect(mounts).toBe(1);
+    });
+});
+
+it("resizes from the left edge with keyboard controls and resets", () => {
+    const [width, setWidth] = createSignal(480);
+    render(() => (
+        <ContextDock
+            panels={[panel("tests", "Tests")]}
+            width={width()}
+            onWidthChange={setWidth}
+        />
+    ));
+    const divider = screen.getByRole("separator", {
+        name: "Context panel width",
+    });
+    fireEvent.keyDown(divider, { key: "ArrowLeft" });
+    expect(width()).toBe(490);
+    fireEvent.keyDown(divider, { key: "ArrowRight", shiftKey: true });
+    expect(width()).toBe(450);
+    fireEvent.keyDown(divider, { key: "Home" });
+    expect(width()).toBe(280);
+    fireEvent.keyDown(divider, { key: "End" });
+    expect(width()).toBe(800);
+    fireEvent.dblClick(divider);
+    expect(width()).toBe(480);
 });

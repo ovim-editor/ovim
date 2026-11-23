@@ -117,8 +117,9 @@ pub fn buffer_to_ansi(buffer: &Buffer) -> String {
     // Clear screen and reset cursor
     result.push_str("\x1b[2J\x1b[H");
 
-    for y in 0..buffer.area.height {
-        for x in 0..buffer.area.width {
+    for y in buffer.area.top()..buffer.area.bottom() {
+        let mut x = buffer.area.left();
+        while x < buffer.area.right() {
             let cell = &buffer[(x, y)];
 
             // Only emit style change if different from last
@@ -128,10 +129,16 @@ pub fn buffer_to_ansi(buffer: &Buffer) -> String {
             }
 
             result.push_str(cell.symbol());
+            // Ratatui stores blank continuation cells after wide glyphs.
+            // The terminal already advances across them when writing the
+            // glyph; emitting them again shifts text and styling to the right.
+            let width = crate::display::grapheme_display_width(cell.symbol())
+                .clamp(1, u16::MAX as usize) as u16;
+            x = x.saturating_add(width);
         }
 
         // Don't add newline after last line
-        if y < buffer.area.height - 1 {
+        if y + 1 < buffer.area.bottom() {
             result.push('\n');
         }
     }
@@ -269,5 +276,19 @@ fn color_to_ansi_bg(color: Color) -> String {
         Color::White => "107".to_string(),
         Color::Rgb(r, g, b) => format!("48;2;{};{};{}", r, g, b),
         Color::Indexed(i) => format!("48;5;{}", i),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn ansi_export_accepts_a_buffer_with_a_nonzero_origin() {
+        let mut buffer = Buffer::empty(Rect::new(4, 3, 5, 2));
+        buffer.set_string(4, 3, "a界b", Style::default());
+        buffer.set_string(4, 4, "👩‍💻x", Style::default());
+        assert_eq!(strip_ansi(&buffer_to_ansi(&buffer)), "a界b \n👩‍💻x  ");
     }
 }

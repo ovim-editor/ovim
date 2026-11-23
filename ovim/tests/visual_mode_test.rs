@@ -355,7 +355,8 @@ fn test_v_with_dollar() {
     test.press('v').keys("$"); // Select to end of line
 
     assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 10);
+    // nvim: `v$` leaves the cursor on the line break, one past the last character.
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -835,7 +836,8 @@ fn test_gn_normal_mode_selects_next_match() {
     let mut test = EditorTest::new("foo bar foo baz");
 
     // Search for "foo" and then use gn to select first match
-    test.press('/').type_text("foo").press_enter().keys("gn"); // Should select first "foo"
+    // (/foo lands on the second "foo", `0` goes back to the first)
+    test.press('/').type_text("foo").press_enter().keys("0gn"); // Should select first "foo"
 
     assert_eq!(test.editor.mode(), Mode::Visual);
     test.assert_cursor(0, 2); // End of "foo" (inclusive)
@@ -848,36 +850,38 @@ fn test_gn_normal_mode_selects_next_match() {
 fn test_gn_selects_current_match_if_cursor_on_it() {
     let mut test = EditorTest::new("foo bar foo baz");
 
-    // Search and move to second "foo", then gn should select it
+    // Search ("foo" #2), n wraps to "foo" #1, then gn should select it
     test.press('/')
         .type_text("foo")
         .press_enter()
-        .press('n') // Move to second "foo"
-        .keys("gn"); // Should select second "foo"
+        .press('n') // Wraps to the first "foo"
+        .keys("gn"); // Should select the "foo" under the cursor
 
     assert_eq!(test.editor.mode(), Mode::Visual);
-    test.assert_cursor(0, 10); // End of second "foo"
+    // nvim --clean: /foo, n, gn selects the first "foo".
+    test.assert_cursor(0, 2);
 
     let visual_start = test.editor.visual_start();
-    assert_eq!(visual_start, Some((0, 8))); // Start of second "foo"
+    assert_eq!(visual_start, Some((0, 0)));
 }
 
 #[test]
 fn test_gn_selects_next_when_not_on_match() {
     let mut test = EditorTest::new("foo bar foo baz");
 
-    // Search for "foo", move to "bar", then gn should select next "foo"
+    // Search for "foo" (lands on the second one), move to "baz", then gn wraps to the first "foo"
     test.press('/')
         .type_text("foo")
         .press_enter()
-        .keys("w") // Move to "bar"
-        .keys("gn"); // Should select next "foo"
+        .keys("w") // Move to "baz"
+        .keys("gn"); // Should select the next "foo" (wrapping)
 
     assert_eq!(test.editor.mode(), Mode::Visual);
-    test.assert_cursor(0, 10); // End of second "foo"
+    // nvim --clean: gn from "baz" wraps to the first "foo".
+    test.assert_cursor(0, 2);
 
     let visual_start = test.editor.visual_start();
-    assert_eq!(visual_start, Some((0, 8))); // Start of second "foo"
+    assert_eq!(visual_start, Some((0, 0)));
 }
 
 #[test]
@@ -900,20 +904,23 @@ fn test_gN_selects_previous_match() {
 
 #[test]
 fn test_gn_visual_mode_extends_selection() {
-    let mut test = EditorTest::new("foo bar foo baz");
+    let mut test = EditorTest::new("x foo bar foo baz");
 
-    // Search for "foo", select first one, then extend to next
+    // Search for "foo" (lands on the first one), go back to the start of the line, start
+    // Visual mode there, then gn extends to the end of the next match
     test.press('/')
         .type_text("foo")
         .press_enter()
+        .keys("0")
         .press('v') // Enter visual mode
-        .keys("gn"); // Should extend to next "foo"
+        .keys("gn"); // Should extend to the end of the first "foo"
 
     assert_eq!(test.editor.mode(), Mode::Visual);
-    test.assert_cursor(0, 10); // End of second "foo"
+    // nvim --clean: marks '< / '> are (0,0) and (0,4).
+    test.assert_cursor(0, 4); // End of the first "foo"
 
     let visual_start = test.editor.visual_start();
-    assert_eq!(visual_start, Some((0, 0))); // Original anchor at first character
+    assert_eq!(visual_start, Some((0, 0))); // Original anchor
 }
 
 #[test]
@@ -940,10 +947,11 @@ fn test_gn_multiline_search() {
     test.press('/').type_text("foo").press_enter().keys("gn"); // Select first "foo"
 
     assert_eq!(test.editor.mode(), Mode::Visual);
-    test.assert_cursor(0, 2); // End of "foo" on line 0
+    // nvim --clean: /foo lands on line 2, where gn selects the match under the cursor.
+    test.assert_cursor(2, 2); // End of "foo" on line 2
 
     let visual_start = test.editor.visual_start();
-    assert_eq!(visual_start, Some((0, 0)));
+    assert_eq!(visual_start, Some((2, 0)));
 }
 
 #[test]
@@ -996,10 +1004,11 @@ fn test_cgn_change_next_match() {
     let mut test = EditorTest::new("foo bar foo baz");
 
     // Search for "foo" and change next match
+    // `0` goes back to the first "foo" (/foo lands on the second one).
     test.press('/')
         .type_text("foo")
         .press_enter()
-        .keys("cgn") // Change next match
+        .keys("0cgn") // Change next match
         .type_text("FOO")
         .press_esc();
 
@@ -1011,11 +1020,12 @@ fn test_cgn_change_next_match() {
 fn test_dgn_delete_next_match() {
     let mut test = EditorTest::new("foo bar foo baz");
 
-    // Search for "foo" and delete next match
+    // nvim --clean: /foo lands on the second "foo" (the match under the cursor is skipped)
+    // and dgn deletes the match under the cursor.
     test.press('/').type_text("foo").press_enter().keys("dgn"); // Delete next match
 
-    assert_eq!(test.buffer_content(), " bar foo baz\n");
-    test.assert_cursor(0, 0); // At start where "foo" was
+    assert_eq!(test.buffer_content(), "foo bar  baz\n");
+    test.assert_cursor(0, 8); // At start where "foo" was
 }
 
 #[test]
@@ -1038,10 +1048,11 @@ fn test_cgn_dot_repeat() {
     let mut test = EditorTest::new("foo bar foo baz foo end");
 
     // Change first "foo", then repeat with dot
+    // nvim --clean: /foo lands on the second "foo"; `0` goes back to the first.
     test.press('/')
         .type_text("foo")
         .press_enter()
-        .keys("cgn")
+        .keys("0cgn")
         .type_text("FOO")
         .press_esc()
         .press('n') // Move to next match
@@ -1058,7 +1069,8 @@ fn test_dot_repeat_cgn_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "foo bar foo baz foo!\n");
         }
-        step "0/foo<Enter>cgnFOO<Esc>" => |test| {
+        // `$/foo` wraps around to the first "foo" (a bare /foo would skip the match under the cursor)
+        step "$/foo<Enter>cgnFOO<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "FOO bar foo baz foo!\n");
         }
         step "n." => |test| {
@@ -1089,7 +1101,8 @@ fn test_dot_repeat_cgn_esc_no_insert_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "foo bar foo baz foo!\n");
         }
-        step "0/foo<Enter>cgn<Esc>" => |test| {
+        // `$/foo` wraps around to the first "foo" (a bare /foo would skip the match under the cursor)
+        step "$/foo<Enter>cgn<Esc>" => |test| {
             assert_eq!(test.buffer_content(), " bar foo baz foo!\n");
         }
         step "n." => |test| {
@@ -1120,7 +1133,8 @@ fn test_cgn_esc_undo_does_not_consume_prior_change_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "foo bar foo!\n");
         }
-        step "0/foo<Enter>cgn<Esc>" => |test| {
+        // `$/foo` wraps around to the first "foo" (a bare /foo would skip the match under the cursor)
+        step "$/foo<Enter>cgn<Esc>" => |test| {
             assert_eq!(test.buffer_content(), " bar foo!\n");
         }
         step "u" => |test| {
@@ -1139,7 +1153,8 @@ fn test_cgn_esc_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "foo bar foo!\n");
         }
-        step "0/foo<Enter>cgn<Esc>" => |test| {
+        // `$/foo` wraps around to the first "foo" (a bare /foo would skip the match under the cursor)
+        step "$/foo<Enter>cgn<Esc>" => |test| {
             assert_eq!(test.buffer_content(), " bar foo!\n");
         }
         step "u" => |test| {
@@ -1163,9 +1178,9 @@ fn test_gn_with_regex_pattern() {
 
     // Search for pattern matching "test" followed by digits
     test.press('/')
-        .type_text(r"test\d+")
+        .type_text(r"test\d\+")
         .press_enter()
-        .keys("gn");
+        .keys("0gn"); // /test\d+ lands on test456; `0` goes back to test123
 
     assert_eq!(test.editor.mode(), Mode::Visual);
     test.assert_cursor(0, 6); // End of "test123"
@@ -1175,11 +1190,12 @@ fn test_gn_with_regex_pattern() {
 fn test_gN_from_middle_selects_previous() {
     let mut test = EditorTest::new("foo bar foo baz foo end");
 
-    // Search for "foo", move to middle, gN should select previous match
+    // Search for "foo" (lands on the second one), move past it, gN should select the
+    // previous match (the second "foo")
     test.press('/')
         .type_text("foo")
         .press_enter()
-        .keys("nn") // Move to third "foo"
+        .keys("w") // Move to "baz", between the second and third "foo"
         .keys("gN"); // Select previous (second "foo")
 
     assert_eq!(test.editor.mode(), Mode::Visual);
@@ -1314,4 +1330,28 @@ fn test_shift_v_switches_from_visual_to_visual_line() {
 
     test.press('V');
     test.assert_mode(Mode::VisualLine);
+}
+
+// nvim --clean: "  alpha beta" cursor on 'b', `vIX<Esc>` → "X  alpha beta",
+// cursor on X; `u` restores the line (the insert is one undoable change).
+#[test]
+fn test_v_I_inserts_at_line_start_as_one_change() {
+    let mut test = EditorTest::new("foo\n  alpha beta\nxdelta");
+    test.set_cursor(1, 8);
+    test.keys("vjIX<Esc>");
+    assert_eq!(test.buffer_content(), "foo\nX  alpha beta\nxdelta\n");
+    test.assert_cursor(1, 0);
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "foo\n  alpha beta\nxdelta\n");
+}
+
+// nvim --clean: cursor on 'b' of "  alpha beta", `vlAX<Esc>` → "  alpha beXta".
+#[test]
+fn test_v_A_appends_after_selection_as_one_change() {
+    let mut test = EditorTest::new("  alpha beta");
+    test.set_cursor(0, 8);
+    test.keys("vlAX<Esc>");
+    assert_eq!(test.buffer_content(), "  alpha beXta\n");
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "  alpha beta\n");
 }

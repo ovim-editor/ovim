@@ -9,7 +9,7 @@ import {
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton } from "./Icon";
 import { utf16OffsetFromUtf8, utf8OffsetFromTextArea } from "./textEncoding";
-import type { GuiAiChat, GuiKeyInput } from "./types";
+import type { GuiAiChat, GuiChatInputState, GuiKeyInput } from "./types";
 
 const FALLBACK_CELL_WIDTH = 8.15;
 
@@ -46,8 +46,9 @@ export default function ChatComposer(props: {
     chat: GuiAiChat;
     revision?: number;
     bindInput?: (input: HTMLTextAreaElement | undefined) => void;
-    onUpdate?: (update: ChatInputUpdate) => Promise<void>;
+    onUpdate?: (update: ChatInputUpdate) => Promise<GuiChatInputState>;
     onWidth?: (columns: number) => void;
+    onRemoveDiffComments?: () => void;
     onRemoveImage?: (index: number) => void;
 }) {
     const [draft, setDraft] = createSignal(props.chat.input);
@@ -56,49 +57,110 @@ export default function ChatComposer(props: {
     let optimisticCursor = props.chat.inputCursor;
     let awaiting:
         | {
-              base: string;
               action: boolean;
-              responseDone: boolean;
-              revision: number;
+              response?: GuiChatInputState;
           }
         | undefined;
+    let syncedInput: string | undefined;
+    let syncedCursor: number | undefined;
     let mutations = Promise.resolve();
+    let queuedMutations = 0;
+    let previousResponse: GuiChatInputState | undefined;
     const hasActiveRun = () =>
-        props.chat.waiting || props.chat.activity !== "idle";
+        !props.chat.externalQuestion &&
+        (props.chat.waiting || props.chat.activity !== "idle");
+
+    const hasSubmission = () =>
+        Boolean(draft().trim()) || props.chat.pendingImages.length > 0;
+    const sendKey = (key: "Enter" | "Escape") => {
+        void publish(input.value, selectionFocus(), {
+            key,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+        });
+        queueMicrotask(() => input.focus());
+    };
 
     const resize = () => {
         if (!input) return;
-        input.style.height = "auto";
-        input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+        // Measuring the live input at its default height temporarily expands the
+        // transcript. WebKit clamps its scrollTop during that layout, moving the
+        // conversation on every keystroke even when the final height is unchanged.
+        const probe = input.cloneNode(false) as HTMLTextAreaElement;
+        probe.removeAttribute("id");
+        probe.removeAttribute("aria-label");
+        probe.tabIndex = -1;
+        probe.setAttribute("aria-hidden", "true");
+        probe.value = input.value;
+        Object.assign(probe.style, {
+            position: "absolute",
+            visibility: "hidden",
+            pointerEvents: "none",
+            width: `${input.getBoundingClientRect().width}px`,
+            height: "0",
+            minHeight: "0",
+            maxHeight: "none",
+            overflow: "hidden",
+            top: "0",
+            left: "0",
+        });
+        input.parentElement!.append(probe);
+        const height = Math.min(probe.scrollHeight, 220);
+        probe.remove();
+        input.style.height = `${height}px`;
     };
 
     const applyRemote = () => {
         const remoteInput = props.chat.input;
         const remoteCursor = props.chat.inputCursor;
+        let acknowledgedLocal = false;
         if (awaiting) {
             const matchesOptimistic =
                 remoteInput === optimisticInput &&
                 remoteCursor === optimisticCursor;
-            const actionChangedInput =
-                awaiting.action &&
-                awaiting.responseDone &&
-                (props.revision ?? 0) > awaiting.revision &&
-                remoteInput !== awaiting.base;
-            if (!matchesOptimistic && !actionChangedInput) return;
+            const response = awaiting.response;
+            const postResponseSnapshot =
+                response && (props.revision ?? 0) > response.revision;
+            // An action can preserve its draft, and a snapshot can precede its
+            // reply. Only this action's response acknowledges its outcome.
+            if (
+                (awaiting.action && !response) ||
+                (!matchesOptimistic && !postResponseSnapshot)
+            )
+                return;
+            acknowledgedLocal = matchesOptimistic;
             awaiting = undefined;
         }
+        const externalChange =
+            syncedInput !== remoteInput || syncedCursor !== remoteCursor;
+        const inputChanged = remoteInput !== optimisticInput;
+        syncedInput = remoteInput;
+        syncedCursor = remoteCursor;
         optimisticInput = remoteInput;
         optimisticCursor = remoteCursor;
         setDraft(remoteInput);
         queueMicrotask(() => {
             if (!input) return;
-            const cursor = utf16OffsetFromUtf8(remoteInput, remoteCursor);
-            input.setSelectionRange(cursor, cursor);
+            // An echo of a native edit, or an unrelated chat snapshot, must
+            // leave the textarea's selection intact, even while focus is in a
+            // menu. An editor action that changes the draft or cursor still
+            // takes effect.
+            if (inputChanged || (externalChange && !acknowledgedLocal)) {
+                const cursor = utf16OffsetFromUtf8(remoteInput, remoteCursor);
+                input.setSelectionRange(cursor, cursor);
+            }
             resize();
         });
     };
 
     createEffect(applyRemote);
+
+    const selectionFocus = () =>
+        input.selectionDirection === "backward"
+            ? input.selectionStart
+            : input.selectionEnd;
 
     const publish = (
         nextInput: string,
@@ -113,27 +175,58 @@ export default function ChatComposer(props: {
             cursor: nextCursor,
             action,
         };
-        const base = optimisticInput;
         optimisticInput = action?.key === "Enter" ? "" : nextInput;
         optimisticCursor = action?.key === "Enter" ? 0 : nextCursor;
         if (action?.key === "Enter") setDraft("");
-        awaiting = {
-            base,
+        const pending: NonNullable<typeof awaiting> = {
             action: Boolean(action),
-            responseDone: false,
-            revision: props.revision ?? 0,
         };
+        awaiting = pending;
+        const rebaseFromPrevious = queuedMutations > 0;
+        queuedMutations += 1;
         mutations = mutations
-            .then(() => props.onUpdate?.(update))
             .then(() => {
-                if (awaiting) awaiting.responseDone = true;
+                // A preceding action may have kept its draft (authentication,
+                // invalid command, or save failure). Rebase queued native edits
+                // against that actual result, retaining CAS against other edits.
+                if (rebaseFromPrevious && previousResponse) {
+                    update.expectedInput = previousResponse.input;
+                    update.expectedCursor = previousResponse.cursor;
+                }
+                return props.onUpdate?.(update);
+            })
+            .then((response) => {
+                previousResponse = response;
+                if (awaiting !== pending || !response) return;
+                pending.response = response;
+                const changed =
+                    optimisticInput !== response.input ||
+                    optimisticCursor !== response.cursor;
+                optimisticInput = response.input;
+                optimisticCursor = response.cursor;
+                setDraft(response.input);
+                if (changed)
+                    queueMicrotask(() => {
+                        if (!input) return;
+                        const cursor = utf16OffsetFromUtf8(
+                            response.input,
+                            response.cursor,
+                        );
+                        input.setSelectionRange(cursor, cursor);
+                        resize();
+                    });
                 applyRemote();
             })
             .catch(() => {
+                previousResponse = undefined;
+                if (awaiting !== pending) return;
                 awaiting = undefined;
                 optimisticInput = props.chat.input;
                 optimisticCursor = props.chat.inputCursor;
                 setDraft(props.chat.input);
+            })
+            .finally(() => {
+                queuedMutations -= 1;
             });
         return mutations;
     };
@@ -163,6 +256,24 @@ export default function ChatComposer(props: {
             classList={{ waiting: props.chat.waiting }}
             aria-busy={props.chat.waiting}
         >
+            <Show when={props.chat.pendingDiffComments}>
+                <details class="chat-diff-comments">
+                    <summary>
+                        Attached diff comments{" "}
+                        <button
+                            type="button"
+                            aria-label="Remove diff comments attachment"
+                            onClick={(event) => {
+                                event.preventDefault();
+                                props.onRemoveDiffComments?.();
+                            }}
+                        >
+                            ×
+                        </button>
+                    </summary>
+                    <pre>{props.chat.pendingDiffComments}</pre>
+                </details>
+            </Show>
             <Show when={props.chat.pendingImages.length}>
                 <div
                     class="chat-attachments"
@@ -192,7 +303,13 @@ export default function ChatComposer(props: {
                 class="chat-input"
                 aria-label="AI chat input"
                 value={draft()}
-                placeholder="Ask Ovim about this code…"
+                placeholder={
+                    props.chat.externalQuestion
+                        ? "Answer Claude’s question…"
+                        : props.chat.externalAgent
+                          ? "Ask Claude about this code…"
+                          : "Ask Ovim about this code…"
+                }
                 rows={2}
                 autocomplete="off"
                 autocapitalize="off"
@@ -201,19 +318,19 @@ export default function ChatComposer(props: {
                     const target = event.currentTarget;
                     setDraft(target.value);
                     resize();
-                    void publish(target.value, target.selectionStart);
+                    void publish(target.value, selectionFocus());
                 }}
                 onSelect={(event) => {
                     const target = event.currentTarget;
                     const cursor = utf8OffsetFromTextArea(
                         target.value,
-                        target.selectionStart,
+                        selectionFocus(),
                     );
                     if (
                         target.value === optimisticInput &&
                         cursor !== optimisticCursor
                     )
-                        void publish(target.value, target.selectionStart);
+                        void publish(target.value, selectionFocus());
                 }}
                 onKeyDown={(event) => {
                     if (event.isComposing) return;
@@ -223,21 +340,43 @@ export default function ChatComposer(props: {
                     if (!coreAction) return;
                     event.preventDefault();
                     const target = event.currentTarget;
+                    // Core resolves a parked approval with Enter (allow) and
+                    // Esc (deny). Typing a follow-up must never approve a
+                    // tool call: the card's buttons are the only resolvers.
+                    if (props.chat.approval && event.key !== "Tab") {
+                        void publish(target.value, selectionFocus());
+                        return;
+                    }
                     void publish(
                         target.value,
-                        target.selectionStart,
+                        selectionFocus(),
                         guiKeyInput(event),
                     );
                 }}
             />
             <footer>
                 <span>
-                    {hasActiveRun()
-                        ? "working"
-                        : "Enter to send · drop images to attach · Esc to return"}
+                    {props.chat.approval
+                        ? "Approval pending · choose Allow or Deny above"
+                        : props.chat.externalQuestion
+                          ? "Enter to answer · Esc to cancel"
+                          : hasActiveRun()
+                            ? "Enter queues · Esc stops"
+                            : "Enter to send · drop images to attach · Esc to return"}
                 </span>
                 <span class="chat-composer-actions">
                     <b>{props.chat.reasoningEffort}</b>
+                    <Show when={hasActiveRun() && hasSubmission()}>
+                        <IconButton
+                            class="chat-submit"
+                            icon="send"
+                            size={16}
+                            label="Queue message"
+                            shortcut="Enter"
+                            disabled={Boolean(props.chat.approval)}
+                            onClick={() => sendKey("Enter")}
+                        />
+                    </Show>
                     <IconButton
                         class="chat-submit"
                         icon={hasActiveRun() ? "stop" : "send"}
@@ -245,22 +384,14 @@ export default function ChatComposer(props: {
                         label={
                             hasActiveRun() ? "Stop generation" : "Send message"
                         }
+                        shortcut={hasActiveRun() ? "Esc" : undefined}
                         disabled={
-                            !hasActiveRun() &&
-                            !draft().trim() &&
-                            props.chat.pendingImages.length === 0
+                            Boolean(props.chat.approval) ||
+                            (!hasActiveRun() && !hasSubmission())
                         }
-                        onClick={() => {
-                            const key = hasActiveRun() ? "Escape" : "Enter";
-                            void publish(input.value, input.selectionStart, {
-                                key,
-                                shift: false,
-                                control: false,
-                                alt: false,
-                                meta: false,
-                            });
-                            queueMicrotask(() => input.focus());
-                        }}
+                        onClick={() =>
+                            sendKey(hasActiveRun() ? "Escape" : "Enter")
+                        }
                     />
                 </span>
             </footer>

@@ -16,41 +16,61 @@ impl Editor {
     ///
     /// Primary: LSP `textDocument/documentSymbol`
     /// Fallback: treesitter AST walk (Rust, TypeScript, Python)
+    ///
+    /// Waits for the server; callers on the editor loop use
+    /// [`Self::begin_outline`] and let the loop go on meanwhile.
     pub async fn get_outline(&mut self) -> OutlineInfo {
         let file = self.buffer().file_path().map(|s| s.to_string());
+        match self.begin_outline().await.await {
+            Ok(outline) => outline,
+            Err(_) => OutlineInfo {
+                file,
+                symbols: Vec::new(),
+                source: "unsupported".to_string(),
+                symbol_count: 0,
+            },
+        }
+    }
 
-        // Try LSP first
-        if let Ok(ctx) = self.prepare_lsp_request("outline").await {
-            let result = ctx.lsp.document_symbols(&ctx.uri, &ctx.language_id).await;
-            if let Ok(symbols) = result {
-                if !symbols.is_empty() {
-                    let outline_symbols: Vec<OutlineSymbol> =
-                        symbols.iter().map(convert_document_symbol).collect();
-                    let count = count_symbols(&outline_symbols);
-                    return OutlineInfo {
-                        file,
-                        symbols: outline_symbols,
-                        source: "lsp".to_string(),
-                        symbol_count: count,
-                    };
+    /// Starts [`Self::get_outline`]: the document is synced now, the server is
+    /// asked in a task, so the editor loop never waits for its answer.
+    pub async fn begin_outline(&mut self) -> tokio::task::JoinHandle<OutlineInfo> {
+        let file = self.buffer().file_path().map(|s| s.to_string());
+        let ctx = self.prepare_lsp_request("outline").await.ok();
+        // The fallback is cheap and reads the buffer: compute it up front.
+        let symbols = self.treesitter_outline();
+        tokio::spawn(async move {
+            if let Some(ctx) = ctx {
+                let result = ctx.lsp.document_symbols(&ctx.uri, &ctx.language_id).await;
+                if let Ok(symbols) = result {
+                    if !symbols.is_empty() {
+                        let outline_symbols: Vec<OutlineSymbol> =
+                            symbols.iter().map(convert_document_symbol).collect();
+                        let count = count_symbols(&outline_symbols);
+                        return OutlineInfo {
+                            file,
+                            symbols: outline_symbols,
+                            source: "lsp".to_string(),
+                            symbol_count: count,
+                        };
+                    }
                 }
             }
-        }
 
-        // Treesitter fallback
-        let symbols = self.treesitter_outline();
-        let count = count_symbols(&symbols);
-        let source = if symbols.is_empty() {
-            "unsupported"
-        } else {
-            "treesitter"
-        };
-        OutlineInfo {
-            file,
-            symbols,
-            source: source.to_string(),
-            symbol_count: count,
-        }
+            // Treesitter fallback
+            let count = count_symbols(&symbols);
+            let source = if symbols.is_empty() {
+                "unsupported"
+            } else {
+                "treesitter"
+            };
+            OutlineInfo {
+                file,
+                symbols,
+                source: source.to_string(),
+                symbol_count: count,
+            }
+        })
     }
 
     /// Searches workspace symbols by query string.
@@ -58,42 +78,52 @@ impl Editor {
     /// LSP `workspace/symbol` only — no treesitter fallback (cross-file search needs LSP).
     /// Caps results at 50.
     pub async fn search_symbols(&mut self, query: &str) -> SymbolSearchInfo {
-        if let Ok(ctx) = self.prepare_lsp_request("symbol-search").await {
-            let result = ctx
-                .lsp
-                .workspace_symbols(&ctx.language_id, query.to_string())
-                .await;
-            if let Ok(symbols) = result {
-                let results: Vec<SymbolSearchResult> = symbols
-                    .iter()
-                    .take(50)
-                    .filter_map(|sym| {
-                        let path = uri_to_file_path(&sym.location.uri)?;
-                        Some(SymbolSearchResult {
-                            name: sym.name.clone(),
-                            kind: symbol_kind_str(sym.kind),
-                            file: path.to_string_lossy().to_string(),
-                            line: sym.location.range.start.line as usize + 1,
-                            container: sym.container_name.clone(),
-                        })
-                    })
-                    .collect();
-                let result_count = results.len();
-                return SymbolSearchInfo {
-                    query: query.to_string(),
-                    results,
-                    result_count,
-                    source: "lsp".to_string(),
-                };
-            }
-        }
+        let unavailable = unavailable_symbol_search(query);
+        self.begin_symbol_search(query)
+            .await
+            .await
+            .unwrap_or(unavailable)
+    }
 
-        SymbolSearchInfo {
-            query: query.to_string(),
-            results: vec![],
-            result_count: 0,
-            source: "unavailable".to_string(),
-        }
+    /// Starts [`Self::search_symbols`] without waiting for the server.
+    pub async fn begin_symbol_search(
+        &mut self,
+        query: &str,
+    ) -> tokio::task::JoinHandle<SymbolSearchInfo> {
+        let ctx = self.prepare_lsp_request("symbol-search").await.ok();
+        let query = query.to_string();
+        tokio::spawn(async move {
+            if let Some(ctx) = ctx {
+                let result = ctx
+                    .lsp
+                    .workspace_symbols(&ctx.language_id, query.clone())
+                    .await;
+                if let Ok(symbols) = result {
+                    let results: Vec<SymbolSearchResult> = symbols
+                        .iter()
+                        .take(50)
+                        .filter_map(|sym| {
+                            let path = uri_to_file_path(&sym.location.uri)?;
+                            Some(SymbolSearchResult {
+                                name: sym.name.clone(),
+                                kind: symbol_kind_str(sym.kind),
+                                file: path.to_string_lossy().to_string(),
+                                line: sym.location.range.start.line as usize + 1,
+                                container: sym.container_name.clone(),
+                            })
+                        })
+                        .collect();
+                    let result_count = results.len();
+                    return SymbolSearchInfo {
+                        query,
+                        results,
+                        result_count,
+                        source: "lsp".to_string(),
+                    };
+                }
+            }
+            unavailable_symbol_search(&query)
+        })
     }
 
     /// Returns call hierarchy (incoming + outgoing calls) for the symbol at cursor.
@@ -101,81 +131,26 @@ impl Editor {
     /// Chains 3 LSP calls: prepareCallHierarchy → incomingCalls + outgoingCalls.
     /// Caps at 50 incoming + 50 outgoing.
     pub async fn get_trace(&mut self) -> TraceInfo {
-        let empty = TraceInfo {
-            target: None,
-            incoming: vec![],
-            outgoing: vec![],
-        };
-
-        let ctx = match self.prepare_lsp_request("trace").await {
-            Ok(ctx) => ctx,
-            Err(_) => return empty,
-        };
-
-        let items = match ctx
-            .lsp
-            .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
+        self.begin_trace()
             .await
-        {
-            Ok(Some(items)) if !items.is_empty() => items,
-            _ => return empty,
-        };
+            .await
+            .unwrap_or_else(|_| empty_trace())
+    }
 
-        let item = items[0].clone();
-        let target = Some(TraceNode {
-            name: item.name.clone(),
-            kind: symbol_kind_str(item.kind),
-            file: uri_to_file_path(&item.uri)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            line: item.selection_range.start.line as usize + 1,
-            detail: item.detail.clone(),
-        });
-
-        let incoming = match ctx.lsp.incoming_calls(item.clone(), &ctx.language_id).await {
-            Ok(Some(calls)) => calls
-                .iter()
-                .take(50)
-                .map(|call| TraceNode {
-                    name: call.from.name.clone(),
-                    kind: symbol_kind_str(call.from.kind),
-                    file: uri_to_file_path(&call.from.uri)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    line: call.from.selection_range.start.line as usize + 1,
-                    detail: call.from.detail.clone(),
-                })
-                .collect(),
-            _ => vec![],
-        };
-
-        let outgoing = match ctx.lsp.outgoing_calls(item, &ctx.language_id).await {
-            Ok(Some(calls)) => calls
-                .iter()
-                .take(50)
-                .map(|call| TraceNode {
-                    name: call.to.name.clone(),
-                    kind: symbol_kind_str(call.to.kind),
-                    file: uri_to_file_path(&call.to.uri)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    line: call.to.selection_range.start.line as usize + 1,
-                    detail: call.to.detail.clone(),
-                })
-                .collect(),
-            _ => vec![],
-        };
-
-        TraceInfo {
-            target,
-            incoming,
-            outgoing,
-        }
+    /// Starts [`Self::get_trace`] without waiting for the server.
+    pub async fn begin_trace(&mut self) -> tokio::task::JoinHandle<TraceInfo> {
+        let ctx = self.prepare_lsp_request("trace").await.ok();
+        tokio::spawn(async move {
+            let Some(ctx) = ctx else {
+                return empty_trace();
+            };
+            trace_at(&ctx).await
+        })
     }
 
     /// Treesitter-based outline fallback.
     /// Walks the syntax tree for known node kinds per language.
-    fn treesitter_outline(&self) -> Vec<OutlineSymbol> {
+    pub(crate) fn treesitter_outline(&self) -> Vec<OutlineSymbol> {
         let buffer = self.buffer();
         let tree = match buffer.syntax_tree() {
             Some(t) => t,
@@ -192,6 +167,8 @@ impl Editor {
                 TS_NODE_TABLE
             }
             Some("python") => PYTHON_NODE_TABLE,
+            Some("java") => JAVA_NODE_TABLE,
+            Some("kotlin") => KOTLIN_NODE_TABLE,
             _ => return vec![],
         };
 
@@ -303,9 +280,99 @@ static PYTHON_NODE_TABLE: &[NodeKindMapping] = &[
     },
 ];
 
+/// Java: the grammar names the declaration's identifier `name`.
+static JAVA_NODE_TABLE: &[NodeKindMapping] = &[
+    NodeKindMapping {
+        node_kind: "class_declaration",
+        symbol_kind: "class",
+        name_field: "name",
+    },
+    NodeKindMapping {
+        node_kind: "interface_declaration",
+        symbol_kind: "interface",
+        name_field: "name",
+    },
+    NodeKindMapping {
+        node_kind: "enum_declaration",
+        symbol_kind: "enum",
+        name_field: "name",
+    },
+    NodeKindMapping {
+        node_kind: "record_declaration",
+        symbol_kind: "class",
+        name_field: "name",
+    },
+    NodeKindMapping {
+        node_kind: "annotation_type_declaration",
+        symbol_kind: "interface",
+        name_field: "name",
+    },
+    NodeKindMapping {
+        node_kind: "method_declaration",
+        symbol_kind: "method",
+        name_field: "name",
+    },
+    NodeKindMapping {
+        node_kind: "constructor_declaration",
+        symbol_kind: "constructor",
+        name_field: "name",
+    },
+];
+
+/// Kotlin (fwcd grammar): declarations have no name field, the identifier is
+/// a child of the given kind (`kind:` prefix).
+static KOTLIN_NODE_TABLE: &[NodeKindMapping] = &[
+    NodeKindMapping {
+        node_kind: "class_declaration",
+        symbol_kind: "class",
+        name_field: "kind:type_identifier",
+    },
+    NodeKindMapping {
+        node_kind: "object_declaration",
+        symbol_kind: "class",
+        name_field: "kind:type_identifier",
+    },
+    NodeKindMapping {
+        node_kind: "function_declaration",
+        symbol_kind: "function",
+        name_field: "kind:simple_identifier",
+    },
+    NodeKindMapping {
+        node_kind: "secondary_constructor",
+        symbol_kind: "constructor",
+        name_field: "kind:constructor",
+    },
+];
+
 // --- Helpers ---
 
-fn convert_document_symbol(sym: &lsp_types::DocumentSymbol) -> OutlineSymbol {
+/// The identifier node of a declaration per its table entry.
+fn name_node<'a>(
+    node: &tree_sitter::Node<'a>,
+    mapping: &NodeKindMapping,
+) -> Option<tree_sitter::Node<'a>> {
+    match mapping.name_field.strip_prefix("kind:") {
+        Some(kind) => {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .find(|child| child.kind() == kind)
+        }
+        None => node.child_by_field_name(mapping.name_field),
+    }
+}
+
+/// 0-based (line, char column) of `node`'s start; tree-sitter columns are bytes.
+fn char_position(node: &tree_sitter::Node, source: &[u8]) -> (usize, usize) {
+    let position = node.start_position();
+    let line_start = node.start_byte().saturating_sub(position.column);
+    let prefix = source.get(line_start..node.start_byte()).unwrap_or(&[]);
+    (
+        position.row,
+        String::from_utf8_lossy(prefix).chars().count(),
+    )
+}
+
+pub(crate) fn convert_document_symbol(sym: &lsp_types::DocumentSymbol) -> OutlineSymbol {
     let children = sym
         .children
         .as_ref()
@@ -318,10 +385,14 @@ fn convert_document_symbol(sym: &lsp_types::DocumentSymbol) -> OutlineSymbol {
         start_line: sym.range.start.line as usize + 1,
         end_line: sym.range.end.line as usize + 1,
         children,
+        selection: Some((
+            sym.selection_range.start.line as usize,
+            sym.selection_range.start.character as usize,
+        )),
     }
 }
 
-fn symbol_kind_str(kind: lsp_types::SymbolKind) -> String {
+pub(crate) fn symbol_kind_str(kind: lsp_types::SymbolKind) -> String {
     match kind {
         lsp_types::SymbolKind::FILE => "file",
         lsp_types::SymbolKind::MODULE => "module",
@@ -354,6 +425,86 @@ fn symbol_kind_str(kind: lsp_types::SymbolKind) -> String {
     .to_string()
 }
 
+fn unavailable_symbol_search(query: &str) -> SymbolSearchInfo {
+    SymbolSearchInfo {
+        query: query.to_string(),
+        results: vec![],
+        result_count: 0,
+        source: "unavailable".to_string(),
+    }
+}
+
+fn empty_trace() -> TraceInfo {
+    TraceInfo {
+        target: None,
+        incoming: vec![],
+        outgoing: vec![],
+    }
+}
+
+/// The call hierarchy at the request's position.
+async fn trace_at(ctx: &super::super::lsp_integration::LspRequestContext) -> TraceInfo {
+    let items = match ctx
+        .lsp
+        .prepare_call_hierarchy(ctx.uri.clone(), ctx.line, ctx.character, &ctx.language_id)
+        .await
+    {
+        Ok(Some(items)) if !items.is_empty() => items,
+        _ => return empty_trace(),
+    };
+
+    let item = items[0].clone();
+    let target = Some(TraceNode {
+        name: item.name.clone(),
+        kind: symbol_kind_str(item.kind),
+        file: uri_to_file_path(&item.uri)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        line: item.selection_range.start.line as usize + 1,
+        detail: item.detail.clone(),
+    });
+
+    let incoming = match ctx.lsp.incoming_calls(item.clone(), &ctx.language_id).await {
+        Ok(Some(calls)) => calls
+            .iter()
+            .take(50)
+            .map(|call| TraceNode {
+                name: call.from.name.clone(),
+                kind: symbol_kind_str(call.from.kind),
+                file: uri_to_file_path(&call.from.uri)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                line: call.from.selection_range.start.line as usize + 1,
+                detail: call.from.detail.clone(),
+            })
+            .collect(),
+        _ => vec![],
+    };
+
+    let outgoing = match ctx.lsp.outgoing_calls(item, &ctx.language_id).await {
+        Ok(Some(calls)) => calls
+            .iter()
+            .take(50)
+            .map(|call| TraceNode {
+                name: call.to.name.clone(),
+                kind: symbol_kind_str(call.to.kind),
+                file: uri_to_file_path(&call.to.uri)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                line: call.to.selection_range.start.line as usize + 1,
+                detail: call.to.detail.clone(),
+            })
+            .collect(),
+        _ => vec![],
+    };
+
+    TraceInfo {
+        target,
+        incoming,
+        outgoing,
+    }
+}
+
 fn count_symbols(symbols: &[OutlineSymbol]) -> usize {
     symbols.iter().map(|s| 1 + count_symbols(&s.children)).sum()
 }
@@ -369,8 +520,9 @@ fn collect_symbols(
 
     for child in node.children(&mut cursor) {
         if let Some(mapping) = table.iter().find(|m| m.node_kind == child.kind()) {
-            let name = child
-                .child_by_field_name(mapping.name_field)
+            let name_node = name_node(&child, mapping);
+            let selection = name_node.as_ref().map(|n| char_position(n, source));
+            let name = name_node
                 .map(|n| n.utf8_text(source).unwrap_or("<unknown>").to_string())
                 .unwrap_or_else(|| {
                     // For impl_item, try to build "impl Type" name
@@ -396,6 +548,7 @@ fn collect_symbols(
                 start_line: child.start_position().row + 1,
                 end_line: child.end_position().row + 1,
                 children,
+                selection: selection.or(Some((child.start_position().row, 0))),
             });
         } else {
             // Recurse into non-matching nodes to find nested symbols

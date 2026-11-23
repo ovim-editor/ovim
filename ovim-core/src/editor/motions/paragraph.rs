@@ -5,121 +5,69 @@ use crate::buffer::Buffer;
 use crate::unicode::GraphemeCol;
 
 impl Motions {
-    /// Move forward to start of next paragraph ({ and } motions)
-    pub fn paragraph_forward(buffer: &mut Buffer, count: usize) {
-        for _ in 0..count {
-            Self::paragraph_forward_once(buffer);
-        }
+    /// `}`: forward to the next empty line, `count` times. With no empty line left
+    /// it goes to the last character of the buffer (and the operator range then
+    /// includes it, see [`Self::paragraph_end_is_inclusive`]); asking for more
+    /// paragraphs than there are fails and leaves the cursor alone.
+    pub fn paragraph_forward(buffer: &mut Buffer, count: usize) -> bool {
+        Self::find_paragraph(buffer, count, true)
     }
 
-    fn paragraph_forward_once(buffer: &mut Buffer) {
-        let cursor = buffer.cursor();
-        let mut line_idx = cursor.line();
-        let total_lines = buffer.line_count();
+    /// `{`: backward to the previous empty line, `count` times; the first line
+    /// when there is none.
+    pub fn paragraph_backward(buffer: &mut Buffer, count: usize) -> bool {
+        Self::find_paragraph(buffer, count, false)
+    }
 
-        // First skip any blank lines at/after cursor
-        while line_idx < total_lines {
-            if let Some(line) = buffer.line_text(line_idx) {
-                if !line.trim().is_empty() {
+    /// Whether a `}` that has just moved the cursor ended on the last character of
+    /// the buffer, which an operator takes along (the motion is inclusive there).
+    pub fn paragraph_end_is_inclusive(buffer: &Buffer) -> bool {
+        let line = buffer.cursor().line();
+        line + 1 >= buffer.line_count() && buffer.line_len(line) > 0
+    }
+
+    /// Vim's `findpar`: only empty lines (or a form feed) separate paragraphs.
+    fn find_paragraph(buffer: &mut Buffer, count: usize, forward: bool) -> bool {
+        let last = buffer.line_count().saturating_sub(1);
+        let separates = |buffer: &Buffer, line: usize| {
+            buffer.line_len(line) == 0
+                || buffer
+                    .line_text(line)
+                    .is_some_and(|text| text.starts_with('\x0c'))
+        };
+        let mut line = buffer.cursor().line();
+        for remaining in (0..count).rev() {
+            let mut skipped_text = false;
+            let mut first = true;
+            loop {
+                if buffer.line_len(line) != 0 {
+                    skipped_text = true;
+                }
+                if !first && skipped_text && separates(buffer, line) {
                     break;
                 }
-            }
-            line_idx += 1;
-        }
-
-        // Then skip non-blank lines to find the next blank line boundary
-        while line_idx < total_lines {
-            if let Some(line) = buffer.line_text(line_idx) {
-                if line.trim().is_empty() {
-                    break;
+                let next = if forward {
+                    (line < last).then_some(line + 1)
+                } else {
+                    line.checked_sub(1)
+                };
+                match next {
+                    Some(next) => line = next,
+                    // Out of lines: fine for the last paragraph asked for.
+                    None if remaining == 0 => break,
+                    None => return false,
                 }
-            }
-            line_idx += 1;
-        }
-
-        // Clamp to buffer bounds
-        line_idx = line_idx.min(total_lines.saturating_sub(1));
-        buffer
-            .cursor_mut()
-            .set_position(line_idx, GraphemeCol::ZERO);
-    }
-
-    /// Move backward to start of previous paragraph
-    pub fn paragraph_backward(buffer: &mut Buffer, count: usize) {
-        for _ in 0..count {
-            Self::paragraph_backward_once(buffer);
-        }
-    }
-
-    fn paragraph_backward_once(buffer: &mut Buffer) {
-        let cursor = buffer.cursor();
-        let mut line_idx = cursor.line();
-
-        if line_idx == 0 {
-            return;
-        }
-
-        // Whether the cursor began on a blank line. Only in that case do we skip
-        // the current run of blank lines backward; if it began on a content line,
-        // the blank line immediately above is the target and must NOT be skipped
-        // (otherwise `{` jumps a whole paragraph too far).
-        let started_blank = buffer
-            .line_text(line_idx)
-            .map(|l| l.trim().is_empty())
-            .unwrap_or(false);
-
-        line_idx = line_idx.saturating_sub(1);
-
-        if started_blank {
-            // Skip blank lines backward - check line 0 explicitly
-            while line_idx > 0 {
-                if let Some(line) = buffer.line_text(line_idx) {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        break;
-                    }
-                }
-                line_idx = line_idx.saturating_sub(1);
-            }
-            // Check line 0 after loop (loop condition skips it)
-            if line_idx == 0 {
-                if let Some(line) = buffer.line_text(0) {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        // Line 0 is non-blank, continue to next phase
-                    } else {
-                        // Line 0 is blank, stop here
-                        buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
-                        return;
-                    }
-                }
+                first = false;
             }
         }
-
-        // Fix: Skip non-blank lines backward until we find a blank line
-        while line_idx > 0 {
-            if let Some(line) = buffer.line_text(line_idx) {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    break; // Stop at the blank line
-                }
-            }
-            line_idx = line_idx.saturating_sub(1);
+        if forward && line == last {
+            let len = buffer.line_index(line).grapheme_count();
+            buffer
+                .cursor_mut()
+                .set_position(line, GraphemeCol(len.saturating_sub(1)));
+        } else {
+            buffer.cursor_mut().set_position(line, GraphemeCol::ZERO);
         }
-        // Check line 0 after loop - if we're here, check if it's blank
-        if line_idx == 0 {
-            if let Some(line) = buffer.line_text(0) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    // Line 0 is non-blank, we've gone as far back as we can
-                    // The paragraph starts at line 0
-                }
-                // If line 0 is blank, line_idx is already 0
-            }
-        }
-
-        buffer
-            .cursor_mut()
-            .set_position(line_idx, GraphemeCol::ZERO);
+        true
     }
 }

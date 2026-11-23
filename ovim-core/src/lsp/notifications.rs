@@ -21,25 +21,33 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
 /// Hard ceiling for lifecycle notifications (didOpen/didSave/didClose).
-/// A wedged-but-alive server (stdin backpressure with a full outgoing
-/// channel) must degrade LSP, not freeze the editor tick that awaits these
-/// broadcasts inline (OV-00333). didChange flushes already carry their own
-/// per-server timeout in `flush_pending_changes_broadcast`.
+/// `LanguageServer::notify` never waits for the writer task any more (a
+/// full outgoing queue fails fast with `OutgoingQueueFull`), so this is a
+/// last line of defence for the editor tick that awaits these broadcasts
+/// inline (OV-00333), not something a healthy or wedged server should hit.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A terminal didChange delivery failure for one server instance. Temporary
-/// backpressure is represented by the caller's timeout instead. A closed
-/// outgoing channel cannot recover; treating it as transient used to create a
-/// 150 ms retry loop that could grow `lsp.log` without bound.
+/// A didChange delivery failure for one server instance. `retryable` marks
+/// backpressure (the server is alive but not draining stdin): the pending
+/// change is re-armed with backoff. A closed outgoing channel or a dead
+/// server instance cannot recover; treating those as transient used to
+/// create a 150 ms retry loop that could grow `lsp.log` without bound.
 struct DidChangeFailure {
     error: anyhow::Error,
+    retryable: bool,
 }
 
 impl DidChangeFailure {
     fn terminal(error: impl Into<anyhow::Error>) -> Self {
         Self {
             error: error.into(),
+            retryable: false,
         }
+    }
+
+    fn from_notify(error: anyhow::Error) -> Self {
+        let retryable = super::server::LanguageServer::is_queue_full_error(&error);
+        Self { error, retryable }
     }
 }
 
@@ -102,18 +110,23 @@ fn workspace_configuration_values(
 }
 
 impl LspManager {
+    /// Sends `didOpen` for `uri` to the server `server_id`. A server that
+    /// already holds the document is left alone, so repeated opens are
+    /// harmless; a server that joins later (a companion, a restarted
+    /// process) is brought up to date at the version already in flight.
     pub async fn did_open(
         &self,
         uri: Uri,
+        server_id: &str,
         language_id: &str,
         version: i32,
         text: String,
     ) -> Result<()> {
         lsp_debug!(
             "LSP-NOTIFY",
-            "textDocument/didOpen | URI: {} | Language: {} | Version: {} | Size: {} bytes",
+            "textDocument/didOpen | URI: {} | Server: {} | Version: {} | Size: {} bytes",
             uri.as_str(),
-            language_id,
+            server_id,
             version,
             text.len()
         );
@@ -129,70 +142,109 @@ impl LspManager {
             ));
         }
 
-        // Atomically claim the didOpen: insert into document_versions under the
-        // lock so concurrent callers see the URI as already-claimed and return
-        // early. Without this guard, two concurrent callers could both pass a
-        // contains_key check, drop the lock, and each send a didOpen — a
-        // protocol violation. (OV-00210)
-        {
-            let mut versions = self.document_versions.lock().await;
-            if versions.contains_key(&uri) {
-                lsp_debug!(
-                    "LSP-NOTIFY",
-                    "textDocument/didOpen: skipping duplicate open for {}",
-                    uri.as_str()
-                );
-                return Ok(());
-            }
-            versions.insert(uri.clone(), version);
-        }
-
-        let server = match self.servers.get(language_id) {
-            Some(s) => s,
-            None => {
-                // Roll back the claim so a future open with a registered server can succeed.
-                self.document_versions.lock().await.remove(&uri);
-                return Err(anyhow::anyhow!("No server for language: {}", language_id));
-            }
+        // Atomically claim the document: insert into document_versions under
+        // the lock so concurrent callers see the URI as already-claimed. The
+        // per-server claim in `open_document_on_server` keeps them from each
+        // sending a didOpen — a protocol violation. (OV-00210)
+        let claimed = self.claim_document(&uri, version).await;
+        let version = if claimed {
+            self.forget_diagnostic_versions(&uri).await;
+            version
+        } else {
+            self.get_last_sent_version(&uri).await.max(version)
         };
 
-        let opened_text: Arc<str> = Arc::from(text.as_str());
+        let text: Arc<str> = Arc::from(text);
+        match self
+            .open_document_on_server(server_id, &uri, language_id, version, &text)
+            .await
+        {
+            Ok(true) => {
+                lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
+                self.last_sent_versions
+                    .lock()
+                    .await
+                    .entry(uri)
+                    .or_insert(version);
+                Ok(())
+            }
+            Ok(false) => Ok(()),
+            Err(error) => {
+                // Roll back so the next attempt isn't silently masked by the claim.
+                if claimed {
+                    self.document_versions.lock().await.remove(&uri);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Records the first claim on a document's version; false when the
+    /// document was already claimed.
+    async fn claim_document(&self, uri: &Uri, version: i32) -> bool {
+        let mut versions = self.document_versions.lock().await;
+        if versions.contains_key(uri) {
+            return false;
+        }
+        versions.insert(uri.clone(), version);
+        true
+    }
+
+    /// Sends `didOpen` to one server unless it already holds the document
+    /// (or another caller is opening it). Returns whether it was sent.
+    async fn open_document_on_server(
+        &self,
+        server_id: &str,
+        uri: &Uri,
+        language_id: &str,
+        version: i32,
+        text: &Arc<str>,
+    ) -> Result<bool> {
+        let key = (server_id.to_string(), uri.clone());
+        if self.server_documents.insert(key.clone(), None).is_some() {
+            return Ok(false);
+        }
+
+        // Clone the server out of the DashMap: holding the shard read guard
+        // across the notify await blocks any concurrent server insert or
+        // removal on that shard for the whole notify timeout.
+        let Some(server) = self.server_handle(server_id) else {
+            self.server_documents.remove(&key);
+            return Err(anyhow::anyhow!("No server for language: {}", server_id));
+        };
+
+        // A server that did not ask for open/close notifications still holds
+        // the document as far as bookkeeping goes; it is just never told.
+        if !server.wants_open_close() {
+            self.server_documents.insert(key, Some(text.clone()));
+            return Ok(true);
+        }
+
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
                 language_id: language_id.to_string(),
                 version,
-                text,
+                text: text.to_string(),
             },
         };
-
-        if let Err(e) = notify_with_timeout(
-            &server,
-            "textDocument/didOpen",
-            serde_json::to_value(params)?,
-        )
-        .await
-        {
-            // Roll back so the next attempt isn't silently masked by the claim.
-            self.document_versions.lock().await.remove(&uri);
-            return Err(e);
+        let sent = match serde_json::to_value(params) {
+            Ok(params) => notify_with_timeout(&server, "textDocument/didOpen", params).await,
+            Err(error) => Err(error.into()),
+        };
+        if let Err(error) = sent {
+            self.server_documents.remove(&key);
+            return Err(error);
         }
-
-        lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
 
         // Record the exact text the server now holds — the baseline for all
         // future incremental diffs to this server (OV-00326).
-        self.server_texts
-            .insert((language_id.to_string(), uri.clone()), opened_text);
-
-        let mut sent = self.last_sent_versions.lock().await;
-        sent.insert(uri, version);
-
-        Ok(())
+        self.server_documents.insert(key, Some(text.clone()));
+        Ok(true)
     }
 
     /// Sends textDocument/didChange to one server, diffing against the
-    /// authoritative per-server baseline in `server_texts` (the exact text
+    /// authoritative per-server baseline in `server_documents` (the exact text
     /// that server last received). Editor-side snapshots are never used as
     /// a diff baseline — they can lag or be poisoned by flush races, and an
     /// incremental edit computed against anything other than the server's
@@ -204,6 +256,7 @@ impl LspManager {
         &self,
         uri: &Uri,
         server_id: &str,
+        language_id: &str,
         text: &Arc<str>,
         version: i32,
     ) -> std::result::Result<bool, DidChangeFailure> {
@@ -222,7 +275,7 @@ impl LspManager {
         match server.state().await {
             // The outgoing queue preserves ordering while a process is being
             // initialized. A healthy queue can accept the notification now;
-            // backpressure is classified by the caller's timeout.
+            // a full one fails fast and is classified as retryable below.
             super::server::ServerState::Ready { .. }
             | super::server::ServerState::Spawning
             | super::server::ServerState::Initializing { .. } => {}
@@ -247,11 +300,26 @@ impl LspManager {
             }
         }
 
-        let supports_incremental = server.supports_incremental_sync().await;
-        let baseline = self
-            .server_texts
+        // A server that asked for no change notifications gets none (nor does
+        // one that was never told about the document): it reads files itself.
+        if !server.wants_changes() || !server.wants_open_close() {
+            return Ok(false);
+        }
+
+        let Some(baseline) = self
+            .server_documents
             .get(&(server_id.to_string(), uri.clone()))
-            .map(|entry| entry.value().clone());
+            .map(|entry| entry.value().clone())
+        else {
+            // This server never saw the document (it started after the
+            // primary opened it, or restarted): a didChange for an unopened
+            // document is a protocol violation, so open it at this version.
+            return self
+                .open_document_on_server(server_id, uri, language_id, version, text)
+                .await
+                .map_err(DidChangeFailure::from_notify);
+        };
+        let supports_incremental = server.supports_incremental_sync().await;
 
         let full_doc_size = text.len();
         let content_changes = match (supports_incremental, &baseline) {
@@ -305,14 +373,15 @@ impl LspManager {
                 serde_json::to_value(params).map_err(DidChangeFailure::terminal)?,
             )
             .await
-            // `notify` only fails after construction when its receiver is
-            // closed. That server instance cannot consume a later retry.
-            .map_err(DidChangeFailure::terminal)?;
+            // A full outgoing queue is transient (retry with backoff); a
+            // closed receiver means this server instance cannot consume a
+            // later retry.
+            .map_err(DidChangeFailure::from_notify)?;
 
         // The notification is in the server's ordered outgoing queue: record
         // `text` as this server's content so the next diff builds on it.
-        self.server_texts
-            .insert((server_id.to_string(), uri.clone()), text.clone());
+        self.server_documents
+            .insert((server_id.to_string(), uri.clone()), Some(text.clone()));
 
         Ok(true)
     }
@@ -383,7 +452,7 @@ impl LspManager {
     /// recorded per-server baselines, forcing the next flush to send a full
     /// document update. `Some(_)` is accepted for API compatibility but the
     /// value itself is ignored — incremental diffs are always computed at
-    /// flush time against `server_texts`, the text each server actually
+    /// flush time against `server_documents`, the text each server actually
     /// received (OV-00326).
     pub async fn did_change(
         &self,
@@ -408,7 +477,11 @@ impl LspManager {
         if old_text.is_none() {
             // No trustworthy baseline: force a full-document update on the
             // next flush for every server in this document's group.
-            self.server_texts.retain(|(_, u), _| u != &uri);
+            for mut entry in self.server_documents.iter_mut() {
+                if entry.key().1 == uri {
+                    *entry.value_mut() = None;
+                }
+            }
         }
 
         // Get or create the document's debouncer. The entry persists until
@@ -482,11 +555,12 @@ impl LspManager {
         versions.remove(&uri);
         drop(versions);
         self.last_sent_versions.lock().await.remove(&uri);
+        self.forget_diagnostic_versions(&uri).await;
 
         // Remove debouncer for this document
         self.change_debouncers.remove(&uri);
         self.flush_gates.remove(&uri);
-        self.server_texts.retain(|(_, u), _| u != &uri);
+        self.server_documents.retain(|(_, u), _| u != &uri);
         self.last_local_edit.lock().await.remove(&uri);
 
         // Note: We keep diagnostics - they should remain visible even after file is closed
@@ -499,6 +573,9 @@ impl LspManager {
     // =========================================================================
 
     /// Sends didOpen to the server group responsible for this document.
+    /// Servers that already hold the document are skipped, so calling this
+    /// again opens it on exactly the members that joined since (a companion
+    /// that started late, a restarted server).
     pub async fn did_open_broadcast(
         &self,
         uri: Uri,
@@ -515,28 +592,25 @@ impl LspManager {
             ));
         }
 
-        // Atomically claim the didOpen so concurrent callers don't broadcast
+        // Atomically claim the document so concurrent callers don't broadcast
         // duplicate notifications to every server in the group. The claim
         // is taken before any other check so duplicates short-circuit
         // regardless of transient server-registry state. (OV-00210)
-        {
-            let mut versions = self.document_versions.lock().await;
-            if versions.contains_key(&uri) {
-                lsp_debug!(
-                    "LSP-BROADCAST",
-                    "textDocument/didOpen: skipping duplicate broadcast for {}",
-                    uri.as_str()
-                );
-                return Ok(());
-            }
-            versions.insert(uri.clone(), version);
-        }
+        let claimed = self.claim_document(&uri, version).await;
+        let version = if claimed {
+            self.forget_diagnostic_versions(&uri).await;
+            version
+        } else {
+            self.get_last_sent_version(&uri).await.max(version)
+        };
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
         if server_ids.is_empty() {
             // Roll back the claim so a future broadcast (with servers
             // registered) is not silently masked.
-            self.document_versions.lock().await.remove(&uri);
+            if claimed {
+                self.document_versions.lock().await.remove(&uri);
+            }
             return Err(anyhow!(
                 "No servers for language '{}' matched document {}",
                 language_id,
@@ -544,37 +618,47 @@ impl LspManager {
             ));
         }
 
-        let opened_text: Arc<str> = Arc::from(text.as_str());
+        let mut attempted = 0usize;
+        let mut delivered = 0usize;
+        let text: Arc<str> = Arc::from(text);
         for sid in &server_ids {
-            if let Some(server) = self.servers.get(sid.as_str()) {
-                let params = DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem {
-                        uri: uri.clone(),
-                        language_id: language_id.to_string(),
-                        version,
-                        text: text.clone(),
-                    },
-                };
-                if let Err(e) = notify_with_timeout(
-                    &server,
-                    "textDocument/didOpen",
-                    serde_json::to_value(params)?,
-                )
+            match self
+                .open_document_on_server(sid, &uri, language_id, version, &text)
                 .await
-                {
+            {
+                Ok(true) => {
+                    attempted += 1;
+                    delivered += 1;
+                }
+                // Already open there, or being opened by a concurrent caller.
+                Ok(false) => {}
+                Err(e) => {
+                    attempted += 1;
                     lsp_warn!("LSP-BROADCAST", "didOpen failed for server {}: {}", sid, e);
-                } else {
-                    // Record the exact text this server now holds — the
-                    // baseline for future incremental diffs (OV-00326).
-                    self.server_texts
-                        .insert((sid.clone(), uri.clone()), opened_text.clone());
                 }
             }
         }
 
+        if attempted > 0 && delivered == 0 {
+            // Every server refused (dead, wedged, or gone): keeping the claim
+            // would make the document look open forever and mask the retry.
+            if claimed {
+                self.document_versions.lock().await.remove(&uri);
+            }
+            return Err(anyhow!(
+                "didOpen for {} was not delivered to any server",
+                uri.as_str()
+            ));
+        }
+
         // Initialize version tracking (once, shared) — version was claimed above.
-        let mut sent = self.last_sent_versions.lock().await;
-        sent.insert(uri, version);
+        if delivered > 0 {
+            self.last_sent_versions
+                .lock()
+                .await
+                .entry(uri)
+                .or_insert(version);
+        }
 
         Ok(())
     }
@@ -655,7 +739,7 @@ impl LspManager {
         for sid in &server_ids {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                self.send_did_change_to_server(uri, sid, &text, version),
+                self.send_did_change_to_server(uri, sid, language_id, &text, version),
             )
             .await
             {
@@ -664,6 +748,24 @@ impl LspManager {
                     any_sent = any_sent || actually_sent;
                     // Even no-diff (Ok(false)) means this server is in sync
                     // (OV-00211).
+                }
+                Ok(Err(failure)) if failure.retryable => {
+                    retryable_failure = true;
+                    // Every keystroke can land here while the server is
+                    // wedged; the server throttles this to one line per
+                    // interval.
+                    let warn = self
+                        .servers
+                        .get(sid.as_str())
+                        .is_none_or(|server| server.should_warn_queue_full());
+                    if warn {
+                        lsp_warn!(
+                            "LSP-BROADCAST",
+                            "Flush deferred for server {} (will retry with backoff): {}",
+                            sid,
+                            failure.error
+                        );
+                    }
                 }
                 Ok(Err(failure)) => {
                     lsp_warn!(
@@ -737,10 +839,19 @@ impl LspManager {
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
         for sid in &server_ids {
-            if let Some(server) = self.servers.get(sid.as_str()) {
+            if let Some(server) = self
+                .servers
+                .get(sid.as_str())
+                .map(|entry| entry.value().clone())
+            {
+                // Only servers that asked for saves get them, and the text
+                // only if they asked for that too.
+                let Some(include_text) = server.wants_save() else {
+                    continue;
+                };
                 let params = DidSaveTextDocumentParams {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
-                    text: text.clone(),
+                    text: text.clone().filter(|_| include_text),
                 };
                 if let Err(e) = notify_with_timeout(
                     &server,
@@ -764,7 +875,20 @@ impl LspManager {
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
         for sid in &server_ids {
-            if let Some(server) = self.servers.get(sid.as_str()) {
+            if !self
+                .server_documents
+                .contains_key(&(sid.clone(), uri.clone()))
+            {
+                continue;
+            }
+            if let Some(server) = self
+                .servers
+                .get(sid.as_str())
+                .map(|entry| entry.value().clone())
+            {
+                if !server.wants_open_close() {
+                    continue;
+                }
                 let params = DidCloseTextDocumentParams {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
                 };
@@ -785,9 +909,10 @@ impl LspManager {
         versions.remove(&uri);
         drop(versions);
         self.last_sent_versions.lock().await.remove(&uri);
+        self.forget_diagnostic_versions(&uri).await;
         self.change_debouncers.remove(&uri);
         self.flush_gates.remove(&uri);
-        self.server_texts.retain(|(_, u), _| u != &uri);
+        self.server_documents.retain(|(_, u), _| u != &uri);
         self.last_local_edit.lock().await.remove(&uri);
         self.deferred_diagnostics
             .lock()
@@ -795,6 +920,60 @@ impl LspManager {
             .retain(|(pending_uri, _), _| pending_uri != &uri);
 
         Ok(())
+    }
+
+    /// Hands a server-initiated workspace edit to the editor and waits for
+    /// its real outcome: whether it was applied, and why not.
+    async fn queue_workspace_edit(
+        &self,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> std::result::Result<lsp_types::ApplyWorkspaceEditResponse, protocol::ResponseError> {
+        lsp_info!(
+            "LSP-WORKSPACE",
+            "Queuing workspace edit with {} document changes",
+            edit.document_changes
+                .as_ref()
+                .map(|changes| match changes {
+                    lsp_types::DocumentChanges::Edits(edits) => edits.len(),
+                    lsp_types::DocumentChanges::Operations(ops) => ops.len(),
+                })
+                .unwrap_or_else(|| edit.changes.as_ref().map(|c| c.len()).unwrap_or(0))
+        );
+
+        let internal_error = |message: String| protocol::ResponseError {
+            code: -32603,
+            message,
+            data: None,
+        };
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        self.workspace_edit_tx
+            .send(super::PendingWorkspaceEdit { edit, reply })
+            .await
+            .map_err(|e| {
+                lsp_error!(
+                    "LSP-SERVER-REQUEST",
+                    "Failed to queue workspace edit: {}",
+                    e
+                );
+                internal_error(format!("Failed to queue edit: {}", e))
+            })?;
+        outcome
+            .await
+            .map_err(|_| internal_error("The editor dropped the edit".to_string()))
+    }
+
+    async fn reply_to_server(&self, server_id: &str, message: JsonRpcMessage) {
+        let Some(server) = self.server_handle(server_id) else {
+            return;
+        };
+        if let Err(e) = server.send_response(message).await {
+            lsp_error!(
+                "LSP-SERVER-REQUEST",
+                "Failed to send response to {}: {}",
+                server_id,
+                e
+            );
+        }
     }
 
     /// Handles incoming requests from language servers that expect a response
@@ -811,130 +990,39 @@ impl LspManager {
 
         match method {
             "workspace/applyEdit" => {
-                // Parse the ApplyWorkspaceEditParams
-                if let Some(params) = request.params {
+                let Some(params) = request.params else {
+                    return;
+                };
+                let reply =
                     match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params) {
-                        Ok(apply_params) => {
-                            // Queue the workspace edit for the Editor to apply
-                            // The Editor has access to buffers, we just queue the edits here
-                            let edit = apply_params.edit;
-
-                            lsp_info!(
-                                "LSP-WORKSPACE",
-                                "Queuing workspace edit with {} document changes",
-                                edit.document_changes
-                                    .as_ref()
-                                    .map(|changes| match changes {
-                                        lsp_types::DocumentChanges::Edits(edits) => edits.len(),
-                                        lsp_types::DocumentChanges::Operations(ops) => ops.len(),
-                                    })
-                                    .unwrap_or_else(|| edit
-                                        .changes
-                                        .as_ref()
-                                        .map(|c| c.len())
-                                        .unwrap_or(0))
-                            );
-
-                            // Send to channel for Editor to process
-                            match self.workspace_edit_tx.send(edit).await {
-                                Ok(_) => {
-                                    // Send success response to LSP server
-                                    let response = lsp_types::ApplyWorkspaceEditResponse {
-                                        applied: true,
-                                        failure_reason: None,
-                                        failed_change: None,
-                                    };
-
-                                    if let Some(id) = request_id {
-                                        if let Some(server) = self.servers.get(server_id) {
-                                            match serde_json::to_value(response) {
-                                                Ok(value) => {
-                                                    let response_msg =
-                                                        JsonRpcMessage::response(id, value);
-                                                    if let Err(e) =
-                                                        server.send_response(response_msg).await
-                                                    {
-                                                        lsp_error!(
-                                                            "LSP-SERVER-REQUEST",
-                                                            "Failed to send workspace/applyEdit response: {}",
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    lsp_error!(
-                                                        "LSP-SERVER-REQUEST",
-                                                        "Failed to serialize workspace/applyEdit response: {}",
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    // Channel send failed
-                                    lsp_error!(
-                                        "LSP-SERVER-REQUEST",
-                                        "Failed to queue workspace edit: {}",
-                                        e
-                                    );
-
-                                    if let Some(id) = request_id {
-                                        if let Some(server) = self.servers.get(server_id) {
-                                            let error_response = protocol::ResponseError {
-                                                code: -32603, // Internal error
-                                                message: format!("Failed to queue edit: {}", e),
-                                                data: None,
-                                            };
-
-                                            let response_msg =
-                                                JsonRpcMessage::error_response(id, error_response);
-
-                                            if let Err(e) = server.send_response(response_msg).await
-                                            {
-                                                lsp_error!(
-                                                    "LSP-SERVER-REQUEST",
-                                                    "Failed to send error response: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        Ok(apply_params) => self.queue_workspace_edit(apply_params.edit).await,
                         Err(e) => {
                             lsp_error!(
                                 "LSP-SERVER-REQUEST",
                                 "Failed to parse workspace/applyEdit params: {}",
                                 e
                             );
-
-                            // Send error response for parse failure
-                            if let Some(id) = request_id {
-                                if let Some(server) = self.servers.get(server_id) {
-                                    let error_response = protocol::ResponseError {
-                                        code: -32700, // Parse error
-                                        message: format!("Failed to parse parameters: {}", e),
-                                        data: None,
-                                    };
-
-                                    let response_msg =
-                                        JsonRpcMessage::error_response(id, error_response);
-
-                                    if let Err(e) = server.send_response(response_msg).await {
-                                        lsp_error!(
-                                            "LSP-SERVER-REQUEST",
-                                            "Failed to send error response: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
+                            Err(protocol::ResponseError {
+                                code: -32700, // Parse error
+                                message: format!("Failed to parse parameters: {}", e),
+                                data: None,
+                            })
                         }
-                    }
-                }
+                    };
+                let Some(id) = request_id else {
+                    return;
+                };
+                let message = match reply.and_then(|response| {
+                    serde_json::to_value(response).map_err(|e| protocol::ResponseError {
+                        code: -32603, // Internal error
+                        message: format!("Failed to serialize response: {}", e),
+                        data: None,
+                    })
+                }) {
+                    Ok(value) => JsonRpcMessage::response(id, value),
+                    Err(error) => JsonRpcMessage::error_response(id, error),
+                };
+                self.reply_to_server(server_id, message).await;
             }
             "client/registerCapability" => {
                 // Server wants to dynamically register capabilities
@@ -942,7 +1030,11 @@ impl LspManager {
                     match serde_json::from_value::<lsp_types::RegistrationParams>(params) {
                         Ok(reg_params) => {
                             // Update cached capability flags for each registration
-                            if let Some(server) = self.servers.get(server_id) {
+                            if let Some(server) = self
+                                .servers
+                                .get(server_id)
+                                .map(|entry| entry.value().clone())
+                            {
                                 for reg in &reg_params.registrations {
                                     lsp_info!(
                                         "LSP-SERVER-REQUEST",
@@ -951,6 +1043,16 @@ impl LspManager {
                                         reg.id
                                     );
                                     server.set_capability_by_method(&reg.method, true);
+                                    if reg.method == "workspace/didChangeWatchedFiles" {
+                                        if let Some(registration) =
+                                            super::watchers::parse_registration(
+                                                &reg.id,
+                                                reg.register_options.as_ref(),
+                                            )
+                                        {
+                                            self.register_file_watchers(server_id, registration);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -966,7 +1068,11 @@ impl LspManager {
 
                 // Always acknowledge success
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(server_id) {
+                    if let Some(server) = self
+                        .servers
+                        .get(server_id)
+                        .map(|entry| entry.value().clone())
+                    {
                         let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
@@ -983,7 +1089,11 @@ impl LspManager {
                 if let Some(params) = request.params {
                     match serde_json::from_value::<lsp_types::UnregistrationParams>(params) {
                         Ok(unreg_params) => {
-                            if let Some(server) = self.servers.get(server_id) {
+                            if let Some(server) = self
+                                .servers
+                                .get(server_id)
+                                .map(|entry| entry.value().clone())
+                            {
                                 for unreg in &unreg_params.unregisterations {
                                     lsp_info!(
                                         "LSP-SERVER-REQUEST",
@@ -992,6 +1102,9 @@ impl LspManager {
                                         unreg.id
                                     );
                                     server.set_capability_by_method(&unreg.method, false);
+                                    if unreg.method == "workspace/didChangeWatchedFiles" {
+                                        self.unregister_file_watchers(server_id, &unreg.id);
+                                    }
                                 }
                             }
                         }
@@ -1007,7 +1120,11 @@ impl LspManager {
 
                 // Always acknowledge success
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(server_id) {
+                    if let Some(server) = self
+                        .servers
+                        .get(server_id)
+                        .map(|entry| entry.value().clone())
+                    {
                         let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
@@ -1021,7 +1138,11 @@ impl LspManager {
             }
             "workspace/configuration" => {
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(server_id) {
+                    if let Some(server) = self
+                        .servers
+                        .get(server_id)
+                        .map(|entry| entry.value().clone())
+                    {
                         let root = self.server_roots.get(server_id).map(|root| root.clone());
                         let settings = root.and_then(|root| {
                             super::server::workspace_settings_for_root(server.language(), &root)
@@ -1043,18 +1164,72 @@ impl LspManager {
                 }
             }
             "window/showMessageRequest" => {
-                // Server wants to show a message with action buttons.
-                // Respond with null (no action selected) to unblock the server.
-                if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(server_id) {
-                        let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
-                        if let Err(e) = server.send_response(response_msg).await {
-                            lsp_error!(
-                                "LSP-SERVER-REQUEST",
-                                "Failed to send showMessageRequest response: {}",
-                                e
-                            );
+                // The server wants the user to pick an action. Queue it for
+                // the editor (it answers via `reply_message_request`); a
+                // request without actions is just a message and is answered
+                // right away so the server is never left waiting.
+                let params = request.params.clone().and_then(|p| {
+                    serde_json::from_value::<lsp_types::ShowMessageRequestParams>(p).ok()
+                });
+                match (params, request_id) {
+                    (Some(params), Some(id)) => {
+                        let actions: Vec<String> = params
+                            .actions
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|action| action.title)
+                            .collect();
+                        let severity = super::messages::MessageSeverity::from_lsp(params.typ);
+                        let pending = super::messages::MessageRequest {
+                            server_id: server_id.to_string(),
+                            id: id.clone(),
+                            severity,
+                            message: params.message,
+                            actions,
+                        };
+                        if pending.actions.is_empty() {
+                            self.queue_server_message(super::messages::ServerMessage::Notice {
+                                server_id: server_id.to_string(),
+                                severity,
+                                message: pending.message.clone(),
+                            });
+                            self.reply_message_request(&pending, None).await;
+                        } else {
+                            self.queue_server_message(super::messages::ServerMessage::Request(
+                                pending,
+                            ));
                         }
+                    }
+                    (None, Some(id)) => {
+                        // Unparsable: dismiss so the server does not hang.
+                        if let Some(server) = self
+                            .servers
+                            .get(server_id)
+                            .map(|entry| entry.value().clone())
+                        {
+                            let _ = server
+                                .send_response(JsonRpcMessage::response(
+                                    id,
+                                    serde_json::Value::Null,
+                                ))
+                                .await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "workspace/codeLens/refresh" => {
+                self.code_lens_refresh
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(id) = request_id {
+                    if let Some(server) = self
+                        .servers
+                        .get(server_id)
+                        .map(|entry| entry.value().clone())
+                    {
+                        let _ = server
+                            .send_response(JsonRpcMessage::response(id, serde_json::Value::Null))
+                            .await;
                     }
                 }
             }
@@ -1062,7 +1237,11 @@ impl LspManager {
                 // Server wants to create a progress token — acknowledge with success
                 // Responding with an error crashes some LSP servers (e.g. typescript-language-server)
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(server_id) {
+                    if let Some(server) = self
+                        .servers
+                        .get(server_id)
+                        .map(|entry| entry.value().clone())
+                    {
                         let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
@@ -1083,7 +1262,11 @@ impl LspManager {
 
                 // Send "method not found" error response
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(server_id) {
+                    if let Some(server) = self
+                        .servers
+                        .get(server_id)
+                        .map(|entry| entry.value().clone())
+                    {
                         let error_response = protocol::ResponseError {
                             code: -32601, // Method not found
                             message: format!("Method not supported: {}", method),
@@ -1158,45 +1341,31 @@ impl LspManager {
                     }
                 }
                 "window/showMessage" => {
-                    // Only show messages if OVIM_LSP_DEBUG is set to avoid cluttering the terminal
-                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        if let Some(params) = message.params {
-                            if let Ok(msg_params) =
-                                serde_json::from_value::<lsp_types::ShowMessageParams>(params)
-                            {
-                                // Format message with severity prefix
-                                let prefix = match msg_params.typ {
-                                    lsp_types::MessageType::ERROR => "LSP Error",
-                                    lsp_types::MessageType::WARNING => "LSP Warning",
-                                    lsp_types::MessageType::INFO => "LSP Info",
-                                    lsp_types::MessageType::LOG => "LSP Log",
-                                    _ => "LSP",
-                                };
-                                let type_str = match msg_params.typ {
-                                    lsp_types::MessageType::ERROR => "ERROR",
-                                    lsp_types::MessageType::WARNING => "WARN",
-                                    lsp_types::MessageType::INFO => "INFO",
-                                    lsp_types::MessageType::LOG => "LOG",
-                                    _ => "UNKNOWN",
-                                };
-                                let log_level = match msg_params.typ {
-                                    lsp_types::MessageType::ERROR => {
-                                        crate::lsp::logger::LogLevel::Error
-                                    }
-                                    lsp_types::MessageType::WARNING => {
-                                        crate::lsp::logger::LogLevel::Warning
-                                    }
-                                    lsp_types::MessageType::INFO => {
-                                        crate::lsp::logger::LogLevel::Info
-                                    }
-                                    _ => crate::lsp::logger::LogLevel::Info,
-                                };
-                                crate::lsp::logger::log_message(
-                                    log_level,
-                                    &format!("{}:{}", server_id, prefix),
-                                    &format!("{}: {}", type_str, msg_params.message),
-                                );
-                            }
+                    if let Some(params) = message.params {
+                        if let Ok(msg_params) =
+                            serde_json::from_value::<lsp_types::ShowMessageParams>(params)
+                        {
+                            let severity =
+                                super::messages::MessageSeverity::from_lsp(msg_params.typ);
+                            let log_level = match severity {
+                                super::messages::MessageSeverity::Error => {
+                                    crate::lsp::logger::LogLevel::Error
+                                }
+                                super::messages::MessageSeverity::Warning => {
+                                    crate::lsp::logger::LogLevel::Warning
+                                }
+                                _ => crate::lsp::logger::LogLevel::Info,
+                            };
+                            crate::lsp::logger::log_message(
+                                log_level,
+                                &format!("LSP:{server_id}:showMessage"),
+                                &msg_params.message,
+                            );
+                            self.queue_server_message(super::messages::ServerMessage::Notice {
+                                server_id: server_id.to_string(),
+                                severity,
+                                message: msg_params.message,
+                            });
                         }
                     }
                 }
@@ -1309,6 +1478,8 @@ impl LspManager {
             notifications.push(notification);
         }
         drop(rx);
+        // What arrived while the channel was full is newer than all of it.
+        notifications.extend(self.take_overflow_notifications());
 
         let count = notifications.len();
         for notification in notifications {
@@ -1394,7 +1565,7 @@ impl LspManager {
     /// Polls for pending workspace edits that need to be applied by the Editor
     /// Returns a Vec of workspace edits that should be applied (in order)
     /// This is called from the main event loop which has access to the Editor
-    pub async fn poll_pending_workspace_edits(&self) -> Vec<lsp_types::WorkspaceEdit> {
+    pub async fn poll_pending_workspace_edits(&self) -> Vec<super::PendingWorkspaceEdit> {
         let mut rx = self.workspace_edit_rx.lock().await;
         let mut edits = Vec::new();
 
@@ -1408,69 +1579,112 @@ impl LspManager {
 
     /// Starts a background task to listen for notifications and requests from a language server.
     /// `server_id` is the DashMap key: language_id for primaries, "language_id:companion_id" for companions.
-    pub async fn start_notification_listener(&self, server_id: String) {
-        let server = self
-            .servers
-            .get(&server_id)
-            .map(|entry| entry.value().clone());
+    ///
+    /// Server-initiated requests are answered from this task, never queued
+    /// behind the editor loop: it can be parked for minutes (`:terminal`,
+    /// `:!cmd`) and a server waiting for its `workspace/configuration` answer
+    /// would stall meanwhile. Notifications go through the bounded channel;
+    /// when it is full, the ones that only the latest of matters (diagnostics
+    /// of a document, progress of a token) are kept in `overflow_notifications`
+    /// instead of being dropped.
+    pub async fn start_notification_listener(self: &Arc<Self>, server_id: String) {
+        let Some(server) = self.server_handle(&server_id) else {
+            return;
+        };
+        let tx = self.notification_tx.clone();
+        let sid = server_id.clone();
+        let dropped_counter = self.dropped_notifications.clone();
+        let overflow = self.overflow_notifications.clone();
+        let manager = Arc::downgrade(self);
 
-        if let Some(server) = server {
-            let tx = self.notification_tx.clone();
-            let sid = server_id.clone();
-            let dropped_counter = self.dropped_notifications.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = server.receive().await {
+                if msg.is_request() {
+                    let Some(manager) = manager.upgrade() else {
+                        break;
+                    };
+                    let sid = sid.clone();
+                    tokio::spawn(async move {
+                        manager.handle_server_request(&sid, msg).await;
+                    });
+                    continue;
+                }
+                if !msg.is_notification() {
+                    continue;
+                }
+                let notification = LspNotification {
+                    server_id: sid.clone(),
+                    message: msg,
+                };
 
-            let handle = tokio::spawn(async move {
-                while let Some(msg) = server.receive().await {
-                    // Handle both notifications (no id) and requests from server (has id)
-                    if msg.is_notification() || msg.is_request() {
-                        // Send to manager for processing
-                        let notification = LspNotification {
-                            server_id: sid.clone(),
-                            message: msg,
-                        };
-
-                        // BUG FIX: Use try_send instead of send to avoid blocking
-                        // If channel is full, drop the notification and increment counter
-                        // This prevents deadlocks when the receiver is slow
-                        match tx.try_send(notification) {
-                            Ok(()) => {
-                                // Successfully sent
-                            }
-                            Err(mpsc::error::TrySendError::Full(dropped)) => {
-                                let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
-                                // Always log when dropping server-initiated requests (they expect a response)
-                                if dropped.message.is_request() {
-                                    lsp_error!(
-                                        "Listener",
-                                        "Dropped server-initiated request (channel full): method={:?}",
-                                        dropped.message.method
-                                    );
-                                } else if count.is_multiple_of(100) {
-                                    // Log every 100 dropped notifications to avoid spam
-                                    lsp_error!(
-                                        "Listener",
-                                        "Notification channel full, dropped {} notifications so far",
-                                        count + 1
-                                    );
-                                }
-                            }
-                            Err(mpsc::error::TrySendError::Closed(_)) => {
-                                // Manager dropped, stop listening
+                // Never block on a slow receiver: it would stop this server's
+                // output from being read.
+                match tx.try_send(notification) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(full)) => {
+                        let Some(key) = overflow_key(&full) else {
+                            let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
+                            if count.is_multiple_of(100) {
+                                // Log every 100 dropped notifications to avoid spam
                                 lsp_error!(
                                     "Listener",
-                                    "Notification channel closed, stopping listener"
+                                    "Notification channel full, dropped {} notifications so far",
+                                    count + 1
                                 );
-                                break;
                             }
+                            continue;
+                        };
+                        if let Ok(mut held) = overflow.lock() {
+                            held.insert(key, (next_overflow_sequence(), full));
                         }
                     }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        // Manager dropped, stop listening
+                        lsp_error!("Listener", "Notification channel closed, stopping listener");
+                        break;
+                    }
                 }
-            });
+            }
+        });
 
-            // Store the handle so we can abort it on server stop
-            self.listener_handles.insert(server_id, handle);
-        }
+        // Store the handle so we can abort it on server stop
+        self.listener_handles.insert(server_id, handle);
     }
+
+    /// Takes the notifications kept because the channel was full, in the
+    /// order the server sent them.
+    fn take_overflow_notifications(&self) -> Vec<LspNotification> {
+        let Ok(mut held) = self.overflow_notifications.lock() else {
+            return Vec::new();
+        };
+        let mut taken: Vec<_> = std::mem::take(&mut *held).into_values().collect();
+        taken.sort_by_key(|(sequence, _)| *sequence);
+        taken
+            .into_iter()
+            .map(|(_, notification)| notification)
+            .collect()
+    }
+}
+
+fn next_overflow_sequence() -> u64 {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What a notification that found the channel full is kept under: (server,
+/// method, subject). A newer notification with the same key replaces it, so
+/// only the latest diagnostics of a document or progress of a token survive.
+/// `None` for the notifications that are simply dropped.
+fn overflow_key(notification: &LspNotification) -> Option<super::OverflowKey> {
+    let method = notification.message.method.as_deref()?;
+    let params = notification.message.params.as_ref()?;
+    let subject = match method {
+        "textDocument/publishDiagnostics" => params.get("uri")?.as_str()?.to_string(),
+        "$/progress" => params.get("token")?.to_string(),
+        "window/showMessage" => params.to_string(),
+        _ => return None,
+    };
+    Some((notification.server_id.clone(), method.to_string(), subject))
 }
 
 #[cfg(test)]
@@ -1534,10 +1748,14 @@ mod tests {
         let manager = Arc::new(LspManager::new());
 
         for _ in 0..100 {
+            let (reply, _outcome) = tokio::sync::oneshot::channel();
             manager
                 .workspace_edit_tx
-                .try_send(lsp_types::WorkspaceEdit::default())
-                .expect("fill workspace edit queue");
+                .try_send(crate::lsp::PendingWorkspaceEdit {
+                    edit: lsp_types::WorkspaceEdit::default(),
+                    reply,
+                })
+                .unwrap_or_else(|_| panic!("fill workspace edit queue"));
         }
 
         let request = JsonRpcMessage::request(
@@ -1659,12 +1877,12 @@ mod tests {
         let server = super::super::server::LanguageServer::spawn(
             "rust",
             "sh",
-            vec!["-c".to_string(), "exit 0".to_string()],
+            vec!["-c".to_string(), "sleep 0.3; exit 0".to_string()],
         )
         .await
         .expect("spawn short-lived server");
 
-        for _ in 0..100 {
+        for _ in 0..200 {
             if matches!(
                 server.state().await,
                 super::super::server::ServerState::Failed { .. }
@@ -1706,33 +1924,39 @@ mod tests {
     /// be dropped so the next flush sends a full-document update instead of
     /// an incremental diff against a baseline the server may not have.
     #[tokio::test(flavor = "current_thread")]
-    async fn did_change_without_baseline_drops_server_texts() {
+    async fn did_change_without_baseline_drops_server_documents() {
         let manager = Arc::new(LspManager::new());
         let uri = Uri::from_str("file:///tmp/ovim-force-full.rs").expect("uri");
         let other_uri = Uri::from_str("file:///tmp/ovim-other.rs").expect("uri");
 
-        manager
-            .server_texts
-            .insert(("rust".to_string(), uri.clone()), Arc::from("stale\n"));
-        manager
-            .server_texts
-            .insert(("rust".to_string(), other_uri.clone()), Arc::from("keep\n"));
+        manager.server_documents.insert(
+            ("rust".to_string(), uri.clone()),
+            Some(Arc::from("stale\n")),
+        );
+        manager.server_documents.insert(
+            ("rust".to_string(), other_uri.clone()),
+            Some(Arc::from("keep\n")),
+        );
 
         manager
             .did_change(uri.clone(), "rust", Arc::from("fresh\n"), None)
             .await
             .unwrap();
 
-        assert!(
-            !manager
-                .server_texts
-                .contains_key(&("rust".to_string(), uri.clone())),
-            "force-full resend must drop the recorded baseline for the document"
-        );
-        assert!(
+        assert_eq!(
             manager
-                .server_texts
-                .contains_key(&("rust".to_string(), other_uri.clone())),
+                .server_documents
+                .get(&("rust".to_string(), uri.clone()))
+                .map(|entry| entry.value().clone()),
+            Some(None),
+            "force-full resend must drop the recorded baseline but keep the document open"
+        );
+        assert_eq!(
+            manager
+                .server_documents
+                .get(&("rust".to_string(), other_uri.clone()))
+                .map(|entry| entry.value().clone()),
+            Some(Some(Arc::from("keep\n"))),
             "baselines for other documents must be untouched"
         );
     }
@@ -1814,7 +2038,7 @@ mod tests {
         let uri = Uri::from_str("file:///tmp/ovim-sync-capture.rs").expect("uri");
         let v0 = "fn compute(x: u32) -> u32 {\n    x * 2\n}\n";
         manager
-            .did_open(uri.clone(), "rust", 1, v0.to_string())
+            .did_open(uri.clone(), "rust", "rust", 1, v0.to_string())
             .await
             .expect("didOpen");
 
@@ -1930,12 +2154,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// OV-00333: a wedged-but-alive server (not reading stdin, outgoing
-    /// channel full) must make lifecycle notifications error out instead of
-    /// blocking the caller forever — before the fix, `:w`/open/close on a
-    /// stopped server froze the editor tick indefinitely.
+    /// Polls `future` once. `None` means it would have waited.
+    fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
+        let mut future = std::pin::pin!(future);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(output) => Some(output),
+            std::task::Poll::Pending => None,
+        }
+    }
+
+    /// OV-00333: a wedged-but-alive server (not reading stdin) must make
+    /// notifications fail fast instead of parking the caller. Before the
+    /// fix, `:w`/open/close on a stopped server froze the editor tick for
+    /// as long as the server stayed wedged; a later bounded wait still cost
+    /// the tick 100 ms per notification, which stacked up under typing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn notify_times_out_when_server_stops_reading() {
+    async fn notify_fails_fast_when_server_stops_reading() {
         // A server process that never reads stdin.
         let server = super::super::server::LanguageServer::spawn(
             "rust",
@@ -1945,36 +2180,54 @@ mod tests {
         .await
         .expect("spawn wedged server");
 
-        // Fill the OS pipe buffer and the bounded outgoing channel so the
-        // next notify would block forever without a deadline. A ~1MB params
-        // payload saturates the pipe on the first write; the rest queue up.
+        // Fill the OS pipe buffer so the writer task blocks, then keep
+        // queueing until the outgoing queue reaches its limit. Every call
+        // must finish on its first poll, full queue or not.
         let big = serde_json::json!({ "pad": "x".repeat(1024 * 1024) });
-        for _ in 0..110 {
-            let send = server.notify("test/pad", big.clone());
-            if tokio::time::timeout(Duration::from_millis(200), send)
-                .await
-                .is_err()
-            {
-                // Channel is full — notify itself now blocks. That's the
-                // wedged state the deadline must break out of.
+        let mut refused = None;
+        for _ in 0..200 {
+            let result = poll_once(server.notify("test/pad", big.clone()))
+                .expect("notify must never wait for the writer task");
+            if let Err(e) = result {
+                refused = Some(e);
                 break;
             }
         }
+        let refused = refused.expect("queue limit must be reached");
+        assert!(
+            super::super::server::LanguageServer::is_queue_full_error(&refused),
+            "expected a queue-full error, got: {refused}"
+        );
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(3),
-            notify_with_deadline(
-                &server,
-                "textDocument/didSave",
-                serde_json::json!({}),
-                Duration::from_millis(100),
-            ),
-        )
-        .await
-        .expect("notify_with_deadline must return promptly, not hang");
+        // Lifecycle notifications go through the same fast path.
+        let result = poll_once(notify_with_deadline(
+            &server,
+            "textDocument/didSave",
+            serde_json::json!({}),
+            Duration::from_millis(100),
+        ))
+        .expect("didSave must never wait for the writer task");
         assert!(
             result.is_err(),
             "wedged server must produce an error, not a silent success"
+        );
+
+        // didChange classifies the refusal as retryable so the pending
+        // change is re-armed instead of dropped.
+        let manager = LspManager::new();
+        let uri = Uri::from_str("file:///tmp/ovim-queue-full.rs").expect("uri");
+        manager.servers.insert("rust".to_string(), server);
+        manager
+            .server_documents
+            .insert(("rust".to_string(), uri.clone()), Some(Arc::from("a\n")));
+        let failure = manager
+            .send_did_change_to_server(&uri, "rust", "rust", &Arc::from("ab\n"), 2)
+            .await
+            .expect_err("didChange must fail on a full queue");
+        assert!(
+            failure.retryable,
+            "queue-full didChange must be retryable: {}",
+            failure.error
         );
     }
 
@@ -2066,17 +2319,21 @@ mod tests {
         let manager = Arc::new(LspManager::new());
         let uri = Uri::from_str("file:///tmp/ovim-already-open.rs").expect("uri");
 
-        // Pre-populate document_versions to simulate a prior didOpen.
+        // Pre-populate the claim and the server's copy to simulate a prior
+        // didOpen of this document on this server.
         manager
             .document_versions
             .lock()
             .await
             .insert(uri.clone(), 7);
+        manager
+            .server_documents
+            .insert(("rust".to_string(), uri.clone()), Some(Arc::from("x")));
 
         // Even though no server is registered, this must succeed because
         // the duplicate guard returns early before touching servers.
         let result = manager
-            .did_open(uri.clone(), "rust", 1, "fn main() {}".to_string())
+            .did_open(uri.clone(), "rust", "rust", 1, "fn main() {}".to_string())
             .await;
         assert!(
             result.is_ok(),
@@ -2103,10 +2360,16 @@ mod tests {
             .lock()
             .await
             .insert(uri.clone(), 3);
+        manager
+            .language_server_index
+            .insert("rust".to_string(), vec!["rust".to_string()]);
+        manager
+            .server_documents
+            .insert(("rust".to_string(), uri.clone()), Some(Arc::from("x")));
 
-        // No server group registered. Without the guard this would attempt
-        // to look up servers_for_document_uri and return an error. With the
-        // guard it returns Ok early.
+        // The group's only server already holds the document and is not
+        // registered as running. Without the guard this would try to send a
+        // second didOpen and fail; with it the broadcast is a no-op.
         let result = manager
             .did_open_broadcast(uri.clone(), "rust", 1, "fn main() {}".to_string())
             .await;
@@ -2129,7 +2392,13 @@ mod tests {
         let uri = Uri::from_str("file:///tmp/ovim-rollback.rs").expect("uri");
 
         let result = manager
-            .did_open(uri.clone(), "no-such-language", 1, "x".to_string())
+            .did_open(
+                uri.clone(),
+                "no-such-language",
+                "no-such-language",
+                1,
+                "x".to_string(),
+            )
             .await;
         assert!(result.is_err(), "expected missing-server error");
 

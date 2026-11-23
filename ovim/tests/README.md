@@ -33,6 +33,21 @@ cargo test --test delete_operations_test
 cargo test --test lsp_operations_test
 ```
 
+### Real terminal lifecycle
+
+On Unix, the shell command suite includes a real PTY scenario. It requires
+`python3`, Git, and `/bin/sh`, and uses an isolated temporary workspace without
+submitting an AI request:
+
+```sh
+cargo test -p ovim --test shell_commands_test tui_terminal_handoff
+```
+
+It exercises interactive `:term`, quoted command pipelines, nonzero exits,
+`:!` acknowledgement, complete screen repaint, and chat dismissal followed by
+editing and saving. On failure it preserves the PTY transcript and workspace at
+the path printed by the test.
+
 ### Run Specific Test
 
 ```bash
@@ -105,6 +120,20 @@ INSTA_FORCE_UPDATE=1 cargo test
 ⚠️ **Warning**: Only use auto-accept when you're confident the changes are correct!
 
 ## Test Helper API
+
+Prefer `editor_test!` for key sequences whose outcomes fit a buffer, cursor,
+mode, and selection fixture. Each content line is followed by an annotation:
+`^` marks the cursor, `@` an optional anchor, and `-` selected text. Annotation
+columns count graphemes (cursor steps), so a combining sequence or ZWJ emoji
+uses one marker. Characterwise selections and insert cursors may mark the EOL
+position immediately after the text. Several `keys`/`expect` steps can share a
+fixture; see `visual_text_objects_test.rs`.
+
+Use `editor_flow_test!` when a step also needs to check registers, clipboard
+text, or other state. Async tests should use a small scenario helper with
+explicit completion conditions. `lsp_startup_test.rs` uses a real stdio peer
+whose initialization is released by the test, avoiding sleeps that guess how
+long server startup takes.
 
 The `EditorTest` helper provides a fluent API for writing tests:
 

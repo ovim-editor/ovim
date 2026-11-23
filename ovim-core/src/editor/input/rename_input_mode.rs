@@ -4,6 +4,34 @@ use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
 pub fn handle_rename_input_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    if key_event.code != KeyCode::Char('a') {
+        if let Some(control) = super::helpers::prompt_control(&key_event) {
+            use super::helpers::PromptControl;
+            match control {
+                PromptControl::Cancel => editor.set_mode(Mode::Normal),
+                PromptControl::Backspace => {
+                    return handle_rename_input_mode(
+                        editor,
+                        KeyEvent::new(KeyCode::Backspace, Modifiers::NONE),
+                    );
+                }
+                PromptControl::DeleteToStart => {
+                    editor.rename_input_mut().delete_to_start();
+                }
+                PromptControl::DeleteWord => {
+                    editor.rename_input_mut().delete_word_backward();
+                }
+                PromptControl::Home => {
+                    editor.rename_input_mut().move_home();
+                }
+                PromptControl::End => {
+                    editor.rename_input_mut().move_end();
+                }
+                PromptControl::InsertRegister | PromptControl::Ignore => {}
+            }
+            return Ok(());
+        }
+    }
     match key_event.code {
         KeyCode::Char('a') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.rename_input_mut().move_end();
@@ -69,6 +97,40 @@ mod tests {
         assert_eq!(editor.rename_buffer(), "aé");
         assert_eq!(editor.rename_cursor(), 3);
         assert_eq!(editor.mode(), Mode::RenameInput);
+    }
+
+    fn ctrl(character: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(character), Modifiers::CONTROL)
+    }
+
+    /// The prefilled name must be clearable like a Vim cmdline: Ctrl-U /
+    /// Ctrl-W / Ctrl-H edit, Ctrl-C cancels, nothing inserts a literal letter.
+    #[test]
+    fn ctrl_keys_edit_like_the_vim_cmdline() {
+        let mut editor = Editor::new();
+        editor.set_rename_buffer("customerId".to_owned());
+        editor.set_mode(Mode::RenameInput);
+
+        handle_rename_input_mode(&mut editor, ctrl('h')).unwrap();
+        assert_eq!(editor.rename_buffer(), "customerI");
+
+        handle_rename_input_mode(&mut editor, ctrl('w')).unwrap();
+        assert_eq!(editor.rename_buffer(), "");
+        editor.set_rename_buffer("foo bar".to_owned());
+        handle_rename_input_mode(&mut editor, ctrl('w')).unwrap();
+        assert_eq!(editor.rename_buffer(), "foo ");
+
+        editor.set_rename_buffer("customerId".to_owned());
+        handle_rename_input_mode(&mut editor, ctrl('u')).unwrap();
+        assert_eq!(editor.rename_buffer(), "");
+        assert_eq!(editor.mode(), Mode::RenameInput);
+
+        handle_rename_input_mode(&mut editor, key(KeyCode::Char('x'))).unwrap();
+        handle_rename_input_mode(&mut editor, ctrl('q')).unwrap();
+        assert_eq!(editor.rename_buffer(), "x", "unknown chords insert nothing");
+
+        handle_rename_input_mode(&mut editor, ctrl('c')).unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
     }
 
     #[test]

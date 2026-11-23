@@ -25,6 +25,35 @@ target/debug/ovim gui README.md
 `dist/` is intentionally checked in because Cargo embeds it in the native
 binary without requiring Node during a Rust build.
 
+### Editor text placement tests
+
+```sh
+npm ci
+npx playwright install chromium webkit
+npm run test:layout
+```
+
+These real-browser tests compare segment and glyph positions against continuous
+text in Normal and Insert modes, with different cursor and syntax boundaries and
+on a line without a cursor. They also verify that font completion updates existing
+segments. WebKit covers the macOS GUI's rendering engine; Chromium covers the web
+preview. Screenshots are saved under `test-results/`.
+
+### Explorer layout checks
+
+```sh
+npm run test:layout -- e2e/explorer-layout.spec.ts
+cargo test -p ovim gui::tests --lib --locked
+```
+
+The browser scenarios use synthetic filenames to cover deep selection, names
+wider than the sidebar, repeated reveal, manual horizontal scrolling, all 420
+loaded rows, pointer and keyboard resizing, responsive width clamping, and
+workspace persistence. Snapshot-driven workbench scenarios also verify that
+reveal activates a hidden Explorer and resizing updates the editor viewport.
+Chromium and WebKit save screenshots under `test-results/`. The Rust projection
+test verifies that every loaded tree row and repeated reveal intent reach the GUI.
+
 ### Native browser smoke test
 
 The debug GUI includes an opt-in end-to-end smoke test for the embedded
@@ -87,5 +116,15 @@ chat profile enables it by default. See
 [`user-docs/ai.md`](../../user-docs/ai.md#shared-embedded-browser-ovim-gui) for
 the control and security boundary.
 
-Terminal-only surfaces and exact soft-wrap/multi-split layout parity remain
-follow-up work; they do not maintain a second editor implementation in the DOM.
+The activity bar's Terminal action (also **View → Terminal**, **Cmd+Shift+T** on
+macOS, or **Ctrl+Shift+T** elsewhere) opens a persistent workspace shell.
+`TerminalPanel` owns xterm rendering and focus; the native `TerminalHost` owns the pseudoterminal, shell process, and
+session lifecycle. Switching context tabs retains the shell and scrollback.
+Closing the terminal or exiting its shell removes the panel and releases the
+session; closing another panel never automatically reveals it. `:term`,
+`:terminal`, and `:shell` use the same panel, with an optional command tail.
+Closing the application tears down the session. The browser development preview
+shows an unavailable state because it has no local PTY bridge.
+
+Exact soft-wrap/multi-split layout parity remains follow-up work; the GUI does
+not maintain a second editor implementation in the DOM.

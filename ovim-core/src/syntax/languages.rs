@@ -26,6 +26,8 @@ pub enum Language {
     Astro,
     Css,
     Toml,
+    Properties,
+    Ini,
     Markdown,
     Zig,
     Sql,
@@ -69,6 +71,8 @@ impl LanguageRegistry {
             "astro" => Language::Astro,
             "css" => Language::Css,
             "toml" => Language::Toml,
+            "properties" => Language::Properties,
+            "ini" => Language::Ini,
             "markdown" => Language::Markdown,
             "zig" => Language::Zig,
             "sql" => Language::Sql,
@@ -87,6 +91,19 @@ impl LanguageRegistry {
     pub fn detect_from_path<P: AsRef<Path>>(path: P) -> Option<Language> {
         let path = path.as_ref();
 
+        // Git's repository-local configuration has no identifying extension.
+        if path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some(".git")
+            && matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("config" | "config.worktree")
+            )
+        {
+            return Some(Language::Ini);
+        }
         // Try extension first
         if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
             if let Some(lang) = Self::detect_from_extension(extension) {
@@ -171,6 +188,8 @@ impl LanguageRegistry {
 
             // TOML
             "toml" => Some(Language::Toml),
+            "properties" | "prefs" => Some(Language::Properties),
+            "ini" => Some(Language::Ini),
 
             // Markdown
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdx" => Some(Language::Markdown),
@@ -257,6 +276,8 @@ impl LanguageRegistry {
             // Markdown special files
             "readme" | "changelog" | "contributing" | "license" => Some(Language::Markdown),
 
+            ".editorconfig" | ".gitconfig" | ".gitmodules" => Some(Language::Ini),
+
             // TOML special files
             "cargo.toml" | "cargo.lock" | "pyproject.toml" => Some(Language::Toml),
 
@@ -293,8 +314,7 @@ impl LanguageRegistry {
             Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
-            // Kotlin: use Java grammar as a fallback until we add a dedicated Kotlin grammar.
-            Language::Kotlin => tree_sitter_java::LANGUAGE.into(),
+            Language::Kotlin => tree_sitter_kotlin_sg::LANGUAGE.into(),
             Language::Scala => tree_sitter_scala::LANGUAGE.into(),
             Language::Groovy => tree_sitter_groovy::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
@@ -315,6 +335,8 @@ impl LanguageRegistry {
             // TOML: tree-sitter-toml depends on tree-sitter 0.20, incompatible with our 0.23
             // Use JSON for highlighting fallback (similar key-value structure)
             Language::Toml => tree_sitter_json::LANGUAGE.into(),
+            Language::Properties => tree_sitter_properties::LANGUAGE.into(),
+            Language::Ini => tree_sitter_ini::LANGUAGE.into(),
             Language::Markdown => tree_sitter_md::LANGUAGE.into(),
             Language::Zig => tree_sitter_zig::LANGUAGE.into(),
             Language::Sql => tree_sitter_sequel::LANGUAGE.into(),
@@ -343,8 +365,7 @@ impl LanguageRegistry {
             Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
             Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
             Language::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
-            // Kotlin: Java highlights as a fallback.
-            Language::Kotlin => tree_sitter_java::HIGHLIGHTS_QUERY,
+            Language::Kotlin => include_str!("queries/kotlin.scm"),
             Language::Scala => tree_sitter_scala::HIGHLIGHTS_QUERY,
             Language::Groovy => include_str!("queries/groovy.scm"),
             Language::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
@@ -361,6 +382,8 @@ impl LanguageRegistry {
             Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
             // TOML uses JSON highlighting as fallback (similar key-value structure)
             Language::Toml => tree_sitter_json::HIGHLIGHTS_QUERY,
+            Language::Properties => tree_sitter_properties::HIGHLIGHTS_QUERY,
+            Language::Ini => include_str!("queries/ini.scm"),
             // Custom queries for languages without good official ones
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
@@ -432,6 +455,8 @@ impl LanguageRegistry {
             Language::Astro => Some("astro"),
             Language::Css => Some("css"),
             Language::Toml => Some("toml"),
+            Language::Properties => Some("properties"),
+            Language::Ini => Some("ini"),
             Language::Markdown => Some("markdown"),
             Language::Zig => Some("zig"),
             Language::Sql => Some("sql"),
@@ -521,6 +546,8 @@ impl LanguageRegistry {
 
             // TOML
             "toml" => Some(Language::Toml),
+            "properties" | "prefs" => Some(Language::Properties),
+            "ini" | "editorconfig" | "gitconfig" => Some(Language::Ini),
 
             // Markdown (nested markdown in code blocks)
             "markdown" | "md" => Some(Language::Markdown),

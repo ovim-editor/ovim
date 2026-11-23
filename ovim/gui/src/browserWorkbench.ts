@@ -34,6 +34,10 @@ interface ClosedBrowserTab {
 
 const MAX_CLOSED_BROWSER_TABS = 20;
 
+/** A tab still on the new-tab page: restoring it would only reopen a blank tab. */
+export const isBlankSession = (session: { url: string }) =>
+    !session.url.trim() || session.url === "about:blank";
+
 export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     const [state, setState] = createSignal<BrowserState>({
         revision: 0,
@@ -45,7 +49,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     let latestPresentationRevision = 0;
     let latestStateRevision = -1;
     let latestActivationRequest = 0;
-    const closing = new Set<string>();
+    const closing = new Map<string, { selection?: WorkbenchSelection }>();
 
     const activeSessionId = () => {
         const selection = options.selection();
@@ -70,11 +74,17 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 action: "focus",
             });
     };
-    const present = (sessionId: string) => {
+    let presentationFocusSerial = 0;
+    const present = (sessionId: string, focusPage = true) => {
+        const serial = ++presentationFocusSerial;
         options.setSelection({ kind: "browser", sessionId });
+        if (!focusPage) return;
         requestAnimationFrame(() =>
             requestAnimationFrame(() => {
-                if (activeSessionId() === sessionId)
+                if (
+                    serial === presentationFocusSerial &&
+                    activeSessionId() === sessionId
+                )
                     void focus(sessionId).catch(() => {});
             }),
         );
@@ -109,6 +119,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 revision: projection.acknowledgeRevision,
             }).catch((reason) => options.setError(String(reason)));
 
+        const priorSelection = options.selection();
         const selection = projection.selection;
         if (
             selection.kind === "browser" &&
@@ -117,6 +128,21 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         )
             present(selection.sessionId);
         else options.setSelection(selection);
+        for (const [sessionId, request] of closing) {
+            if (
+                request.selection === priorSelection &&
+                priorSelection.kind === "browser" &&
+                priorSelection.sessionId === sessionId &&
+                !next.sessions.some(
+                    (session) => session.sessionId === sessionId,
+                ) &&
+                selection.kind !== "browser"
+            ) {
+                // Stream delivery may project the automatic fallback before the
+                // close response. Keep ownership through that projection only.
+                request.selection = options.selection();
+            }
+        }
     };
     const open = async (url?: string, placement?: WorkbenchTabPlacement) => {
         const current = state();
@@ -154,16 +180,28 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         position = state().sessions.length,
     ) => {
         if (!options.native || closing.has(sessionId) || !hasSession(sessionId))
-            return;
+            return false;
         const closingSession = state().sessions.find(
             (session) => session.sessionId === sessionId,
         );
-        closing.add(sessionId);
+        const request = {
+            selection:
+                activeSessionId() === sessionId
+                    ? options.selection()
+                    : undefined,
+        };
+        closing.set(sessionId, request);
         try {
-            accept(
-                await invoke<BrowserState>("gui_browser_close", { sessionId }),
-            );
-            if (closingSession)
+            const next = await invoke<BrowserState>("gui_browser_close", {
+                sessionId,
+            });
+            // Capture ownership before projection replaces a closed selection.
+            const remainedSelected =
+                request.selection !== undefined &&
+                request.selection === options.selection();
+            accept(next);
+            // A tab that never left the new-tab page has nothing to restore.
+            if (closingSession && !isBlankSession(closingSession))
                 setClosedTabs((previous) =>
                     [
                         {
@@ -174,6 +212,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                         ...previous,
                     ].slice(0, MAX_CLOSED_BROWSER_TABS),
                 );
+            return remainedSelected;
         } finally {
             closing.delete(sessionId);
         }

@@ -1,0 +1,11 @@
+{
+  "name": "ovim-claude-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test ../../ovim-core/src/ai/claude/*.test.mjs *.test.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}

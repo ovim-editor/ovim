@@ -117,7 +117,7 @@ latency does to it.
 
 ## Language Support
 
-23 languages with LSP auto-install, 2 more with manual LSP setup, plus syntax-only languages.
+24 languages with LSP auto-install, 4 more with manual LSP setup, plus syntax-only languages.
 
 When you open a file and its language server isn't installed, ovim asks once:
 
@@ -132,15 +132,17 @@ When you open a file and its language server isn't installed, ovim asks once:
 | Astro | astro-ls |
 | Python | pyright |
 | Go | gopls |
-| Java, Kotlin, Scala, Groovy | hyperion-lsp |
+| Java, Kotlin, Scala, Groovy | hyperion-lsp (macOS and Linux) |
 | C# | csharp-ls |
 | C / C++ | clangd (manual install) |
+| XML | lemminx (manual install) |
+| Ghostty | ghostty-lsp (manual install) |
 | Ruby | solargraph |
 | Zig | zls |
 | Lua | lua-language-server |
 | Elixir | elixir-ls |
 | Terraform | terraform-ls |
-| Bash, SQL, JSON, YAML, HTML, XML, CSS, TOML | various |
+| Bash, SQL, JSON, YAML, HTML, CSS, TOML | various |
 | Markdown, HCL, WGSL | syntax highlighting only |
 
 Run `ovim lsp languages` for the full list. See [Language Support](user-docs/LANGUAGE_SUPPORT.md) for details.
@@ -160,7 +162,7 @@ vim.opt.scrolloff = 10
 -- agent harness: it owns context, tools, approvals, edits, and shell programs.
 -- On first use, press Enter in Ovim's sign-in dialog to authenticate in your
 -- browser. Ovim keeps and refreshes credentials independently from Codex CLI.
--- The first chat can optionally enable Exa web search; reopen setup with /exa.
+-- Exa web search is offered the first time an agent needs it; set it up with /exa.
 vim.ai.setup({
   default_profile = "codex_terra",
   contexts = {
@@ -171,12 +173,12 @@ vim.ai.setup({
   profiles = {
     codex_sol = {
       provider = "codex",
-      model = "gpt-5.6-sol",
+      model = "gpt-6.1-sol",
       reasoning_effort = "medium",
     },
     codex_luna = {
       provider = "codex",
-      model = "gpt-5.6-luna",
+      model = "gpt-6-luna",
       reasoning_effort = "max",
     },
     codex_terra = {
@@ -190,7 +192,7 @@ vim.ai.setup({
 
 All `:set` options mirror Vim — `:set wrap`, `:set clipboard=unnamedplus`, `:set textwidth=80`, etc.
 
-To enable Exa for web searches in the AI chat, get an API key at https://exa.ai and set it up in ovim with `:exa`.
+To enable Exa for web searches in the AI chat, get an API key at https://exa.ai and set it up in ovim with `/exa`.
 
 See [Configuration](user-docs/configuration.md) and [Options Reference](user-docs/options.md) for the full list.
 
@@ -231,6 +233,12 @@ For AI-agent integration, ovim also speaks [MCP](https://modelcontextprotocol.io
 
 ## CLI Reference
 
+### Native GUI
+
+```bash
+ovim gui src/main.rs:42:10       # Open Ovim's native Tauri GUI
+```
+
 ### File Operations (no session needed)
 
 ```bash
@@ -248,6 +256,9 @@ ovim exec "set number" -s dev    # Execute ex command
 ovim context -s dev              # 21-line context window
 ovim buffer -s dev               # Buffer content
 ovim search "pattern" -s dev     # Find pattern
+ovim paste 'a\nb' -s dev         # Paste literal text (\n for a newline)
+ovim resize 120x40 -s dev        # Resize the logical viewport
+ovim snapshot -s dev             # Complete editor state as JSON
 ```
 
 ### LSP Commands
@@ -268,11 +279,19 @@ ovim session health -s dev       # Health check
 ovim session cleanup --dry-run   # Preview stale session cleanup
 ```
 
+### AI History
+
+```bash
+ovim history status              # Storage use and runs eligible for cleanup
+ovim history cleanup --dry-run   # Preview removal of old, unbound runs
+ovim history cleanup --max-age 7 # Remove eligible runs older than 7 days (default 30)
+```
+
 ## Architecture
 
 ```
-ovim-core/    Shared library — buffer, syntax, LSP, session logic
-ovim/         Binary — TUI, editor, CLI, REST API
+ovim-core/    Shared library — buffer, syntax, LSP, editor, session logic
+ovim/         Binary — TUI, CLI, REST API
 ```
 
 Key modules:
@@ -290,10 +309,13 @@ Key modules:
 - [Configuration](user-docs/configuration.md)
 - [AI Setup](user-docs/ai.md)
 - [Headless & Automation](user-docs/headless.md)
+- [Project Tools](user-docs/project-tools.md)
+- [Running and Debugging](user-docs/running-and-debugging.md)
 - [Remote Editing](user-docs/remote.md)
 - [Terminal Sessions](user-docs/terminal.md)
 - [Language Support](user-docs/LANGUAGE_SUPPORT.md)
 - [Options Reference](user-docs/options.md)
+- [Pseudocode Reading View](user-docs/pseudocode.md)
 - [MCP](user-docs/MCP.md)
 - [Troubleshooting](user-docs/troubleshooting.md)
 

@@ -306,18 +306,10 @@ fn handle_rename_prompt(
 }
 
 fn rename_from_prompt(editor: &mut Editor, original_path: &std::path::Path, input: &str) {
-    match editor.file_tree_mut().rename_entry(original_path, input) {
-        Ok(Some(_)) => editor.set_status_message(format!(
-            "Renamed: {} -> {}",
-            original_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
-            input
-        )),
-        Ok(None) => {}
-        Err(error) => editor.set_status_message(format!("Rename failed: {error}")),
-    }
+    // The rename itself runs on the LSP tick: language servers may want to
+    // rewrite references first (`workspace/willRenameFiles`), and open buffers
+    // must follow the file.
+    editor.request_explorer_rename(original_path.to_path_buf(), input.to_string());
 }
 
 fn handle_filter_prompt(editor: &mut Editor, mut input: SingleLineInput, key: KeyCode) {

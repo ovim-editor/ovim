@@ -204,6 +204,14 @@ impl LexicalProfile {
                 profile.line_comments = HASH_LINE;
                 profile.block_comments = NO_BLOCK_COMMENTS;
             }
+            Some(Language::Properties) => {
+                profile.line_comments = &["#", "!"];
+                profile.block_comments = NO_BLOCK_COMMENTS;
+            }
+            Some(Language::Ini) => {
+                profile.line_comments = &["#", ";"];
+                profile.block_comments = NO_BLOCK_COMMENTS;
+            }
             Some(Language::Lua) => {
                 profile.line_comments = DASH_LINE;
                 profile.block_comments = LUA_BLOCK;

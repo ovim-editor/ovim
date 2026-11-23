@@ -19,11 +19,54 @@ import App, {
     isNearChatBottom,
     retainTranscriptItems,
     reconcileWorkbenchTabs,
+    scrollWalkthroughWithKey,
     requestedBrowserPresentation,
     toolResultSummary,
 } from "./App";
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat, GuiCodeExplanation } from "./types";
+
+it("Claude chat presents permission choices and hides Ovim agent policies", () => {
+    const onApproval = vi.fn();
+    const chat: GuiAiChat = {
+        ...mockSnapshot.aiChat!,
+        profile: "claude_code",
+        externalAgent: true,
+        profiles: [
+            { id: "claude_code", provider: "claude_code", model: "default" },
+        ],
+        approval: "Claude Code: Bash\nRun the project tests?",
+    };
+    render(() => (
+        <ChatPanel chat={chat} focusInput={() => {}} onApproval={onApproval} />
+    ));
+    expect(screen.queryByRole("button", { name: /YOLO/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /COMPREHENSION/ })).toBeNull();
+    expect(screen.getByText(/Run the project tests/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(onApproval.mock.calls).toEqual([["allow"], ["deny"]]);
+});
+
+it("Claude questions keep an answer action in the composer while the agent waits", () => {
+    const chat: GuiAiChat = {
+        ...mockSnapshot.aiChat!,
+        externalAgent: true,
+        externalQuestion: true,
+        waiting: true,
+        activity: "waiting_tool_approval",
+        input: "Blue",
+        inputCursor: 4,
+    };
+    render(() => <ChatComposer chat={chat} />);
+    expect(
+        screen.getByPlaceholderText("Answer Claude’s question…"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeTruthy();
+    expect(
+        screen.queryByRole("button", { name: "Stop generation" }),
+    ).toBeNull();
+});
 
 class ResizeObserverMock {
     observe() {}
@@ -150,6 +193,7 @@ describe("Ovim Solid workbench", () => {
     it("renders an interactive concept walkthrough from projected core state", () => {
         const onKey = vi.fn();
         const walkthrough: GuiCodeExplanation = {
+            answerInProgress: false,
             current: 1,
             total: 2,
             page: {
@@ -160,6 +204,7 @@ describe("Ovim Solid workbench", () => {
             discussion: {
                 state: "navigating",
                 questionCount: 0,
+                exchangeTotal: 0,
                 latestFailed: false,
             },
         };
@@ -178,8 +223,81 @@ describe("Ovim Solid workbench", () => {
         expect(onKey).toHaveBeenNthCalledWith(2, " ");
     });
 
+    it("reopens a hidden thread while keeping streaming controls disabled", () => {
+        const onKey = vi.fn();
+        const walkthrough: GuiCodeExplanation = {
+            answerInProgress: true,
+            current: 1,
+            total: 2,
+            page: {
+                kind: "concept",
+                title: "Original step",
+                body: "The original explanation.",
+            },
+            discussion: {
+                state: "navigating",
+                questionCount: 2,
+                exchangeTotal: 2,
+                latestFailed: false,
+            },
+        };
+        render(() => (
+            <CodeWalkthrough walkthrough={walkthrough} onKey={onKey} />
+        ));
+        fireEvent.click(screen.getByRole("button", { name: "Show thread" }));
+        expect(onKey).toHaveBeenCalledWith("t");
+        expect(
+            screen
+                .getByRole("button", { name: "Continue" })
+                .hasAttribute("disabled"),
+        ).toBe(true);
+        expect(
+            screen
+                .getByRole("button", { name: "Ask a question" })
+                .hasAttribute("disabled"),
+        ).toBe(true);
+        expect(screen.getByText("The original explanation.")).toBeTruthy();
+    });
+
+    it("shows the question placeholder only while the question is empty", () => {
+        const [walkthrough, setWalkthrough] = createSignal<GuiCodeExplanation>({
+            answerInProgress: false,
+            current: 1,
+            total: 1,
+            page: { kind: "concept", title: "Step", body: "Body" },
+            discussion: {
+                state: "composing",
+                input: "",
+                cursor: 0,
+                questionCount: 0,
+            },
+        });
+        render(() => (
+            <CodeWalkthrough walkthrough={walkthrough()} onKey={() => {}} />
+        ));
+        const send = () =>
+            screen.getByRole("button", { name: "Send question" });
+        expect(screen.getByText("Type your question…")).toBeTruthy();
+        expect(send().hasAttribute("disabled")).toBe(true);
+        setWalkthrough((current) => ({
+            ...current,
+            discussion: {
+                state: "composing",
+                input: "why",
+                cursor: 3,
+                questionCount: 0,
+            },
+        }));
+        expect(screen.queryByText("Type your question…")).toBeNull();
+        expect(
+            document.querySelector(".walkthrough-question")!.textContent,
+        ).toBe("why");
+        expect(send().hasAttribute("disabled")).toBe(false);
+    });
+
     it("renders code location and live answer state", () => {
         const walkthrough: GuiCodeExplanation = {
+            answerInProgress: true,
             current: 2,
             total: 2,
             page: {
@@ -205,6 +323,12 @@ describe("Ovim Solid workbench", () => {
             screen.getByRole("dialog", { name: "src/main.rs:12–14" }),
         ).toBeTruthy();
         expect(screen.getByLabelText("Answering")).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Back to step" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Earlier question" }),
+        ).toBeTruthy();
         expect(screen.getByText("Because it owns the boundary.")).toBeTruthy();
         expect(
             screen
@@ -304,17 +428,87 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
-    it("opens the native workspace diff panel", async () => {
+    it("opens the terminal from the activity bar", async () => {
         render(() => <App />);
 
-        const diff = screen.getByRole("button", {
-            name: "Diff review",
+        const terminal = screen.getByRole("button", {
+            name: "Terminal",
         });
-        expect(diff.hasAttribute("disabled")).toBe(false);
-        fireEvent.click(diff);
+        expect(terminal.hasAttribute("disabled")).toBe(false);
+        fireEvent.click(terminal);
 
         expect(await screen.findByRole("tabpanel")).toBeTruthy();
-        expect(screen.getByText("Changes")).toBeTruthy();
+        expect(
+            screen.getByText("Terminal is available in the desktop app."),
+        ).toBeTruthy();
+    });
+
+    it.each(["MacIntel", "Linux x86_64"])(
+        "toggles the terminal with the platform shortcut on %s and disposes its dock when closed",
+        (platform) => {
+            vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+            const result = render(() => <App />);
+            const shortcut = {
+                key: "T",
+                code: "KeyT",
+                shiftKey: true,
+                ctrlKey: platform !== "MacIntel",
+                metaKey: platform === "MacIntel",
+            };
+
+            fireEvent.keyDown(document.body, shortcut);
+            const panel = screen.getByRole("region", { name: "Terminal" });
+            expect(
+                screen.getByText("Terminal is available in the desktop app."),
+            ).toBeTruthy();
+
+            fireEvent.keyDown(document.body, shortcut);
+            expect(
+                result.container.querySelector(".workbench")?.classList,
+            ).toContain("context-collapsed");
+            expect(
+                result.container.querySelector("#context-panel-terminal"),
+            ).toBeNull();
+
+            fireEvent.keyDown(document.body, shortcut);
+            expect(
+                result.container.querySelector(".workbench")?.classList,
+            ).not.toContain("context-collapsed");
+            expect(screen.getByRole("region", { name: "Terminal" })).not.toBe(
+                panel,
+            );
+        },
+    );
+
+    it("opens the terminal from the dashboard", () => {
+        const previousDashboard = mockSnapshot.dashboard;
+        const previousTree = mockSnapshot.fileTree;
+        mockSnapshot.dashboard = true;
+        mockSnapshot.fileTree = undefined;
+        try {
+            const result = render(() => <App />);
+            const button = screen.getByRole("button", { name: "Terminal" });
+            fireEvent.click(button);
+            expect(
+                screen.getByText("Terminal is available in the desktop app."),
+            ).toBeTruthy();
+            fireEvent.click(button);
+            expect(
+                result.container.querySelector(".workbench")?.classList,
+            ).toContain("context-collapsed");
+            fireEvent.keyDown(document.body, {
+                key: "T",
+                code: "KeyT",
+                shiftKey: true,
+                ctrlKey: true,
+            });
+            expect(
+                result.container.querySelector(".workbench")?.classList,
+            ).not.toContain("context-collapsed");
+        } finally {
+            mockSnapshot.dashboard = previousDashboard;
+            mockSnapshot.fileTree = previousTree;
+        }
     });
 
     it("keeps Vector in tab navigation without a perpetual browser tab", async () => {
@@ -377,18 +571,22 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
-    it("restores the persisted diff panel", async () => {
+    it("restores the persisted terminal panel", async () => {
         window.localStorage.setItem(
             "ovim.gui.layout.v1.%2Fworkspace%2Fovim",
             JSON.stringify({
                 activeDock: "context",
-                activeContextPanel: "diff",
+                activeContextPanel: "terminal",
             }),
         );
 
         render(() => <App />);
 
-        expect(await screen.findByText("Changes")).toBeTruthy();
+        expect(
+            await screen.findByText(
+                "Terminal is available in the desktop app.",
+            ),
+        ).toBeTruthy();
     });
 
     it("switches existing compact docks without toggling their core state", () => {
@@ -435,14 +633,16 @@ describe("Ovim Solid workbench", () => {
             expect(workbench.classList).toContain("active-context-dock");
             expect(mockSnapshot.aiChat).toBeTruthy();
 
-            const diff = screen.getByRole("button", {
-                name: "Diff review",
+            const terminal = screen.getByRole("button", {
+                name: "Terminal",
             });
-            fireEvent.click(diff);
+            fireEvent.click(terminal);
             expect(workbench.classList).toContain("active-context-dock");
-            expect(screen.getByText("Changes")).toBeTruthy();
+            expect(
+                screen.getByText("Terminal is available in the desktop app."),
+            ).toBeTruthy();
 
-            fireEvent.click(diff);
+            fireEvent.click(terminal);
             expect(workbench.classList).toContain("active-explorer-dock");
         } finally {
             result.unmount();
@@ -471,14 +671,19 @@ describe("Ovim Solid workbench", () => {
     it("sanitizes rendered AI markdown", () => {
         const result = render(() => (
             <Markdown
-                text={'**safe**<img src="x" onerror="window.__unsafe = true">'}
+                text={
+                    '**safe**<img src="x" onerror="window.__unsafe = true">' +
+                    '<style>.app{display:none}</style><p style="color:red">x</p>'
+                }
             />
         ));
 
         expect(screen.getByText("safe").tagName).toBe("STRONG");
-        expect(
-            result.container.querySelector("img")?.hasAttribute("onerror"),
-        ).toBe(false);
+        // Remote images would fetch (and leak) on render; styles could
+        // restyle the whole app.
+        expect(result.container.querySelector("img")).toBeNull();
+        expect(result.container.querySelector("style")).toBeNull();
+        expect(result.container.querySelector("[style]")).toBeNull();
         expect(result.container.querySelector("script")).toBeNull();
     });
 
@@ -574,6 +779,118 @@ describe("Ovim Solid workbench", () => {
             cursor: 4,
             action: undefined,
         });
+    });
+
+    it("keeps a native word selection while chat snapshots arrive", async () => {
+        let finishUpdate!: () => void;
+        const onUpdate = vi.fn(
+            () =>
+                new Promise<import("./types").GuiChatInputState>((resolve) => {
+                    finishUpdate = () =>
+                        resolve({
+                            input: "one two three",
+                            cursor: 8,
+                            revision: 0,
+                        });
+                }),
+        );
+        const [chat, setChat] = createSignal<GuiAiChat>({
+            ...mockSnapshot.aiChat!,
+            input: "one two three",
+            inputCursor: 13,
+        });
+        render(() => <ChatComposer chat={chat()} onUpdate={onUpdate} />);
+        const input = screen.getByLabelText(
+            "AI chat input",
+        ) as HTMLTextAreaElement;
+        await Promise.resolve();
+        vi.mocked(HTMLElement.prototype.focus).mockRestore();
+        input.focus();
+        input.setSelectionRange(8, 13, "backward");
+        fireEvent.select(input);
+        await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+        expect(onUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ expectedCursor: 13, cursor: 8 }),
+        );
+
+        // A stale snapshot can arrive before the queued native edit completes.
+        setChat({ ...chat(), activity: "working" });
+        await Promise.resolve();
+        expect(input.selectionStart).toBe(8);
+        expect(input.selectionEnd).toBe(13);
+
+        finishUpdate();
+        await Promise.resolve();
+        setChat({ ...chat(), inputCursor: 8 });
+        await Promise.resolve();
+        expect(input.selectionStart).toBe(8);
+        expect(input.selectionEnd).toBe(13);
+
+        setChat({ ...chat(), activity: "idle" });
+        await Promise.resolve();
+
+        expect(input.selectionStart).toBe(8);
+        expect(input.selectionEnd).toBe(13);
+        expect(input.selectionDirection).toBe("backward");
+
+        const menuButton = document.createElement("button");
+        document.body.append(menuButton);
+        menuButton.focus();
+        expect(document.activeElement).toBe(menuButton);
+        setChat({ ...chat(), activity: "working" });
+        await Promise.resolve();
+
+        expect(input.selectionStart).toBe(8);
+        expect(input.selectionEnd).toBe(13);
+        expect(input.selectionDirection).toBe("backward");
+    });
+
+    it("uses the active end of a forward selection for core cursor updates", async () => {
+        const onUpdate = vi.fn().mockResolvedValue(undefined);
+        render(() => (
+            <ChatComposer
+                chat={{
+                    ...mockSnapshot.aiChat!,
+                    input: "one two three",
+                    inputCursor: 0,
+                }}
+                onUpdate={onUpdate}
+            />
+        ));
+        const input = screen.getByLabelText(
+            "AI chat input",
+        ) as HTMLTextAreaElement;
+        await Promise.resolve();
+        vi.mocked(HTMLElement.prototype.focus).mockRestore();
+        input.focus();
+        input.setSelectionRange(0, 3, "forward");
+        fireEvent.select(input);
+
+        await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+        expect(onUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ expectedCursor: 0, cursor: 3 }),
+        );
+    });
+
+    it("applies an external core cursor change to the focused composer", async () => {
+        const [chat, setChat] = createSignal<GuiAiChat>({
+            ...mockSnapshot.aiChat!,
+            input: "one two three",
+            inputCursor: 13,
+        });
+        render(() => <ChatComposer chat={chat()} />);
+        const input = screen.getByLabelText(
+            "AI chat input",
+        ) as HTMLTextAreaElement;
+        await Promise.resolve();
+        vi.mocked(HTMLElement.prototype.focus).mockRestore();
+        input.focus();
+
+        setChat({ ...chat(), inputCursor: 4 });
+        await Promise.resolve();
+
+        expect(input.selectionStart).toBe(4);
+        expect(input.selectionEnd).toBe(4);
     });
 
     it("publishes submit atomically with the latest native draft", async () => {
@@ -830,27 +1147,26 @@ describe("Ovim Solid workbench", () => {
             name: /codex.*default.*medium/i,
         });
         fireEvent.click(trigger);
-        const search = screen.getByLabelText("Model profile");
-        const focus = vi.mocked(HTMLElement.prototype.focus);
-        focus.mockClear();
-        fireEvent.keyDown(search, { key: "ArrowDown" });
-        await Promise.resolve();
-        expect(focus.mock.instances).toContain(
-            screen.getByRole("option", { name: /codex.*gpt-test/i }),
-        );
-        fireEvent.input(search, { target: { value: "qwen" } });
-        expect(screen.queryByRole("option", { name: /codex/i })).toBeNull();
-        fireEvent.click(
-            screen.getByRole("option", { name: /local.*ollama.*qwen-test/i }),
-        );
-        await Promise.resolve();
-        expect(onProfile).toHaveBeenCalledWith("local");
-        expect(focusInput).toHaveBeenCalledOnce();
-
-        fireEvent.click(trigger);
-        fireEvent.click(screen.getByRole("button", { name: "high" }));
-        await Promise.resolve();
+        expect(
+            (screen.getByLabelText("AI provider") as HTMLSelectElement).value,
+        ).toBe("codex");
+        expect(
+            (screen.getByLabelText("AI model") as HTMLSelectElement).value,
+        ).toBe(JSON.stringify(["codex", "gpt-test"]));
+        fireEvent.change(screen.getByLabelText("AI provider"), {
+            target: { value: "ollama" },
+        });
+        expect(onProfile).toHaveBeenCalledWith("local", "qwen-test");
+        expect(
+            (screen.getByLabelText("AI model") as HTMLSelectElement).value,
+        ).toBe(JSON.stringify(["local", "qwen-test"]));
+        fireEvent.change(screen.getByLabelText("Reasoning effort"), {
+            target: { value: "high" },
+        });
         expect(onReasoningEffort).toHaveBeenCalledWith("high");
+        fireEvent.click(screen.getByRole("button", { name: "Done" }));
+        await Promise.resolve();
+        expect(focusInput).toHaveBeenCalledOnce();
         fireEvent.click(screen.getByRole("button", { name: "YOLO OFF" }));
         fireEvent.click(
             screen.getByRole("button", { name: "COMPREHENSION OFF" }),
@@ -1082,6 +1398,192 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
+    it("renders signature help with the active parameter highlighted", () => {
+        mockSnapshot.signatureHelp = {
+            before: "join(String delimiter, ",
+            active: "String... parts",
+            after: ")",
+            documentation: "the parts to join",
+            signatureIndex: 1,
+            signatureCount: 3,
+            line: 0,
+            displayColumn: 5,
+        };
+        try {
+            const result = render(() => <App />);
+            const popover =
+                result.container.querySelector(".signature-popover");
+            expect(popover).not.toBeNull();
+            expect(
+                popover?.querySelector(".signature-active")?.textContent,
+            ).toBe("String... parts");
+            expect(popover?.textContent).toContain("2/3");
+            expect(popover?.textContent).toContain("the parts to join");
+        } finally {
+            delete mockSnapshot.signatureHelp;
+        }
+    });
+
+    it("renders completion rows with kind, label details, matches, deprecation and documentation", () => {
+        mockSnapshot.completion = {
+            selected: 0,
+            total: 40,
+            items: [
+                {
+                    index: 0,
+                    label: "getEmail",
+                    detail: "()",
+                    description: "String",
+                    kind: "Method",
+                    kindGlyph: "m",
+                    kindClass: "function",
+                    matched: [0, 3, 4],
+                },
+                {
+                    index: 1,
+                    label: "ArrayList",
+                    description: "java.util",
+                    kind: "Class",
+                    kindGlyph: "C",
+                    kindClass: "type",
+                    deprecated: true,
+                    matched: [],
+                },
+            ],
+            documentation:
+                "```\nString getEmail()\n```\n\nReturns the **email**.",
+        };
+        try {
+            const result = render(() => <App />);
+            const rows = result.container.querySelectorAll(".completion-item");
+            expect(rows).toHaveLength(2);
+            expect(rows[0].querySelector(".completion-kind")?.textContent).toBe(
+                "m",
+            );
+            expect(
+                rows[0].querySelector(".completion-kind")?.className,
+            ).toContain("kind-function");
+            expect(
+                rows[0].querySelector(".completion-detail")?.textContent,
+            ).toBe("()");
+            expect(
+                [...rows[0].querySelectorAll(".completion-match")].map(
+                    (mark) => mark.textContent,
+                ),
+            ).toEqual(["g", "Em"]);
+            expect(
+                rows[0].querySelector(".completion-description")?.textContent,
+            ).toBe("String");
+            expect(rows[1].classList.contains("deprecated")).toBe(true);
+            expect(
+                rows[1].querySelector(".completion-description")?.textContent,
+            ).toBe("java.util");
+            expect(
+                result.container.querySelector(".completion-count")
+                    ?.textContent,
+            ).toContain("1 / 40");
+            expect(
+                result.container.querySelector(".completion-docs")?.textContent,
+            ).toContain("Returns the email.");
+        } finally {
+            delete mockSnapshot.completion;
+        }
+    });
+
+    it("marks a closed fold header with the hidden line count", () => {
+        const pane = mockSnapshot.panes[0];
+        const original = pane.lines[0].folded;
+        pane.lines[0].folded = 12;
+        try {
+            const result = render(() => <App />);
+            expect(
+                result.container.querySelector(".fold-marker")?.textContent,
+            ).toContain("12 lines");
+        } finally {
+            pane.lines[0].folded = original;
+        }
+    });
+
+    it("draws fold markers in the gutter: closed headers always, inside lines never", () => {
+        const pane = mockSnapshot.panes[0];
+        const original = pane.lines.slice(0, 3).map((line) => line.fold);
+        pane.lines[0].fold = "closed";
+        pane.lines[1].fold = "open";
+        pane.lines[2].fold = "inside";
+        try {
+            const result = render(() => <App />);
+            const marks = result.container.querySelectorAll(".fold-gutter");
+            expect(marks).toHaveLength(3);
+            expect(marks[0].textContent).toBe("▸");
+            expect(marks[0].classList.contains("fold-closed")).toBe(true);
+            expect(marks[1].textContent).toBe("▾");
+            expect(marks[2].textContent).toBe("");
+        } finally {
+            pane.lines.slice(0, 3).forEach((line, index) => {
+                line.fold = original[index];
+            });
+        }
+    });
+
+    it("lists debuggee threads as selectable rows and marks the shown one", () => {
+        mockSnapshot.debug = {
+            running: false,
+            executionLine: 1,
+            stack: [],
+            rows: [
+                {
+                    index: 4,
+                    kind: "header",
+                    depth: 0,
+                    label: "Threads",
+                    expandable: false,
+                    expanded: false,
+                    conditional: false,
+                },
+                {
+                    index: 5,
+                    kind: "thread",
+                    depth: 1,
+                    label: "main (1)",
+                    value: "stopped here",
+                    expandable: false,
+                    expanded: false,
+                    conditional: false,
+                    selected: true,
+                },
+                {
+                    index: 6,
+                    kind: "thread",
+                    depth: 1,
+                    label: "worker (7)",
+                    expandable: false,
+                    expanded: false,
+                    conditional: false,
+                    selected: false,
+                },
+            ],
+            output: [],
+        };
+        try {
+            const { container } = render(() => <App />);
+            const shown = screen.getByRole("treeitem", { name: /main \(1\)/ });
+            expect(shown.getAttribute("aria-selected")).toBe("true");
+            expect(shown.classList.contains("selected")).toBe(true);
+            const other = screen.getByRole("treeitem", {
+                name: /worker \(7\)/,
+            });
+            expect(other.getAttribute("aria-selected")).toBe("false");
+            expect(other.getAttribute("title")).toBe(
+                "Show this thread's stack",
+            );
+            expect(
+                container.querySelectorAll(".debug-row.thread"),
+            ).toHaveLength(2);
+        } finally {
+            delete mockSnapshot.debug;
+        }
+    });
+
     it("renders the selected language server detail projected by the core", () => {
         mockSnapshot.lspManager = {
             filter: "",
@@ -1119,11 +1621,121 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
+    it("appends the enclosing symbols of the cursor to the breadcrumbs", () => {
+        mockSnapshot.symbolBreadcrumbs = [
+            { name: "Circle", kind: "class" },
+            { name: "area()", kind: "method" },
+        ];
+
+        try {
+            const result = render(() => <App />);
+            const crumbs = result.container.querySelector(".breadcrumbs")!;
+            const symbols = [...crumbs.querySelectorAll(".symbol-crumb")].map(
+                (element) => element.textContent,
+            );
+            expect(symbols).toEqual(["Circle", "area()"]);
+            expect(
+                crumbs
+                    .querySelector(".symbol-crumb")!
+                    .getAttribute("data-kind"),
+            ).toBe("class");
+        } finally {
+            mockSnapshot.symbolBreadcrumbs = [];
+        }
+    });
+
+    it("renders the replace-in-files review projected by the core", () => {
+        mockSnapshot.searchReplace = {
+            find: "Circle",
+            replace: "Round",
+            files: "*.java",
+            focus: "results",
+            regex: false,
+            caseSensitive: true,
+            wholeWord: false,
+            searching: false,
+            searched: true,
+            truncated: false,
+            totalMatches: 2,
+            checkedMatches: 1,
+            fileCount: 1,
+            selected: 1,
+            rows: [
+                {
+                    index: 0,
+                    kind: "file",
+                    state: "partial",
+                    path: "src/A.java",
+                    line: 0,
+                    count: 2,
+                    before: "",
+                    matched: "",
+                    replacement: "",
+                    after: "",
+                },
+                {
+                    index: 1,
+                    kind: "match",
+                    state: "checked",
+                    path: "src/A.java",
+                    line: 3,
+                    count: 0,
+                    before: "new ",
+                    matched: "Circle",
+                    replacement: "Round",
+                    after: "();",
+                },
+                {
+                    index: 2,
+                    kind: "match",
+                    state: "unchecked",
+                    path: "src/A.java",
+                    line: 9,
+                    count: 0,
+                    before: "",
+                    matched: "Circle",
+                    replacement: "Round",
+                    after: " c;",
+                },
+            ],
+        };
+
+        try {
+            const result = render(() => <App />);
+            const dialog = screen.getByRole("dialog", {
+                name: "Replace in files",
+            });
+            expect(dialog.textContent).toContain("1 of 2 checked in 1 files");
+            expect(dialog.textContent).toContain("Replace 1");
+            expect(dialog.querySelectorAll("del")[0].textContent).toBe(
+                "Circle",
+            );
+            expect(dialog.querySelectorAll("ins")[0].textContent).toBe("Round");
+            const boxes = dialog.querySelectorAll<HTMLInputElement>(
+                "input[type=checkbox]",
+            );
+            expect(boxes[0].indeterminate).toBe(true);
+            expect(boxes[1].checked).toBe(true);
+            expect(boxes[2].checked).toBe(false);
+            expect(
+                screen
+                    .getByRole("button", { name: "Aa" })
+                    .getAttribute("aria-pressed"),
+            ).toBe("true");
+            expect(
+                result.container.querySelector(".sr-item.off"),
+            ).not.toBeNull();
+        } finally {
+            delete mockSnapshot.searchReplace;
+        }
+    });
+
     it("exposes debugger execution controls and projected stop location", () => {
         mockSnapshot.debug = {
             running: false,
             executionLine: 27,
             stack: [],
+            rows: [],
             output: [],
         };
 
@@ -1153,6 +1765,90 @@ describe("Ovim Solid workbench", () => {
         }
     });
 
+    it("lists variables, watches and breakpoints and marks breakpoint and execution lines in the gutter", () => {
+        const first = mockSnapshot.lines[0];
+        const second = mockSnapshot.lines[1];
+        const previous = {
+            first: first.breakpoint,
+            executing: first.executing,
+            second: second.breakpoint,
+        };
+        first.breakpoint = "enabled";
+        first.executing = true;
+        second.breakpoint = "disabled";
+        mockSnapshot.debug = {
+            running: false,
+            executionLine: 1,
+            stack: [],
+            rows: [
+                {
+                    index: 3,
+                    kind: "header",
+                    depth: 0,
+                    label: "Variables",
+                    expandable: false,
+                    expanded: false,
+                    conditional: false,
+                },
+                {
+                    index: 5,
+                    kind: "variable",
+                    depth: 1,
+                    label: "user",
+                    value: "User@1",
+                    typeName: "User",
+                    expandable: true,
+                    expanded: true,
+                    conditional: false,
+                },
+                {
+                    index: 6,
+                    kind: "variable",
+                    depth: 2,
+                    label: "name",
+                    value: '"Ann"',
+                    expandable: false,
+                    expanded: false,
+                    conditional: false,
+                },
+                {
+                    index: 9,
+                    kind: "breakpoint",
+                    depth: 1,
+                    label: "Main.java:12",
+                    expandable: false,
+                    expanded: false,
+                    enabled: false,
+                    conditional: false,
+                },
+            ],
+            output: [],
+        };
+
+        try {
+            const { container } = render(() => <App />);
+            const user = screen.getByRole("treeitem", { name: /user/ });
+            expect(user.getAttribute("aria-expanded")).toBe("true");
+            expect(screen.getByText('"Ann"')).toBeTruthy();
+            expect(screen.getByText("Main.java:12")).toBeTruthy();
+            expect(screen.getByRole("button", { name: "Enable" })).toBeTruthy();
+            expect(
+                container.querySelector(".line-number.breakpoint-enabled"),
+            ).toBeTruthy();
+            expect(
+                container.querySelector(".line-number.breakpoint-disabled"),
+            ).toBeTruthy();
+            expect(
+                container.querySelector(".code-line.executing"),
+            ).toBeTruthy();
+        } finally {
+            delete mockSnapshot.debug;
+            first.breakpoint = previous.first;
+            first.executing = previous.executing;
+            second.breakpoint = previous.second;
+        }
+    });
+
     it("exposes test rerun and full-output actions without duplicating a running job", () => {
         mockSnapshot.testPanel = {
             scope: "nearest",
@@ -1175,8 +1871,73 @@ describe("Ovim Solid workbench", () => {
             expect(
                 screen.getByRole("button", { name: "Full output" }),
             ).toBeTruthy();
+            const fullOutput = screen.getByRole("button", {
+                name: "Full output",
+            });
+            fullOutput.focus();
+            fireEvent.keyDown(fullOutput, { key: "Escape" });
+            expect(
+                vi.mocked(HTMLElement.prototype.focus).mock.contexts.at(-1),
+            ).toBe(screen.getByLabelText("Ovim editor input"));
         } finally {
             delete mockSnapshot.testPanel;
+        }
+    });
+
+    it("keeps run output visible after the process exits, with exit code and jumpable frames", () => {
+        mockSnapshot.runConsole = {
+            title: "Main (app)",
+            mode: "run",
+            status: "failed",
+            statusText: "failed (exit 1) in 2.3s",
+            active: false,
+            command: "java -cp out com.example.Main",
+            exitCode: 1,
+            elapsedMs: 2300,
+            runIndex: 2,
+            runCount: 3,
+            truncated: 0,
+            firstIndex: 0,
+            lines: [
+                { kind: "stdout", text: "hello", jumpable: false },
+                {
+                    kind: "stderr",
+                    text: "\tat com.example.Main.main(Main.java:5)",
+                    jumpable: true,
+                },
+                { kind: "system", text: "Process finished", jumpable: false },
+            ],
+        };
+
+        try {
+            render(() => <App />);
+            expect(screen.getByText("failed (exit 1) in 2.3s")).toBeTruthy();
+            expect(screen.getByText("exit code 1")).toBeTruthy();
+            expect(screen.getByText("run 2 of 3")).toBeTruthy();
+            const frame = screen.getByText(/Main\.main\(Main\.java:5\)/);
+            expect(frame.classList.contains("stderr")).toBe(true);
+            expect(frame.classList.contains("jumpable")).toBe(true);
+            expect(
+                screen.getByText("hello").classList.contains("jumpable"),
+            ).toBe(false);
+            // A finished run cannot be stopped, but can be rerun and cleared.
+            expect(
+                screen
+                    .getByRole("button", { name: "Stop" })
+                    .hasAttribute("disabled"),
+            ).toBe(true);
+            expect(
+                screen
+                    .getByRole("button", { name: "Rerun" })
+                    .hasAttribute("disabled"),
+            ).toBe(false);
+            expect(
+                screen
+                    .getByRole("button", { name: "Clear" })
+                    .hasAttribute("disabled"),
+            ).toBe(false);
+        } finally {
+            delete mockSnapshot.runConsole;
         }
     });
 
@@ -1206,6 +1967,40 @@ describe("Ovim Solid workbench", () => {
         ).toBe("••");
         fireEvent.click(screen.getByRole("button", { name: "Not now" }));
         expect(onKey).toHaveBeenCalledWith("Escape");
+    });
+
+    it("renders the first-run provider choice with details and digit keys", () => {
+        const onKey = vi.fn();
+        render(() => (
+            <ChatSetupCard
+                setup={{
+                    kind: "providerChoice",
+                    title: "How should AI chat run?",
+                    detail: "Pick how Ovim runs inference.",
+                    maskedInput: null,
+                    actions: [
+                        {
+                            label: "Claude",
+                            key: "1",
+                            detail: "Claude Code with your Claude subscription.",
+                        },
+                        {
+                            label: "Codex",
+                            key: "2",
+                            detail: "OpenAI models with your ChatGPT plan.",
+                        },
+                        { label: "Not now", key: "Escape" },
+                    ],
+                }}
+                onKey={onKey}
+            />
+        ));
+        // No API-key field for a choice card.
+        expect(screen.queryByLabelText("Exa API key input")).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: /^Codex/ }));
+        expect(onKey).toHaveBeenLastCalledWith("2");
+        fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+        expect(onKey).toHaveBeenLastCalledWith("Escape");
     });
 
     it("recognizes a browser selection made inside the chat transcript", () => {
@@ -1486,6 +2281,34 @@ describe("Ovim Solid workbench", () => {
         expect(screen.getByText("stable")).toBe(historicalMarkup);
     });
 
+    it("keeps saved diff actions visible outside collapsed agent activity", () => {
+        const onReplay = vi.fn();
+        const onSelect = vi.fn();
+        const message = {
+            id: "1:3",
+            index: 2,
+            selected: false,
+            role: "tool",
+            content: "Saved refactor review",
+            toolName: "show_custom_diff",
+            replayToolCallId: "custom-diff-call",
+            replayLabel: "Open diff",
+            tools: [],
+        };
+        expect(chatTranscriptItems([message])[0].kind).toBe("message");
+        render(() => (
+            <ChatMessageView
+                message={message}
+                onReplay={onReplay}
+                onSelect={onSelect}
+            />
+        ));
+        fireEvent.click(screen.getByRole("button", { name: "Open diff" }));
+        expect(onReplay).toHaveBeenCalledWith("custom-diff-call");
+        expect(onSelect).not.toHaveBeenCalled();
+        expect(screen.queryByText(message.content)).toBeNull();
+    });
+
     it("keeps tool results collapsed until their details are requested", async () => {
         const payload = "large tool payload that should start hidden";
         const result = render(() => (
@@ -1538,7 +2361,7 @@ describe("Ovim Solid workbench", () => {
     });
     it("confirms application quit while unsaved buffers exist", async () => {
         const result = render(() => <App />);
-        fireEvent.keyDown(window, { key: "q", metaKey: true, ctrlKey: true });
+        fireEvent.keyDown(window, { key: "q", metaKey: true });
         expect(
             screen.getByRole("dialog", {
                 name: "Save changes before leaving?",
@@ -1557,5 +2380,287 @@ describe("Ovim Solid workbench", () => {
             }),
         ).toBeNull();
         result.unmount();
+    });
+});
+
+const idleChat: GuiAiChat = {
+    profile: "codex",
+    profiles: [],
+    reasoningEffort: "medium",
+    reasoningEffortSelection: "default",
+    reasoningEfforts: ["default"],
+    yoloMode: false,
+    comprehensionPolicy: "off",
+    activity: "idle",
+    waiting: false,
+    input: "",
+    inputCursor: 0,
+    queuedInputs: [],
+    pendingImages: [],
+    messages: [],
+    thinkingLive: false,
+    focus: "textInput",
+    agents: [],
+    agentCursor: 0,
+};
+
+describe("chat approvals", () => {
+    const approvalChat = (patch: Partial<GuiAiChat>): GuiAiChat => ({
+        ...idleChat,
+        ...patch,
+    });
+
+    it("offers Allow and remember only where core supports remembering", () => {
+        const onApproval = vi.fn();
+        const chat = createSignal(
+            approvalChat({
+                approval: "Tool: bash",
+                approvalCanRemember: false,
+            }),
+        );
+        render(() => (
+            <ChatPanel
+                chat={chat[0]()}
+                focusInput={() => {}}
+                onApproval={onApproval}
+            />
+        ));
+        expect(
+            screen.queryByRole("button", { name: "Allow and remember" }),
+        ).toBeNull();
+        chat[1](
+            approvalChat({ approval: "Tool: bash", approvalCanRemember: true }),
+        );
+        fireEvent.click(
+            screen.getByRole("button", { name: "Allow and remember" }),
+        );
+        expect(onApproval).toHaveBeenCalledWith("remember");
+    });
+
+    it("renders the oldest delegated-child approval and resolves that exact request", () => {
+        const onAgentApproval = vi.fn();
+        const onApproval = vi.fn();
+        render(() => (
+            <ChatPanel
+                chat={approvalChat({
+                    agentApproval: {
+                        requestId: "evt_42",
+                        agentId: "agent_7",
+                        agentName: "scout",
+                        summary: "Child: scout (agent_7)\nTool: bash",
+                    },
+                })}
+                focusInput={() => {}}
+                onApproval={onApproval}
+                onAgentApproval={onAgentApproval}
+            />
+        ));
+        const card = document.querySelector(".agent-approval-card")!;
+        expect(card.textContent).toContain("scout");
+        expect(card.textContent).toContain("Tool: bash");
+        const buttons = card.querySelectorAll("button");
+        fireEvent.click(buttons[0]);
+        fireEvent.click(buttons[1]);
+        expect(onAgentApproval.mock.calls).toEqual([
+            ["evt_42", true],
+            ["evt_42", false],
+        ]);
+        expect(onApproval).not.toHaveBeenCalled();
+    });
+});
+
+describe("composer during a run", () => {
+    it("queues a typed follow-up next to Stop and hints both keys", async () => {
+        const onUpdate = vi.fn().mockResolvedValue({
+            input: "",
+            cursor: 0,
+            revision: 1,
+        });
+        const base: GuiAiChat = {
+            ...idleChat,
+            activity: "streaming",
+            waiting: true,
+            input: "also check the tests",
+            inputCursor: 20,
+        };
+        const result = render(() => (
+            <ChatComposer chat={base} onUpdate={onUpdate} />
+        ));
+        expect(screen.getByText("Enter queues · Esc stops")).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Stop generation" }),
+        ).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+        await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+        expect(onUpdate).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                input: "also check the tests",
+                action: expect.objectContaining({ key: "Enter" }),
+            }),
+        );
+        result.unmount();
+
+        render(() => (
+            <ChatComposer
+                chat={{ ...base, input: "", inputCursor: 0 }}
+                onUpdate={onUpdate}
+            />
+        ));
+        expect(
+            screen.queryByRole("button", { name: "Queue message" }),
+        ).toBeNull();
+        expect(
+            screen.getByRole("button", { name: "Stop generation" }),
+        ).toBeTruthy();
+    });
+});
+
+describe("tool results", () => {
+    const expand = async (container: HTMLElement) => {
+        const details = container.querySelector<HTMLDetailsElement>("details")!;
+        details.open = true;
+        fireEvent(details, new Event("toggle"));
+        await Promise.resolve();
+    };
+
+    it("render as preformatted text instead of Markdown", async () => {
+        const output =
+            "# not a heading\nfn first<T>(items: &[T]) -> &T\n- not a list";
+        const result = render(() => (
+            <ChatMessageView
+                message={{
+                    id: "1:9",
+                    index: 8,
+                    selected: false,
+                    role: "tool",
+                    content: output,
+                    toolName: "read_file",
+                    tools: [],
+                }}
+            />
+        ));
+        await expand(result.container);
+        const pre = result.container.querySelector("pre.tool-result-output")!;
+        expect(pre.textContent).toBe(output);
+        expect(result.container.querySelector("h1, ul, .markdown")).toBeNull();
+    });
+
+    it("keep tool entries inside an activity group preformatted", async () => {
+        const output = "# heading-looking\n<T>";
+        const result = render(() => (
+            <ChatActivityGroup
+                item={{
+                    kind: "activity",
+                    id: "activity:1",
+                    live: false,
+                    entries: [
+                        {
+                            id: "1:1",
+                            index: 0,
+                            selected: false,
+                            role: "tool",
+                            content: output,
+                            toolName: "bash",
+                            tools: [],
+                        },
+                    ],
+                }}
+            />
+        ));
+        await expand(result.container);
+        expect(
+            result.container.querySelector("pre.tool-result-output")
+                ?.textContent,
+        ).toBe(output);
+        expect(result.container.querySelector("h1")).toBeNull();
+    });
+});
+
+describe("walkthrough reading and navigation", () => {
+    const walkthrough = (
+        discussion: GuiCodeExplanation["discussion"],
+    ): GuiCodeExplanation => ({
+        answerInProgress: false,
+        current: 1,
+        total: 2,
+        page: { kind: "concept", title: "Step", body: "Teaching." },
+        discussion,
+    });
+    const navigating = (position: number) =>
+        walkthrough({
+            state: "navigating",
+            questionCount: position,
+            exchangeTotal: 3,
+            latestQuestion: `Question text ${position}`,
+            latestAnswer: "Answer.",
+            latestFailed: false,
+        });
+
+    it("bounds Earlier and Later question and shows the exchange total", () => {
+        const [state, setState] = createSignal<GuiCodeExplanation>(
+            navigating(1),
+        );
+        render(() => (
+            <CodeWalkthrough walkthrough={state()} onKey={() => {}} />
+        ));
+        const disabled = (name: string) =>
+            screen.getByRole("button", { name }).hasAttribute("disabled");
+        expect(screen.getByText(/Question 1 of 3/)).toBeTruthy();
+        expect(disabled("Earlier question")).toBe(true);
+        expect(disabled("Later question")).toBe(false);
+        setState(navigating(2));
+        expect(screen.getByText(/Question 2 of 3/)).toBeTruthy();
+        expect(disabled("Earlier question")).toBe(false);
+        expect(disabled("Later question")).toBe(false);
+        setState(navigating(3));
+        expect(disabled("Earlier question")).toBe(false);
+        expect(disabled("Later question")).toBe(true);
+    });
+
+    it("scrolls long teaching text and replies locally and consumes only navigation keys", () => {
+        const card = document.createElement("section");
+        card.innerHTML =
+            '<div class="walkthrough-teaching"></div><div class="walkthrough-answer"></div>';
+        document.body.append(card);
+        const teaching = card.querySelector<HTMLElement>(
+            ".walkthrough-teaching",
+        )!;
+        const answer = card.querySelector<HTMLElement>(".walkthrough-answer")!;
+        const size = (el: HTMLElement, scroll: number, client: number) => {
+            Object.defineProperty(el, "scrollHeight", {
+                value: scroll,
+                configurable: true,
+            });
+            Object.defineProperty(el, "clientHeight", {
+                value: client,
+                configurable: true,
+            });
+        };
+        const press = (key: string, ctrlKey = false) =>
+            scrollWalkthroughWithKey(card, {
+                key,
+                ctrlKey,
+                metaKey: false,
+                altKey: false,
+            });
+        size(teaching, 1000, 200);
+        size(answer, 100, 100);
+        expect(press("ArrowDown")).toBe(true);
+        const afterLine = teaching.scrollTop;
+        expect(afterLine).toBeGreaterThan(0);
+        expect(press("PageDown")).toBe(true);
+        expect(teaching.scrollTop).toBeGreaterThan(afterLine + 100);
+        expect(press("k")).toBe(true);
+        expect(press("ArrowUp")).toBe(true);
+        // A scrollable reply takes the keys before the teaching text.
+        size(answer, 600, 100);
+        const before = teaching.scrollTop;
+        expect(press("j")).toBe(true);
+        expect(answer.scrollTop).toBeGreaterThan(0);
+        expect(teaching.scrollTop).toBe(before);
+        // Other keys, and modified navigation keys, are not swallowed.
+        expect(press("Enter")).toBe(false);
+        expect(press("Escape")).toBe(false);
+        expect(press("ArrowDown", true)).toBe(false);
     });
 });

@@ -41,7 +41,7 @@ describe("workspace layout persistence", () => {
         expect(readWorkbenchLayout(storage, "/work/broken")).toBeUndefined();
     });
 
-    it("persists the dedicated diff context tab", () => {
+    it("persists the terminal context tab and migrates old diff layouts", () => {
         const values = new Map<string, string>();
         const storage = {
             getItem: (key: string) => values.get(key) ?? null,
@@ -49,9 +49,60 @@ describe("workspace layout persistence", () => {
         };
         const preference = {
             activeDock: "context" as const,
-            activeContextPanel: "diff" as const,
+            activeContextPanel: "terminal" as const,
         };
         writeWorkbenchLayout(storage, "/work/ovim", preference);
         expect(readWorkbenchLayout(storage, "/work/ovim")).toEqual(preference);
+        expect(
+            readWorkbenchLayout(
+                {
+                    getItem: () =>
+                        JSON.stringify({
+                            activeDock: "context",
+                            activeContextPanel: "diff",
+                        }),
+                },
+                "/work/ovim",
+            ),
+        ).toEqual({ activeDock: "explorer", activeContextPanel: "ai" });
     });
+});
+
+it("reads legacy layouts and discards only invalid widths", () => {
+    const base = { activeDock: "explorer", activeContextPanel: "ai" };
+    for (const explorerWidth of [-1, 0, 239, 801, "320", null]) {
+        expect(
+            readWorkbenchLayout(
+                { getItem: () => JSON.stringify({ ...base, explorerWidth }) },
+                "workspace",
+            ),
+        ).toEqual(base);
+    }
+    expect(
+        readWorkbenchLayout(
+            { getItem: () => JSON.stringify({ ...base, explorerWidth: 480 }) },
+            "workspace",
+        ),
+    ).toEqual({ ...base, explorerWidth: 480 });
+});
+
+it("persists context width and ignores invalid stored values", () => {
+    const base = {
+        activeDock: "context" as const,
+        activeContextPanel: "tests" as const,
+    };
+    for (const contextWidth of [-1, 0, 279, 801, "480", null]) {
+        expect(
+            readWorkbenchLayout(
+                { getItem: () => JSON.stringify({ ...base, contextWidth }) },
+                "workspace",
+            ),
+        ).toEqual(base);
+    }
+    expect(
+        readWorkbenchLayout(
+            { getItem: () => JSON.stringify({ ...base, contextWidth: 600 }) },
+            "workspace",
+        ),
+    ).toEqual({ ...base, contextWidth: 600 });
 });

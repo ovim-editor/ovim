@@ -246,8 +246,11 @@ uncompressed: roughly 20 KB for an 80×24 view of highlighted code and 45 KB for
 the path compresses it, so on a link under a couple of Mbit/s the frames matter
 as much as the round trips do.
 
-Read-only queries are exempt from the serialisation. A diff review that walks
-Git objects for several seconds does not block the keys you type while it runs.
+A few read-only queries (the workspace directory, the vector source, the
+clipboard text) are exempt from the serialisation, because where they land in
+the sequence cannot change what any other command does. Opening or refreshing
+a diff review is not one of them: it changes what the editor shows, so it takes
+its place in line, and the editor computes it on the remote host.
 
 ## Current limits
 
@@ -271,14 +274,18 @@ Remote editing is complete enough for daily use, but these limits are real:
 - **`strok` vector preview runs locally.** The Vector tab shells out to `strok`
   on the machine running the window, so it needs `strok` on your laptop rather
   than on the remote host. See [AI setup](ai.md).
-- **Dragging an image into a remote window does not work.** The drop hands over
-  a path on your laptop, which the remote editor cannot read. Pasting an image
-  from the clipboard does work, because that carries the bytes.
+- **The terminal panel is local-only.** It runs a shell on the machine with the
+  window, so over a remote link it refuses to open rather than start a shell
+  in a directory that only exists on the other host.
+- **Dropped images are read on your laptop.** The window reads the file and
+  sends its bytes (PNG, JPEG, GIF or WebP, up to 20 MiB), because the remote
+  editor cannot read a path on this machine.
 - **`:openwin` is not host-aware.** The path it produces is not tagged with
   which machine it belongs to, and the remote editor is headless and has no
   window to open, so over a remote link it is queued and dropped in the same
-  silence as `:terminal`. Launch the second window with its own
-  `ovim gui --remote` instead.
+  silence as `:terminal`. **File → New Window** refuses over a remote link for
+  the same reason. Launch the second window with its own `ovim gui --remote`
+  instead.
 - **One host per window.** There is no mixed local/remote or multi-root
   workspace; a window talks to exactly one editor.
 - **The GUI protocol is unversioned**, which is why the version check above

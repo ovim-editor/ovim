@@ -55,6 +55,47 @@ fn install_panic_hook() {
     }));
 }
 
+/// Stops the programs the launch flow started when `main` is left by
+/// returning, an error or a panic unwinding it. Leaving through
+/// `process::exit` runs no destructors, so those call
+/// [`ovim_core::launch::kill_all_launch_groups`] themselves.
+struct LaunchCleanup;
+
+impl Drop for LaunchCleanup {
+    fn drop(&mut self) {
+        ovim_core::launch::kill_all_launch_groups();
+    }
+}
+
+/// A hangup (the terminal went away) or SIGTERM asks the TUI to leave through
+/// its normal exit path, which stops the programs it started. A second signal
+/// means the loop is wedged: stop them and go.
+fn forward_tui_shutdown_signals(shutdown_tx: mpsc::Sender<()>) {
+    tokio::spawn(async move {
+        let (Ok(mut hangup), Ok(mut terminate)) = (
+            signal(SignalKind::hangup()),
+            signal(SignalKind::terminate()),
+        ) else {
+            ovim_core::log_warn!("main", "Failed to register SIGHUP/SIGTERM handlers");
+            return;
+        };
+        let mut signals = 0;
+        loop {
+            tokio::select! {
+                _ = hangup.recv() => {}
+                _ = terminate.recv() => {}
+            }
+            signals += 1;
+            if signals == 1 {
+                let _ = shutdown_tx.try_send(());
+            } else {
+                ovim_core::launch::kill_all_launch_groups();
+                std::process::exit(143);
+            }
+        }
+    });
+}
+
 /// React to a SIGINT/SIGTERM in headless mode with escalation.
 ///
 /// The first signal requests a graceful shutdown through the channel (the
@@ -73,6 +114,7 @@ fn handle_shutdown_signal(
     } else {
         eprintln!("Received second signal; forcing shutdown.");
         let _ = session_info.delete();
+        ovim_core::launch::kill_all_launch_groups();
         std::process::exit(130);
     }
 }
@@ -102,6 +144,7 @@ async fn main() -> Result<()> {
     }
 
     // Otherwise, run editor mode
+    let _launch_cleanup = LaunchCleanup;
     let file_arg = cli.file_arg();
     let headless = cli.headless;
     let session_name = cli.session.clone();
@@ -120,6 +163,13 @@ async fn main() -> Result<()> {
     // Load Lua before the initial file so language plugins participate in
     // detection, syntax highlighting, LSP startup, and --render.
     let mut editor = Editor::new();
+    editor.load_ai_chat_preference();
+    editor.enable_diff_review_persistence();
+    // Headless sessions are driven by scripts and agents; recording their
+    // files would push the user's real projects out of the recent list.
+    if !headless || std::env::var_os("OVIM_RECENT_FILES").is_some() {
+        editor.enable_recent_files();
+    }
     if let Err(e) = editor.enable_lua() {
         ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
     }
@@ -184,12 +234,6 @@ async fn main() -> Result<()> {
 
     // Enable LSP support
     editor.enable_lsp();
-
-    // Create channel for Java LSP status updates (needed for both headless and TUI modes)
-    let (java_status_tx, java_status_rx) = mpsc::channel(64);
-
-    // Initialize the Java status sender in the lsp_init module
-    ovim::lsp_init::init_java_status_sender(java_status_tx);
 
     let start_time = SystemTime::now();
 
@@ -284,14 +328,21 @@ async fn main() -> Result<()> {
         let signal_count_sigterm = Arc::clone(&signal_count);
         let session_for_sigterm = session_info.clone();
         let sigterm_handle = tokio::spawn(async move {
-            let mut sigterm = match signal(SignalKind::terminate()) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Failed to register SIGTERM handler: {}", e);
+            let (mut sigterm, mut sighup) = match (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::hangup()),
+            ) {
+                (Ok(term), Ok(hup)) => (term, hup),
+                (Err(e), _) | (_, Err(e)) => {
+                    eprintln!("Failed to register SIGTERM/SIGHUP handlers: {}", e);
                     return;
                 }
             };
-            while sigterm.recv().await.is_some() {
+            loop {
+                tokio::select! {
+                    _ = sigterm.recv() => {}
+                    _ = sighup.recv() => {}
+                }
                 handle_shutdown_signal(
                     &signal_count_sigterm,
                     &shutdown_tx_sigterm,
@@ -307,7 +358,6 @@ async fn main() -> Result<()> {
         event_loop::run_headless_loop(
             &mut editor,
             rx,
-            java_status_rx,
             start_time,
             session_info_arc,
             headless_dimensions,
@@ -319,6 +369,7 @@ async fn main() -> Result<()> {
         sigterm_handle.abort();
         let code = editor.exit_code();
         if code != 0 {
+            ovim_core::launch::kill_all_launch_groups();
             std::process::exit(code);
         }
         return Ok(());
@@ -338,7 +389,9 @@ async fn main() -> Result<()> {
         UI::new()?
     };
 
-    event_loop::run_event_loop(&mut ui, &mut editor, None, java_status_rx, start_time).await?;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel(2);
+    forward_tui_shutdown_signals(shutdown_tx);
+    event_loop::run_event_loop(&mut ui, &mut editor, None, start_time, shutdown_rx).await?;
 
     let code = editor.exit_code();
 
@@ -346,6 +399,7 @@ async fn main() -> Result<()> {
     drop(ui);
 
     if code != 0 {
+        ovim_core::launch::kill_all_launch_groups();
         std::process::exit(code);
     }
 

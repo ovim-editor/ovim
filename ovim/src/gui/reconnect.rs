@@ -21,9 +21,10 @@
 //! * **Input during an outage is dropped, not queued.** See
 //!   [`RemoteTransport::send`](super::remote::RemoteTransport::send) for why.
 
-use super::protocol::{GuiCommand, GuiReply, GuiSnapshot};
+use super::protocol::{GuiCommand, GuiReply};
 use super::remote::{connect_stream, post_command, pump_snapshots, Wire};
 use super::ssh::{LinkFailureKind, RemoteLink};
+use super::GuiSnapshot;
 use rand::Rng;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};

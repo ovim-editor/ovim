@@ -16,8 +16,8 @@ fn test_w_at_last_word() {
 
     assert_eq!(test.buffer_content(), "hello world\n");
 
-    // At last word on last line — cursor stays at "world" start
-    test.assert_cursor(0, 6);
+    // nvim: on the last word of the buffer `w` goes to its last character
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -29,21 +29,20 @@ fn test_w_multiple_at_end() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // At last word on last line — cursor stays at "three" start
-    test.assert_cursor(0, 8);
+    // nvim: ends on the last character of the buffer
+    test.assert_cursor(0, 12);
 }
 
 #[test]
 fn test_w_single_word() {
     let mut test = EditorTest::new("word");
 
-    test.press('w') // No next word — stays at start
+    test.press('w') // No next word — goes to the last character (nvim)
         .press('w');
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    // Single word, no next word — cursor stays at (0, 0)
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -67,8 +66,8 @@ fn test_w_with_count_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // Ends at last word "three" start
-    test.assert_cursor(0, 8);
+    // nvim: ends on the last character of the buffer
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -91,8 +90,8 @@ fn test_w_on_whitespace_only() {
 
     assert_eq!(test.buffer_content(), "     \n");
 
-    // No next word — cursor stays at (0, 0)
-    test.assert_cursor(0, 0);
+    // nvim: no next word — goes to the last character
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -108,8 +107,8 @@ fn test_W_at_last_WORD() {
 
     assert_eq!(test.buffer_content(), "hello-world test\n");
 
-    // At last WORD on last line — cursor stays at "test" start
-    test.assert_cursor(0, 12);
+    // nvim: on the last WORD of the buffer `W` goes to its last character
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -120,8 +119,8 @@ fn test_W_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one\n");
 
-    // Single WORD, no next — cursor stays at (0, 0)
-    test.assert_cursor(0, 0);
+    // nvim: single WORD, no next — goes to its last character
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -330,13 +329,12 @@ fn test_ge_at_beginning() {
 fn test_ge_single_word() {
     let mut test = EditorTest::new("word");
 
-    test.keys("$")
-        .keys("ge") // Should move to start
-        .keys("ge"); // Try to move back more
+    // nvim --clean: with no word before it, `ge` goes to the start of the buffer.
+    test.keys("$").keys("ge").keys("ge");
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    test.assert_cursor(0, 3);
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -549,8 +547,8 @@ fn test_close_brace_at_eof() {
 
     assert_eq!(test.buffer_content(), "para 1\n\npara 2\n");
 
-    // No next paragraph — cursor stays on last line
-    test.assert_cursor(2, 0);
+    // nvim: no next paragraph — the cursor ends on the last character of the buffer
+    test.assert_cursor(2, 5);
 }
 
 #[test]
@@ -569,13 +567,13 @@ fn test_open_brace_at_beginning() {
 fn test_close_brace_no_blank_lines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('}') // No paragraphs, should go to end?
+    test.press('}') // No paragraphs: goes to the last character
         .press('}');
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
 
-    // No blank lines — cursor stays on last line
-    test.assert_cursor(2, 0);
+    // nvim: no blank lines — the cursor ends on the last character of the buffer
+    test.assert_cursor(2, 5);
 }
 
 // ============================================================================
@@ -592,8 +590,8 @@ fn test_close_paren_at_eof() {
 
     assert_eq!(test.buffer_content(), "First. Second.\n");
 
-    // First ) from EOF wraps to (0,0), second ) finds "Second" at col 7
-    test.assert_cursor(0, 7);
+    // nvim: with no sentence after it, `)` stays on the last character.
+    test.assert_cursor(0, 13);
 }
 
 #[test]
@@ -744,9 +742,15 @@ fn test_d10w_beyond_buffer() {
 
     test.keys("d10w"); // Try to delete 10 words
 
-    assert_eq!(test.buffer_content(), "one two three\n");
+    // nvim --clean: `d10w` on "one two three" deletes all three words (the count is
+    // `10`, not `d1` followed by the `0` motion); the register holds "one two three".
+    assert_eq!(test.buffer_content(), "\n");
+    assert_eq!(
+        test.get_register_content('"').as_deref(),
+        Some("one two three")
+    );
 
-    test.assert_cursor(0, 4);
+    test.assert_cursor(0, 0);
 }
 
 #[test]

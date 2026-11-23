@@ -307,37 +307,19 @@ impl Editor {
     /// Priority:
     /// 1. Git root of the current file (walk up looking for `.git`)
     /// 2. Parent directory of the current file
-    /// 3. `current_dir()` as last resort
+    /// 3. The open workspace root
+    /// 4. `current_dir()` as last resort
     ///
     /// This prevents scanning the user's entire home directory (and triggering
     /// macOS iCloud Drive / TCC permission dialogs) when ovim is launched from ~.
     pub fn picker_base_dir(&self) -> std::path::PathBuf {
-        // Try to find git root from current file
         if let Some(file_path) = self.buffer().file_path() {
-            let path = std::path::Path::new(file_path);
+            return crate::project_root::vcs_root_or_dir(std::path::Path::new(file_path));
+        }
 
-            // Make path absolute for reliable parent traversal
-            let abs_path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(path))
-                    .unwrap_or_else(|_| path.to_path_buf())
-            };
-
-            // Walk up looking for .git
-            let mut current = abs_path.parent();
-            while let Some(dir) = current {
-                if dir.join(".git").exists() {
-                    return dir.to_path_buf();
-                }
-                current = dir.parent();
-            }
-
-            // No git root found — use file's parent directory
-            if let Some(parent) = abs_path.parent() {
-                return parent.to_path_buf();
-            }
+        // An empty workspace still supplies the context for dashboard searches.
+        if let Some(root) = self.file_tree().root_path() {
+            return root.to_path_buf();
         }
 
         // Fallback: current working directory
@@ -499,6 +481,8 @@ impl Editor {
         use super::PickerAction;
         match action {
             PickerAction::OpenFile { path, line, col } => {
+                // Opening a file from a picker is a jump: Ctrl-O comes back.
+                self.add_jump();
                 if let Err(e) = self.load_file(&path) {
                     self.set_status_message(format!("Failed to load file {}: {}", path, e));
                     return Ok(());
@@ -530,41 +514,16 @@ impl Editor {
             PickerAction::SelectDebugConfig { index } => {
                 self.select_debug_config(index);
             }
+            PickerAction::MessageRequestAction { index } => {
+                self.answer_active_message_request(Some(index));
+            }
+            PickerAction::Git(pick) => self.run_git_pick(pick),
         }
         Ok(())
     }
 
-    /// Select a debug run config by index and start the debug session.
+    /// A run configuration was chosen in the picker: run or debug it.
     fn select_debug_config(&mut self, index: usize) {
-        let configs = &self.dap_manager.available_debug_configs;
-        if index >= configs.len() {
-            self.set_status_message("Invalid debug config index".to_string());
-            return;
-        }
-        let config = configs[index].clone();
-        self.dap_manager.available_debug_configs.clear();
-
-        // Detect the DAP adapter command from the current file's language config.
-        let dap_start = self
-            .buffer()
-            .file_path()
-            .and_then(|fp| {
-                crate::language_config::LanguageRegistry::try_get().and_then(|reg| reg.detect(fp))
-            })
-            .and_then(|lang| lang.dap.as_ref())
-            .and_then(|dap_config| {
-                crate::language_config::find_dap_command(dap_config)
-                    .map(|cmd| (cmd, dap_config.args.clone()))
-            });
-
-        if let Some((command, args)) = dap_start {
-            self.dap_manager.pending_action = Some(crate::dap::PendingDebugAction::Start {
-                command,
-                args,
-                run_config: Some(config),
-            });
-        } else {
-            self.set_status_message("No DAP adapter configured for this language".to_string());
-        }
+        self.select_launch_config(index);
     }
 }

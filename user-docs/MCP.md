@@ -11,6 +11,8 @@
 ## Available Tools
 
 - `send_keys` - Send Vim key sequences to editor
+- `paste` - Paste literal text as one bracketed-paste event (`text`, including multiline content)
+- `resize` - Resize the editor's logical viewport (`width` 10-500, `height` 3-200)
 - `get_buffer` - Get current buffer content
 - `set_buffer` - Replace buffer content
 - `get_cursor` - Get cursor position
@@ -22,6 +24,10 @@
 - `get_health` - Get session health and LSP readiness
 - `get_lsp_status` - Get language server status
 - `get_context_window` - Get 21-line context around cursor (AI-optimized)
+- `get_outline` - Structural outline (table of contents) of the current document: symbol names, kinds, and line ranges
+- `search_symbol` - Fuzzy search for symbols across the workspace by name (`query`); returns up to 50 results with file, line, and kind
+- `get_trace` - Call hierarchy for the symbol at cursor: incoming callers and outgoing callees
+- `get_diagnostics` - LSP diagnostics (errors, warnings) for the current file
 - `list_sessions` - List all active sessions
 
 ## Escape Sequences (for `send_keys`)

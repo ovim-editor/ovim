@@ -22,6 +22,108 @@ fn parse_lsp_response<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// Why a completion request is being made (LSP `CompletionTriggerKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionTrigger {
+    /// Explicit request (Ctrl-Space) or identifier typing.
+    Invoked,
+    /// A server-advertised trigger character was typed.
+    Character(char),
+    /// The previous list was `isIncomplete` and the user kept typing.
+    Incomplete,
+}
+
+/// Completion answer with the list-level flags the menu needs.
+#[derive(Debug, Clone, Default)]
+pub struct CompletionOutcome {
+    pub items: Vec<lsp_types::CompletionItem>,
+    /// `CompletionList.isIncomplete`: typing further must ask again.
+    pub is_incomplete: bool,
+    /// The server each of `items` came from (same length once filled in by a
+    /// request), so a later `completionItem/resolve` asks the right one.
+    pub sources: Vec<String>,
+}
+
+/// Applies `CompletionList.itemDefaults` (LSP 3.17) to the raw response:
+/// commit characters, edit range, insert text format/mode and data are copied
+/// into every item that does not override them, and `textEditText` becomes the
+/// `textEdit.newText`. The rest of the editor then only sees fully-specified
+/// items. (`lsp-types` predates `itemDefaults`, hence raw JSON.)
+pub fn apply_completion_item_defaults(mut response: serde_json::Value) -> serde_json::Value {
+    use serde_json::{json, Value};
+
+    let Some(list) = response.as_object_mut() else {
+        return response;
+    };
+    let Some(defaults) = list.remove("itemDefaults") else {
+        return response;
+    };
+    let Some(items) = list.get_mut("items").and_then(Value::as_array_mut) else {
+        return response;
+    };
+    let Some(defaults) = defaults.as_object() else {
+        return response;
+    };
+    for item in items {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        for key in [
+            "commitCharacters",
+            "insertTextFormat",
+            "insertTextMode",
+            "data",
+        ] {
+            if !item.contains_key(key) {
+                if let Some(value) = defaults.get(key) {
+                    item.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        if !item.contains_key("textEdit") {
+            if let Some(edit_range) = defaults.get("editRange") {
+                let new_text = item
+                    .get("textEditText")
+                    .or_else(|| item.get("insertText"))
+                    .or_else(|| item.get("label"))
+                    .cloned()
+                    .unwrap_or_else(|| json!(""));
+                let mut edit = serde_json::Map::new();
+                edit.insert("newText".to_string(), new_text);
+                match edit_range.as_object() {
+                    // {insert, replace} vs a plain Range {start, end}
+                    Some(range) if range.contains_key("insert") => {
+                        edit.insert("insert".to_string(), range["insert"].clone());
+                        edit.insert("replace".to_string(), range["replace"].clone());
+                    }
+                    _ => {
+                        edit.insert("range".to_string(), edit_range.clone());
+                    }
+                }
+                item.insert("textEdit".to_string(), Value::Object(edit));
+            }
+        }
+        item.remove("textEditText");
+    }
+    response
+}
+
+/// Flattens a completion response into its items and the list-level flag.
+pub fn completion_outcome(response: lsp_types::CompletionResponse) -> CompletionOutcome {
+    match response {
+        lsp_types::CompletionResponse::Array(items) => CompletionOutcome {
+            items,
+            is_incomplete: false,
+            sources: Vec::new(),
+        },
+        lsp_types::CompletionResponse::List(list) => CompletionOutcome {
+            items: list.items,
+            is_incomplete: list.is_incomplete,
+            sources: Vec::new(),
+        },
+    }
+}
+
 impl LspManager {
     pub async fn goto_definition(
         &self,
@@ -30,48 +132,8 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::Location>> {
-        use lsp_types::{
-            GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier,
-            TextDocumentPositionParams,
-        };
-
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
-
-        // Check if server supports goto definition
-        if !server.supports_goto_definition().await {
-            return Ok(None); // Gracefully return None if not supported
-        }
-
-        let params = GotoDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position: Position { line, character },
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-
-        let result = server
-            .request("textDocument/definition", serde_json::to_value(params)?)
-            .await?;
-
-        let response: Option<GotoDefinitionResponse> =
-            parse_lsp_response(result, "textDocument/definition");
-
-        // Convert response to single location (take first if multiple)
-        Ok(response.and_then(|resp| match resp {
-            GotoDefinitionResponse::Scalar(location) => Some(location),
-            GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
-            GotoDefinitionResponse::Link(links) => {
-                links.into_iter().next().map(|link| lsp_types::Location {
-                    uri: link.target_uri,
-                    range: link.target_selection_range,
-                })
-            }
-        }))
+        self.goto_for_document(uri, line, character, language_id, "textDocument/definition")
+            .await
     }
 
     /// Requests go-to-declaration for a position in a document
@@ -86,10 +148,7 @@ impl LspManager {
             GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports goto declaration
         if !server.supports_goto_declaration().await {
@@ -133,49 +192,14 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::Location>> {
-        use lsp_types::GotoDefinitionResponse as GotoImplementationResponse;
-        use lsp_types::{
-            request::GotoImplementationParams, Position, TextDocumentIdentifier,
-            TextDocumentPositionParams,
-        };
-
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
-
-        // Check if server supports goto implementation
-        if !server.supports_goto_implementation().await {
-            return Ok(None); // Gracefully return None if not supported
-        }
-
-        let params = GotoImplementationParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position: Position { line, character },
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-
-        let result = server
-            .request("textDocument/implementation", serde_json::to_value(params)?)
-            .await?;
-
-        let response: Option<GotoImplementationResponse> =
-            parse_lsp_response(result, "textDocument/implementation");
-
-        // Convert response to single location (take first if multiple)
-        Ok(response.and_then(|resp| match resp {
-            GotoImplementationResponse::Scalar(location) => Some(location),
-            GotoImplementationResponse::Array(locations) => locations.into_iter().next(),
-            GotoImplementationResponse::Link(links) => {
-                links.into_iter().next().map(|link| lsp_types::Location {
-                    uri: link.target_uri,
-                    range: link.target_selection_range,
-                })
-            }
-        }))
+        self.goto_for_document(
+            uri,
+            line,
+            character,
+            language_id,
+            "textDocument/implementation",
+        )
+        .await
     }
 
     /// Requests go-to-type-definition for a position in a document
@@ -186,49 +210,14 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::Location>> {
-        use lsp_types::GotoDefinitionResponse as GotoTypeDefinitionResponse;
-        use lsp_types::{
-            request::GotoTypeDefinitionParams, Position, TextDocumentIdentifier,
-            TextDocumentPositionParams,
-        };
-
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
-
-        // Check if server supports goto type definition
-        if !server.supports_goto_type_definition().await {
-            return Ok(None); // Gracefully return None if not supported
-        }
-
-        let params = GotoTypeDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position: Position { line, character },
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-
-        let result = server
-            .request("textDocument/typeDefinition", serde_json::to_value(params)?)
-            .await?;
-
-        let response: Option<GotoTypeDefinitionResponse> =
-            parse_lsp_response(result, "textDocument/typeDefinition");
-
-        // Convert response to single location (take first if multiple)
-        Ok(response.and_then(|resp| match resp {
-            GotoTypeDefinitionResponse::Scalar(location) => Some(location),
-            GotoTypeDefinitionResponse::Array(locations) => locations.into_iter().next(),
-            GotoTypeDefinitionResponse::Link(links) => {
-                links.into_iter().next().map(|link| lsp_types::Location {
-                    uri: link.target_uri,
-                    range: link.target_selection_range,
-                })
-            }
-        }))
+        self.goto_for_document(
+            uri,
+            line,
+            character,
+            language_id,
+            "textDocument/typeDefinition",
+        )
+        .await
     }
 
     /// Requests hover information for a position in a document
@@ -252,10 +241,7 @@ impl LspManager {
             language_id
         );
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         lsp_info!("LSP-HOVER", "Server found for language: {}", language_id);
 
@@ -344,67 +330,74 @@ impl LspManager {
         line: u32,
         character: u32,
         language_id: &str,
-        trigger_char: Option<char>,
-    ) -> Result<Vec<lsp_types::CompletionItem>> {
-        use lsp_types::{
-            CompletionContext, CompletionParams, CompletionResponse, CompletionTriggerKind,
-            Position, TextDocumentIdentifier, TextDocumentPositionParams,
-        };
-
+        trigger: CompletionTrigger,
+    ) -> Result<CompletionOutcome> {
+        let server_id = self.server_id_for_document(uri, language_id)?;
         let server = self
-            .servers
-            .get(language_id)
+            .server_handle(&server_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
-
-        // Check if server supports completion
-        if !server.supports_completion().await {
-            return Ok(Vec::new()); // Return empty list if not supported
-        }
 
         // Cancel any pending completion requests before sending new one
         // Completion is high-frequency and only latest matters (user is still typing)
-        if let Err(e) = server
-            .cancel_requests_by_method("textDocument/completion")
-            .await
-        {
-            lsp_warn!(
-                "LSP-COMPLETION",
-                "Failed to cancel previous completion requests: {}",
-                e
-            );
-            // Continue anyway - cancellation failure is not critical
+        if server.supports_completion().await {
+            if let Err(e) = server
+                .cancel_requests_by_method("textDocument/completion")
+                .await
+            {
+                lsp_warn!(
+                    "LSP-COMPLETION",
+                    "Failed to cancel previous completion requests: {}",
+                    e
+                );
+                // Continue anyway - cancellation failure is not critical
+            }
         }
 
-        let params = CompletionParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position: Position { line, character },
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-            context: Some(CompletionContext {
-                trigger_kind: if trigger_char.is_some() {
-                    CompletionTriggerKind::TRIGGER_CHARACTER
-                } else {
-                    CompletionTriggerKind::INVOKED
-                },
-                trigger_character: trigger_char.map(|c| c.to_string()),
-            }),
-        };
+        let mut outcome =
+            Self::completion_on_server(&server, uri, line, character, trigger).await?;
+        outcome.sources = vec![server_id; outcome.items.len()];
+        Ok(outcome)
+    }
 
-        let result = server
-            .request("textDocument/completion", serde_json::to_value(params)?)
-            .await?;
-
-        let response: Option<CompletionResponse> =
-            parse_lsp_response(result, "textDocument/completion");
-
-        Ok(response
-            .map(|resp| match resp {
-                CompletionResponse::Array(items) => items,
-                CompletionResponse::List(list) => list.items,
-            })
-            .unwrap_or_default())
+    /// Resolves the lazily-computed fields (documentation, detail, ...) of a
+    /// completion item with `completionItem/resolve`. Tries each of
+    /// `server_ids` that advertises `resolveProvider` until one answers; the
+    /// original item is returned when none does.
+    pub async fn resolve_completion_item(
+        &self,
+        server_ids: &[String],
+        item: lsp_types::CompletionItem,
+    ) -> Result<lsp_types::CompletionItem> {
+        for server_id in server_ids {
+            let Some(server) = self
+                .servers
+                .get(server_id.as_str())
+                .map(|entry| entry.value().clone())
+            else {
+                continue;
+            };
+            if !server.supports_completion_resolve().await {
+                continue;
+            }
+            // One server failing to resolve (or not knowing the item) must
+            // not stop the next one from trying.
+            let result = match server
+                .request("completionItem/resolve", serde_json::to_value(&item)?)
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    lsp_debug!("LSP-COMPLETION", "{server_id} could not resolve: {error}");
+                    continue;
+                }
+            };
+            let resolved: Option<lsp_types::CompletionItem> =
+                parse_lsp_response(result, "completionItem/resolve");
+            if let Some(resolved) = resolved {
+                return Ok(resolved);
+            }
+        }
+        Ok(item)
     }
 
     /// Requests document formatting
@@ -417,10 +410,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::TextEdit>> {
         use lsp_types::{DocumentFormattingParams, FormattingOptions, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports formatting
         if !server.supports_formatting().await {
@@ -465,10 +455,7 @@ impl LspManager {
             TextDocumentIdentifier,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports range formatting
         if !server.supports_range_formatting().await {
@@ -522,10 +509,7 @@ impl LspManager {
             TextDocumentIdentifier,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports code actions
         if !server.supports_code_actions().await {
@@ -567,8 +551,7 @@ impl LspManager {
         action: lsp_types::CodeAction,
     ) -> Result<lsp_types::CodeAction> {
         let server = self
-            .servers
-            .get(language_id)
+            .server_handle(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
         Self::resolve_code_action_on_server(&server, action).await
     }
@@ -580,8 +563,7 @@ impl LspManager {
         action: lsp_types::CodeAction,
     ) -> Result<lsp_types::CodeAction> {
         let server = self
-            .servers
-            .get(server_id)
+            .server_handle(server_id)
             .ok_or_else(|| anyhow::anyhow!("No server with id: {}", server_id))?;
         Self::resolve_code_action_on_server(&server, action).await
     }
@@ -613,10 +595,7 @@ impl LspManager {
             TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports references
         if !server.supports_references().await {
@@ -656,10 +635,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::PrepareRenameResponse>> {
         use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports prepare rename
         if !server.supports_prepare_rename().await {
@@ -694,10 +670,7 @@ impl LspManager {
             Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports rename
         if !server.supports_rename().await {
@@ -735,10 +708,7 @@ impl LspManager {
             Position, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports signature help
         if !server.supports_signature_help().await {
@@ -788,10 +758,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::SelectionRange>> {
         use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports selection range
         if !server.supports_selection_range().await {
@@ -824,10 +791,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::DocumentSymbol>> {
         use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports document symbols
         if !server.supports_document_symbol().await {
@@ -896,10 +860,7 @@ impl LspManager {
             DocumentHighlightParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports document highlight
         if !server.supports_document_highlight().await {
@@ -928,18 +889,46 @@ impl LspManager {
         Ok(response.unwrap_or_default())
     }
 
-    /// Requests workspace-wide symbol search
+    /// Requests workspace-wide symbol search from the primary server of every
+    /// project root of the language. Fails only when no server answered.
     pub async fn workspace_symbols(
         &self,
         language_id: &str,
         query: String,
     ) -> Result<Vec<lsp_types::SymbolInformation>> {
-        use lsp_types::WorkspaceSymbolParams;
+        let servers: Vec<_> = self
+            .servers_for_language(language_id)
+            .into_iter()
+            .filter(|server_id| !server_id.contains(':'))
+            .filter_map(|server_id| self.server_handle(&server_id))
+            .collect();
+        if servers.is_empty() {
+            return Err(anyhow::anyhow!("No server for language: {}", language_id));
+        }
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let mut symbols = Vec::new();
+        let mut last_error = None;
+        let mut answered = false;
+        for server in &servers {
+            match Self::workspace_symbols_on_server(server, query.clone()).await {
+                Ok(found) => {
+                    answered = true;
+                    symbols.extend(found);
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) if !answered => Err(error),
+            _ => Ok(symbols),
+        }
+    }
+
+    async fn workspace_symbols_on_server(
+        server: &super::LanguageServer,
+        query: String,
+    ) -> Result<Vec<lsp_types::SymbolInformation>> {
+        use lsp_types::WorkspaceSymbolParams;
 
         // Check if server supports workspace symbols
         if !server.supports_workspace_symbol().await {
@@ -1013,10 +1002,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::FoldingRange>> {
         use lsp_types::{FoldingRangeParams, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports folding range
         if !server.supports_folding_range().await {
@@ -1039,6 +1025,24 @@ impl LspManager {
         Ok(response.unwrap_or_default())
     }
 
+    /// Fetches the text of a document that has no `file:` location (LSP 3.18
+    /// `workspace/textDocumentContent`), e.g. a class file or a library source
+    /// a server addresses by its own URI scheme.
+    pub async fn text_document_content(&self, uri: &Uri, language_id: &str) -> Result<String> {
+        let server = self.server_for_document(uri, language_id)?;
+        let result = server
+            .request(
+                "workspace/textDocumentContent",
+                serde_json::json!({ "uri": uri.as_str() }),
+            )
+            .await?;
+        result
+            .get("text")
+            .and_then(|text| text.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("server returned no text for {}", uri.as_str()))
+    }
+
     /// Prepares call hierarchy for a position in a document
     /// Returns call hierarchy items at the cursor position (typically one item)
     pub async fn prepare_call_hierarchy(
@@ -1053,10 +1057,7 @@ impl LspManager {
             TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&uri, language_id)?;
 
         // Check if server supports call hierarchy
         if !server.supports_call_hierarchy().await {
@@ -1093,10 +1094,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyIncomingCall>>> {
         use lsp_types::CallHierarchyIncomingCallsParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports call hierarchy
         if !server.supports_call_hierarchy().await {
@@ -1128,10 +1126,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>> {
         use lsp_types::CallHierarchyOutgoingCallsParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports call hierarchy
         if !server.supports_call_hierarchy().await {
@@ -1168,10 +1163,7 @@ impl LspManager {
             TypeHierarchyPrepareParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&uri, language_id)?;
 
         // Check if server supports type hierarchy
         if !server.supports_type_hierarchy().await {
@@ -1208,10 +1200,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySupertypesParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports type hierarchy
         if !server.supports_type_hierarchy().await {
@@ -1243,10 +1232,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySubtypesParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports type hierarchy
         if !server.supports_type_hierarchy().await {
@@ -1269,17 +1255,21 @@ impl LspManager {
         Ok(response)
     }
 
-    /// Executes a command on the LSP server (e.g., "Organize Imports")
-    /// Returns the command result if successful
+    /// Executes a command on the servers of the project root that owns `uri`
+    /// (e.g., "Organize Imports"). Returns the command result if successful
     pub async fn execute_command(
         &self,
         command: String,
         arguments: Option<Vec<serde_json::Value>>,
+        uri: &Uri,
         language_id: &str,
     ) -> Result<Option<serde_json::Value>> {
         use lsp_types::ExecuteCommandParams;
 
-        let server_ids = self.servers_for_language(language_id);
+        let mut server_ids = self.servers_for_document_uri(language_id, uri);
+        if server_ids.is_empty() {
+            server_ids = self.servers_for_language(language_id);
+        }
         if server_ids.is_empty() {
             return Err(anyhow::anyhow!("No server for language: {}", language_id));
         }
@@ -1377,24 +1367,60 @@ impl LspManager {
         Ok(Some(result))
     }
 
-    /// Request run configurations from the Java LSP server via `workspace/executeCommand`.
-    ///
-    /// Sends `hyperion.runConfigurations` and parses the response as a JSON array.
-    /// Returns an empty vec on error or if no Java server is available.
-    pub async fn run_configurations(&self) -> Vec<serde_json::Value> {
-        let result = self
-            .execute_command("hyperion.runConfigurations".to_owned(), None, "java")
-            .await;
-        match result {
-            Ok(Some(value)) => {
-                if let Some(arr) = value.as_array() {
-                    arr.clone()
-                } else {
-                    Vec::new()
-                }
+    /// Requests code lenses for a document from every capable server that
+    /// owns it. Lenses the server left unresolved (no `command`) are resolved
+    /// with `codeLens/resolve` (best effort, capped). Each lens is paired with
+    /// the id of the server that produced it, so a later command runs there.
+    pub async fn code_lenses(
+        &self,
+        uri: &Uri,
+        file: &std::path::Path,
+        language_id: &str,
+    ) -> Result<Vec<(String, lsp_types::CodeLens)>> {
+        use lsp_types::{CodeLens, CodeLensParams, TextDocumentIdentifier};
+
+        let mut all = Vec::new();
+        for server_id in self.servers_for_document(language_id, file) {
+            let Some(server) = self
+                .servers
+                .get(server_id.as_str())
+                .map(|entry| entry.value().clone())
+            else {
+                continue;
+            };
+            if !server.supports_code_lens().await {
+                continue;
             }
-            _ => Vec::new(),
+            let params = CodeLensParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            let result = server
+                .request("textDocument/codeLens", serde_json::to_value(params)?)
+                .await?;
+            let lenses: Vec<CodeLens> =
+                parse_lsp_response::<Option<Vec<CodeLens>>>(result, "textDocument/codeLens")
+                    .flatten()
+                    .unwrap_or_default();
+            for (index, lens) in lenses.into_iter().enumerate() {
+                let lens = if lens.command.is_none() && index < 100 {
+                    match server
+                        .request("codeLens/resolve", serde_json::to_value(&lens)?)
+                        .await
+                        .ok()
+                        .and_then(|v| serde_json::from_value::<CodeLens>(v).ok())
+                    {
+                        Some(resolved) => resolved,
+                        None => lens,
+                    }
+                } else {
+                    lens
+                };
+                all.push((server_id.clone(), lens));
+            }
         }
+        Ok(all)
     }
 
     /// Requests inlay hints for a document range
@@ -1406,10 +1432,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::InlayHint>> {
         use lsp_types::{InlayHintParams, TextDocumentIdentifier, WorkDoneProgressParams};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports inlay hints
         if !server.supports_inlay_hints().await {
@@ -1487,10 +1510,7 @@ impl LspManager {
             language_id
         );
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports semantic tokens
         if !server.supports_semantic_tokens().await {
@@ -1541,10 +1561,7 @@ impl LspManager {
             language_id
         );
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports semantic tokens
         if !server.supports_semantic_tokens().await {
@@ -1583,12 +1600,10 @@ impl LspManager {
     /// The legend maps token type and modifier indices to their names
     pub async fn get_semantic_tokens_legend(
         &self,
+        uri: &Uri,
         language_id: &str,
     ) -> Result<Option<lsp_types::SemanticTokensLegend>> {
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         let caps = server.capabilities().await;
         if let Some(caps) = caps {
@@ -1619,6 +1634,24 @@ impl LspManager {
         Fut: Future<Output = Result<T>> + Send + 'static,
         F: Fn(super::LanguageServer) -> Fut,
     {
+        self.fan_out_with_ids(server_ids, per_server)
+            .await
+            .into_iter()
+            .map(|(_, result)| result)
+            .collect()
+    }
+
+    /// [`Self::fan_out`] keeping the id of the server each result came from.
+    async fn fan_out_with_ids<T, Fut, F>(
+        &self,
+        server_ids: &[String],
+        per_server: F,
+    ) -> Vec<(String, T)>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        F: Fn(super::LanguageServer) -> Fut,
+    {
         use std::time::Duration;
 
         let mut futures = Vec::new();
@@ -1629,7 +1662,7 @@ impl LspManager {
                 let fut = per_server(server);
                 futures.push(tokio::spawn(async move {
                     match tokio::time::timeout(Duration::from_secs(3), fut).await {
-                        Ok(Ok(val)) => Some(val),
+                        Ok(Ok(val)) => Some((sid, val)),
                         Ok(Err(e)) => {
                             lsp_debug!("LSP-MULTI", "Server {} failed: {}", sid, e);
                             None
@@ -1731,18 +1764,26 @@ impl LspManager {
         line: u32,
         character: u32,
         server_ids: &[String],
-        trigger_char: Option<char>,
-    ) -> Result<Vec<lsp_types::CompletionItem>> {
-        let results: Vec<Vec<lsp_types::CompletionItem>> = self
-            .fan_out(server_ids, |server| {
+        trigger: CompletionTrigger,
+    ) -> Result<CompletionOutcome> {
+        let results: Vec<(String, CompletionOutcome)> = self
+            .fan_out_with_ids(server_ids, |server| {
                 let uri = uri.clone();
                 async move {
-                    Self::completion_on_server(&server, &uri, line, character, trigger_char).await
+                    Self::completion_on_server(&server, &uri, line, character, trigger).await
                 }
             })
             .await;
 
-        Ok(results.into_iter().flatten().collect())
+        let mut merged = CompletionOutcome::default();
+        for (server_id, outcome) in results {
+            merged.is_incomplete |= outcome.is_incomplete;
+            merged
+                .sources
+                .extend(std::iter::repeat_n(server_id, outcome.items.len()));
+            merged.items.extend(outcome.items);
+        }
+        Ok(merged)
     }
 
     /// Internal: completion on a single server
@@ -1751,17 +1792,28 @@ impl LspManager {
         uri: &Uri,
         line: u32,
         character: u32,
-        trigger_char: Option<char>,
-    ) -> Result<Vec<lsp_types::CompletionItem>> {
+        trigger: CompletionTrigger,
+    ) -> Result<CompletionOutcome> {
         use lsp_types::{
-            CompletionContext, CompletionParams, CompletionResponse, CompletionTriggerKind,
-            Position, TextDocumentIdentifier, TextDocumentPositionParams,
+            CompletionContext, CompletionParams, CompletionTriggerKind, Position,
+            TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
         if !server.supports_completion().await {
-            return Ok(Vec::new());
+            return Ok(CompletionOutcome::default());
         }
 
+        let (trigger_kind, trigger_character) = match trigger {
+            CompletionTrigger::Invoked => (CompletionTriggerKind::INVOKED, None),
+            CompletionTrigger::Character(c) => (
+                CompletionTriggerKind::TRIGGER_CHARACTER,
+                Some(c.to_string()),
+            ),
+            CompletionTrigger::Incomplete => (
+                CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS,
+                None,
+            ),
+        };
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -1770,12 +1822,8 @@ impl LspManager {
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
             context: Some(CompletionContext {
-                trigger_kind: if trigger_char.is_some() {
-                    CompletionTriggerKind::TRIGGER_CHARACTER
-                } else {
-                    CompletionTriggerKind::INVOKED
-                },
-                trigger_character: trigger_char.map(|c| c.to_string()),
+                trigger_kind,
+                trigger_character,
             }),
         };
 
@@ -1783,14 +1831,20 @@ impl LspManager {
             .request("textDocument/completion", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<CompletionResponse> =
-            parse_lsp_response(result, "textDocument/completion");
-        Ok(response
-            .map(|resp| match resp {
-                CompletionResponse::Array(items) => items,
-                CompletionResponse::List(list) => list.items,
-            })
-            .unwrap_or_default())
+        let response: Option<lsp_types::CompletionResponse> = parse_lsp_response(
+            apply_completion_item_defaults(result),
+            "textDocument/completion",
+        );
+        let mut outcome = response.map(completion_outcome).unwrap_or_default();
+        let all_commit_characters = server.completion_all_commit_characters().await;
+        if !all_commit_characters.is_empty() {
+            for item in &mut outcome.items {
+                if item.commit_characters.is_none() {
+                    item.commit_characters = Some(all_commit_characters.clone());
+                }
+            }
+        }
+        Ok(outcome)
     }
 
     /// Goto definition from multiple servers, returning first non-empty result.
@@ -1818,12 +1872,56 @@ impl LspManager {
         line: u32,
         character: u32,
     ) -> Result<Option<lsp_types::Location>> {
+        Self::goto_on_server(server, uri, line, character, "textDocument/definition").await
+    }
+
+    /// Route all navigation requests through the document's owning root, even
+    /// when there is just one server (its ID need not equal the language).
+    async fn goto_for_document(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        language_id: &str,
+        method: &'static str,
+    ) -> Result<Option<lsp_types::Location>> {
+        let ids = self.servers_for_document_uri(language_id, uri);
+        anyhow::ensure!(!ids.is_empty(), "No server for this {language_id} document");
+        if ids.len() == 1 {
+            let server = self
+                .servers
+                .get(&ids[0])
+                .map(|entry| entry.value().clone())
+                .ok_or_else(|| anyhow::anyhow!("Language server is no longer running"))?;
+            return Self::goto_on_server(&server, uri, line, character, method).await;
+        }
+        let results = self
+            .fan_out(&ids, |server| {
+                let uri = uri.clone();
+                async move { Self::goto_on_server(&server, &uri, line, character, method).await }
+            })
+            .await;
+        Ok(results.into_iter().flatten().next())
+    }
+
+    async fn goto_on_server(
+        server: &super::LanguageServer,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        method: &str,
+    ) -> Result<Option<lsp_types::Location>> {
         use lsp_types::{
             GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier,
             TextDocumentPositionParams,
         };
 
-        if !server.supports_goto_definition().await {
+        let supported = match method {
+            "textDocument/implementation" => server.supports_goto_implementation().await,
+            "textDocument/typeDefinition" => server.supports_goto_type_definition().await,
+            _ => server.supports_goto_definition().await,
+        };
+        if !supported {
             return Ok(None);
         }
 
@@ -1837,11 +1935,13 @@ impl LspManager {
         };
 
         let result = server
-            .request("textDocument/definition", serde_json::to_value(params)?)
+            .request(method, serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<GotoDefinitionResponse> =
-            parse_lsp_response(result, "textDocument/definition");
+        if result.is_null() {
+            return Ok(None);
+        }
+        let response: Option<GotoDefinitionResponse> = parse_lsp_response(result, method);
         Ok(response.and_then(|resp| match resp {
             GotoDefinitionResponse::Scalar(location) => Some(location),
             GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
@@ -1970,11 +2070,16 @@ impl LspManager {
 mod tests {
     use super::LspManager;
 
+    fn uri() -> lsp_types::Uri {
+        "file:///project/main.rs".parse().unwrap()
+    }
+
     #[tokio::test]
     async fn execute_command_errors_when_no_server_for_language() {
+        let uri = uri();
         let manager = LspManager::new();
         let err = manager
-            .execute_command("dummy.command".to_string(), None, "rust")
+            .execute_command("dummy.command".to_string(), None, &uri, "rust")
             .await
             .expect_err("expected missing-server error");
 
@@ -1983,18 +2088,94 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_errors_when_indexed_servers_are_not_available() {
+        let uri = uri();
         let manager = LspManager::new();
         manager
             .language_server_index
             .insert("rust".to_string(), vec!["rust".to_string()]);
 
         let err = manager
-            .execute_command("dummy.command".to_string(), None, "rust")
+            .execute_command("dummy.command".to_string(), None, &uri, "rust")
             .await
             .expect_err("expected execute-command capability error");
 
         assert!(err
             .to_string()
             .contains("No server for language 'rust' supports workspace/executeCommand"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod navigation_routing_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn navigation_uses_the_document_root_server_even_when_it_is_the_only_one() {
+        // Exercise the actual JSON-RPC transport and LocationLink conversion.
+        let script = r#"
+import json, sys
+while True:
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: sys.exit(0)
+        if line == b'\r\n': break
+        key, value = line.decode().split(':', 1)
+        headers[key.lower()] = value.strip()
+    request = json.loads(sys.stdin.buffer.read(int(headers['content-length'])))
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'capabilities': {'definitionProvider': True, 'implementationProvider': True, 'typeDefinitionProvider': True}}
+    elif method == 'shutdown': result = None
+    else:
+        assert request['params']['position'] == {'line': 2, 'character': 7}
+        result = [{'targetUri': 'file:///workspace/nested/target.rs', 'targetRange': {'start': {'line': 0, 'character': 0}, 'end': {'line': 9, 'character': 0}}, 'targetSelectionRange': {'start': {'line': 3, 'character': 4}, 'end': {'line': 3, 'character': 8}}}]
+    body = json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+"#;
+        let mut server = super::super::LanguageServer::spawn(
+            "rust",
+            "python3",
+            vec!["-u".into(), "-c".into(), script.into()],
+        )
+        .await
+        .unwrap();
+        server
+            .initialize("file:///workspace/nested".parse().unwrap())
+            .await
+            .unwrap();
+        let manager = LspManager::new();
+        let id = "rust@nested".to_string();
+        manager.servers.insert(id.clone(), server.clone());
+        manager
+            .language_server_index
+            .insert("rust".into(), vec![id.clone()]);
+        manager.server_roots.insert(id, "/workspace/nested".into());
+        let uri = "file:///workspace/nested/source.rs".parse().unwrap();
+        for method in [
+            "textDocument/definition",
+            "textDocument/implementation",
+            "textDocument/typeDefinition",
+        ] {
+            let result = manager
+                .goto_for_document(&uri, 2, 7, "rust", method)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.range.start, lsp_types::Position::new(3, 4));
+            assert_eq!(result.uri.as_str(), "file:///workspace/nested/target.rs");
+        }
+        assert!(manager
+            .goto_definition(
+                &"file:///elsewhere/source.rs".parse().unwrap(),
+                2,
+                7,
+                "rust"
+            )
+            .await
+            .is_err());
+        server.shutdown().await.unwrap();
     }
 }

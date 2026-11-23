@@ -49,6 +49,9 @@ export const trapDialogFocus = (
     if (
         event.shiftKey &&
         (document.activeElement === first ||
+            // The dialog itself is focused programmatically (tabIndex=-1);
+            // native Shift+Tab from there would leave the dialog.
+            document.activeElement === container ||
             !container.contains(document.activeElement))
     ) {
         event.preventDefault();

@@ -50,8 +50,8 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             editor.reset_input_state();
         }
         'o' => {
-            // <Space>o - Document outline (symbols)
-            editor.request_document_symbols();
+            // <Space>o - Document outline (symbol tree)
+            editor.open_outline_picker();
             editor.reset_input_state();
         }
         'S' => {
@@ -70,7 +70,6 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             // <Space><Space> - Open AI chat
             editor.open_ai_chat(crate::ai::chat_types::ChatOpts {
                 name: "chat".into(),
-                profile: editor.ai_chat_context_profile("chat"),
                 allow_edits: true,
                 ..Default::default()
             })?;
@@ -91,6 +90,10 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
         'd' => {
             // <Space>d... - Debug prefix
             editor.set_input_state(InputState::Leader { keys: vec!['d'] });
+        }
+        'r' => {
+            // <Space>r... - Run prefix (rr run, rd debug, rl rerun, rc configs, rs stop, rt/rf console)
+            editor.set_input_state(InputState::Leader { keys: vec!['r'] });
         }
         'l' => {
             // <Space>l... - LSP manager prefix
@@ -132,69 +135,86 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.reset_input_state();
         }
         (&['d'], 'c') => {
-            // <Space>dc - Continue (if active) or auto-start debug session
+            // <Space>dc - Continue (if a session is active) or debug whatever
+            // is at the cursor (same path as F5).
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::Continue);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::Continue);
             } else {
-                let dap_start = editor
-                    .buffer()
-                    .file_path()
-                    .and_then(|fp| {
-                        crate::language_config::LanguageRegistry::try_get()
-                            .and_then(|reg| reg.detect(fp))
-                    })
-                    .and_then(|lang| lang.dap.as_ref())
-                    .and_then(|config| {
-                        crate::language_config::find_dap_command(config)
-                            .map(|cmd| (cmd, config.args.clone()))
-                    });
-                if let Some((command, args)) = dap_start {
-                    editor.dap_manager_mut().pending_action =
-                        Some(crate::dap::PendingDebugAction::Start {
-                            command,
-                            args,
-                            run_config: None,
-                        });
-                }
+                editor.launch_at_cursor(crate::launch::LaunchMode::Debug);
             }
+            editor.reset_input_state();
+        }
+        (&['d'], 'C') => {
+            // <Space>dC - Pick a run configuration to debug
+            editor.launch_pick_config(crate::launch::LaunchMode::Debug);
+            editor.reset_input_state();
+        }
+        (&['d'], 'r') => {
+            // <Space>dr - Restart: rerun the last run/debug
+            editor.launch_last();
             editor.reset_input_state();
         }
         (&['d'], 'n') => {
             // <Space>dn - Step over (next)
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepOver);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepOver);
             }
             editor.reset_input_state();
         }
         (&['d'], 'i') => {
             // <Space>di - Step into
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepIn);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepIn);
             }
             editor.reset_input_state();
         }
         (&['d'], 'o') => {
             // <Space>do - Step out
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepOut);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepOut);
             }
             editor.reset_input_state();
         }
         (&['d'], 's') => {
-            // <Space>ds - Stop debug session
-            if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::Stop);
-            }
+            // <Space>ds - Stop the run / debug session
+            editor.launch_stop();
             editor.reset_input_state();
         }
         (&['d'], 'v') => {
             // <Space>dv - Toggle debug panels visibility
             editor.toggle_debug_panels();
+            editor.reset_input_state();
+        }
+        (&['d'], 'f') | (&['d'], 'B') => {
+            // <Space>df / <Space>dB - Focus the debug panel (stack, variables,
+            // watches, breakpoints)
+            editor.focus_debug_panel();
+            editor.reset_input_state();
+        }
+        (&['d'], 'w') => {
+            // <Space>dw - Add a watch expression (word under the cursor, or type one)
+            match editor.debug_expression_at_cursor() {
+                Some(expression) => editor.add_watch(expression),
+                None => {
+                    editor.set_mode(crate::mode::Mode::Command);
+                    editor.set_command_line("DebugWatch ");
+                }
+            }
+            editor.reset_input_state();
+        }
+        (&['d'], 'E') => {
+            // <Space>dE - Toggle "break on exceptions"
+            if let Err(message) = editor.toggle_exception_filter("") {
+                editor.set_status_message(message);
+            }
             editor.reset_input_state();
         }
         (&['d'], 'k') => {
@@ -209,6 +229,53 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             if editor.is_debug_active() {
                 editor.select_frame_down();
             }
+            editor.reset_input_state();
+        }
+
+        // <Space>r... sequences (run)
+        (&['r'], 'r') => {
+            // <Space>rr - Run whatever is at the cursor (no debugger)
+            editor.launch_at_cursor(crate::launch::LaunchMode::Run);
+            editor.reset_input_state();
+        }
+        (&['r'], 'd') => {
+            // <Space>rd - Debug whatever is at the cursor
+            editor.launch_at_cursor(crate::launch::LaunchMode::Debug);
+            editor.reset_input_state();
+        }
+        (&['r'], 'l') => {
+            // <Space>rl - Rerun the last run/debug
+            editor.launch_last();
+            editor.reset_input_state();
+        }
+        (&['r'], 'c') => {
+            // <Space>rc - Pick a run configuration to run
+            editor.launch_pick_config(crate::launch::LaunchMode::Run);
+            editor.reset_input_state();
+        }
+        (&['r'], 'C') => {
+            // <Space>rC - Pick a run configuration to debug
+            editor.launch_pick_config(crate::launch::LaunchMode::Debug);
+            editor.reset_input_state();
+        }
+        (&['r'], 's') => {
+            // <Space>rs - Stop
+            editor.launch_stop();
+            editor.reset_input_state();
+        }
+        (&['r'], 't') => {
+            // <Space>rt - Toggle the run console
+            editor.toggle_run_console();
+            editor.reset_input_state();
+        }
+        (&['r'], 'f') => {
+            // <Space>rf - Focus the run console (scroll, jump to source)
+            editor.focus_run_console();
+            editor.reset_input_state();
+        }
+        (&['r'], 'x') => {
+            // <Space>rx - Clear finished runs from the console
+            editor.clear_run_console();
             editor.reset_input_state();
         }
 
@@ -238,6 +305,16 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         (&['t'], 'a') | (&['t'], 's') => {
             // <Space>ta / <Space>ts - Test suite (run full test suite)
             editor.run_test_all();
+            editor.reset_input_state();
+        }
+        (&['t'], 'd') => {
+            // <Space>td - Debug the nearest test (Java / Kotlin)
+            editor.debug_test_nearest();
+            editor.reset_input_state();
+        }
+        (&['t'], 'D') => {
+            // <Space>tD - Debug the file's tests (Java / Kotlin)
+            editor.debug_test_file();
             editor.reset_input_state();
         }
         (&['t'], 'l') => {
@@ -277,6 +354,16 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.request_call_hierarchy_outgoing();
             editor.reset_input_state();
         }
+        (&['c'], 'l') => {
+            // <Space>cl - Run the code lens on this line
+            editor.run_code_lens_at_cursor(crate::launch::LaunchMode::Run);
+            editor.reset_input_state();
+        }
+        (&['c'], 'L') => {
+            // <Space>cL - Debug the code lens on this line
+            editor.run_code_lens_at_cursor(crate::launch::LaunchMode::Debug);
+            editor.reset_input_state();
+        }
 
         // <Space>s... sequences
         (&['s'], 'f') => {
@@ -297,6 +384,33 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.reset_input_state();
         }
 
+        (&['s'], 'd') => {
+            // <Space>sd - Problems (all published diagnostics, by file)
+            editor.open_problems_picker(crate::editor::problems::ProblemFilter::All);
+            editor.reset_input_state();
+        }
+        (&['s'], 'h') => {
+            // <Space>sh - Recent files (this project, across sessions)
+            editor.open_recent_files_picker();
+            editor.reset_input_state();
+        }
+        (&['s'], 'b') => {
+            // <Space>sb - Open buffers
+            editor.open_buffer_picker();
+            editor.reset_input_state();
+        }
+        (&['s'], 'S') => {
+            // <Space>sS - Workspace symbols (live query)
+            editor.open_workspace_symbol_picker();
+            editor.reset_input_state();
+        }
+        (&['s'], 'r') => {
+            // <Space>sr - Replace in files (prefilled with the word under the cursor)
+            let word = editor.buffer().word_under_cursor().map(|(word, _, _)| word);
+            editor.open_search_replace(word);
+            editor.reset_input_state();
+        }
+
         // <Space>g... sequences (git)
         (&['g'], 'd') => {
             // <Space>gd - Toggle the branch diff review
@@ -306,6 +420,81 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         (&['g'], 'f') => {
             // <Space>gf - Fetch the review base branch
             editor.fetch_review_base();
+            editor.reset_input_state();
+        }
+        (&['g'], 'g') => {
+            // <Space>gg - Git status (changed files)
+            editor.open_git_status_picker();
+            editor.reset_input_state();
+        }
+        (&['g'], 's') => {
+            // <Space>gs - Stage the hunk under the cursor
+            editor.git_stage_hunk();
+            editor.reset_input_state();
+        }
+        (&['g'], 'u') => {
+            // <Space>gu - Unstage the hunk under the cursor
+            editor.git_unstage_hunk();
+            editor.reset_input_state();
+        }
+        (&['g'], 'S') => {
+            // <Space>gS - Stage the file
+            editor.git_stage_file();
+            editor.reset_input_state();
+        }
+        (&['g'], 'U') => {
+            // <Space>gU - Unstage the file
+            editor.git_unstage_file();
+            editor.reset_input_state();
+        }
+        (&['g'], 'c') => {
+            // <Space>gc - Commit (message buffer)
+            editor.open_commit_message(false);
+            editor.reset_input_state();
+        }
+        (&['g'], 'C') => {
+            // <Space>gC - Amend the last commit
+            editor.open_commit_message(true);
+            editor.reset_input_state();
+        }
+        (&['g'], 'l') => {
+            // <Space>gl - History of the current file
+            editor.open_file_history_picker();
+            editor.reset_input_state();
+        }
+        (&['g'], 'L') => {
+            // <Space>gL - History of the current line
+            editor.open_line_history_picker();
+            editor.reset_input_state();
+        }
+        (&['g'], 'm') => {
+            // <Space>gm... - merge conflicts (n/p navigate, o ours, t theirs, b both, x neither)
+            editor.set_input_state(InputState::Leader {
+                keys: vec!['g', 'm'],
+            });
+        }
+        (&['g', 'm'], 'n') => {
+            editor.goto_conflict(true);
+            editor.reset_input_state();
+        }
+        (&['g', 'm'], 'p') => {
+            editor.goto_conflict(false);
+            editor.reset_input_state();
+        }
+        (&['g', 'm'], 'o') => {
+            editor.resolve_conflict(crate::git::conflict::Resolution::Ours);
+            editor.reset_input_state();
+        }
+        (&['g', 'm'], 't') => {
+            editor.resolve_conflict(crate::git::conflict::Resolution::Theirs);
+            editor.reset_input_state();
+        }
+        (&['g', 'm'], 'b') => {
+            editor.resolve_conflict(crate::git::conflict::Resolution::Both);
+            editor.reset_input_state();
+        }
+        (&['g', 'm'], 'x') => {
+            editor.resolve_conflict(crate::git::conflict::Resolution::Neither);
             editor.reset_input_state();
         }
 

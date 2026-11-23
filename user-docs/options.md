@@ -50,6 +50,17 @@ Add extra columns of normal (unshaded) background between the text edge and the 
 :set nornu
 ```
 
+## Inlay Hints
+
+```vim
+:set inlay_hints     " Show language-server inlay hints (default)
+:set noinlay_hints   " Hide them
+:set inlay_hints!    " Toggle
+:set inlay_hints?    " Show current value
+```
+
+See [Inlay hints](project-tools.md#inlay-hints) for what they show.
+
 ## Tabs and Indentation
 
 ```vim

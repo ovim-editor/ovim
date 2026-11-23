@@ -39,8 +39,10 @@ scroll, tab, split, file-tree, command/search, and status state. They include an
 `ai_chat` object whenever a chat is active. It reports focus, streaming/review
 state, current composer text and cursor, pending approval, scheduled inputs,
 and message history. The `activity` field is the authoritative lifecycle state:
-`idle`, `inference`, `classifying_tool`, `running_shell`, `running_web`,
-`waiting_tool_approval`, or `waiting_folder_approval`. Prefer it over inferring
+`idle`, `inference`, `classifying_tool`, `running_shell`,
+`running_external_tool` (web/browser tools and delegated-agent waits),
+`waiting_tool_approval`, `waiting_folder_approval`, or
+`waiting_code_explanation`. Prefer it over inferring
 ownership from compatibility booleans such as `waiting` and `streaming`. The
 `attention_generation` value increases for each new blocking agent approval,
 so a headless client can raise its own notification once per prompt. Completed
@@ -121,6 +123,23 @@ LSP helpers:
 ovim lsp wait -s dev --timeout 30000
 ovim lsp status -s dev
 ovim lsp hover -s dev
+```
+
+The position-based helpers (`hover`, `definition`, `references`, `diagnostics`,
+`symbols`, ...) come in two mutually exclusive forms:
+
+- `ovim lsp hover -s dev` acts at the live session's cursor. Move the cursor
+  first with `ovim send`/`ovim exec`, for example `ovim send -s dev "42G12|"`
+  for line 42, column 12.
+- `ovim lsp hover FILE:LINE:COL` needs no session: it starts a temporary
+  headless session, waits for the language server, runs the query and shuts the
+  session down. Combining `FILE` with `-s` is rejected by the argument parser.
+
+Inspect and recover language servers from a session:
+
+```bash
+ovim exec -s dev LspInfo      # servers, state, restarts (opens a scratch buffer)
+ovim exec -s dev LspRestart   # restart every server (or `LspRestart java`)
 ```
 
 ## Session Files

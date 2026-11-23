@@ -1,7 +1,7 @@
 {
   "name": "ovim-gui",
   "private": true,
-  "version": "1.2.7",
+  "version": "1.8.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -9,17 +9,23 @@
     "check": "tsc --noEmit",
     "format": "prettier --write src scripts",
     "format:check": "prettier --check src scripts",
-    "test": "vitest run",
+    "test": "vitest run src",
     "icons:generate": "node scripts/generate-icons.mjs",
-    "bundle": "npm run build && cd .. && cargo build --release --bin ovim-gui && tauri bundle"
+    "bundle": "npm run build && cd .. && cargo build --release --bin ovim-gui && tauri bundle",
+    "test:layout": "playwright test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "diff": "^9.0.0",
     "dompurify": "^3.4.14",
+    "fflate": "^0.8.3",
     "marked": "^18.0.10",
     "solid-js": "^1.9.9"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@solidjs/testing-library": "^0.8.10",
     "@tauri-apps/cli": "^2.11.4",
     "jsdom": "^30.0.1",
@@ -27,6 +33,9 @@
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
     "vite-plugin-solid": "^2.11.8",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "seroval": "1.7.6"
   }
 }

@@ -362,6 +362,9 @@ fn render_detail_pane(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
     if let Some(cmd) = &entry.lsp_command {
         lines.push(detail_line("Server", cmd));
     }
+    if let Some(release) = &entry.release {
+        lines.push(detail_line("Release", &release.describe()));
+    }
 
     if let Some(state) = &entry.server_state {
         let color = if state == "Running" {

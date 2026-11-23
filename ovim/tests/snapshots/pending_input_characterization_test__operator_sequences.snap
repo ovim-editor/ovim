@@ -1,0 +1,1444 @@
+---
+source: ovim/tests/pending_input_characterization_test.rs
+expression: snapshot(operator_cases())
+---
+dw            | d[op=Delete] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta "
+de            | d[op=Delete] e[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+db            | d[op=Delete] b[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha "
+d$            | d[op=Delete] $[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+d0            | d[op=Delete] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nbeta gamma\nxdelta\n\nlast line here\n" @"="  alpha "
+dj            | d[op=Delete] j[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
+dk            | d[op=Delete] k[-] => Normal (0,0) text="xdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+dG            | d[op=Delete] G[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\n" @"="  alpha beta gamma\nxdelta\n\nlast line here\n"
+dgg           | d[op=Delete] g[op=Delete,cmd=g] g[-] => Normal (0,0) text="xdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+dgn           | d[op=Delete] g[op=Delete,cmd=g] n[-] => Normal (1,8)
+diw           | d[op=Delete] i[op=Delete,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+daw           | d[op=Delete] a[op=Delete,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta "
+di(           | d[op=Delete] i[op=Delete,cmd=i] ([-] => Normal (1,8)
+da"           | d[op=Delete] a[op=Delete,cmd=a] "[-] => Normal (1,8)
+dip           | d[op=Delete] i[op=Delete,cmd=i] p[-] => Normal (0,0) text="\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+dfa           | d[op=Delete] f[op=Delete,char=Find/Some(Delete)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+dta           | d[op=Delete] t[op=Delete,char=Till/Some(Delete)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha a gamma\nxdelta\n\nlast line here\n" @"="bet"
+dFa           | d[op=Delete] F[op=Delete,char=FindBack/Some(Delete)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alphbeta gamma\nxdelta\n\nlast line here\n" @"="a "
+dl            | d[op=Delete] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+d}            | d[op=Delete] }[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta"
+d2w           | d[op=Delete] 2[n=2,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+dd            | d[op=Delete] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+dc            | d[op=Delete] c[-] => Normal (1,8)
+dy            | d[op=Delete] y[-] => Normal (1,8)
+d<            | d[op=Delete] <[-] => Normal (1,8)
+d>            | d[op=Delete] >[-] => Normal (1,8)
+du            | d[op=Delete] u[-] => Normal (1,8)
+dU            | d[op=Delete] U[-] => Normal (1,8)
+d~            | d[op=Delete] ~[-] => Normal (1,8)
+d<Esc>        | d[op=Delete] <Esc>[-] => Normal (1,8)
+dx            | d[op=Delete] x[-] => Normal (1,8)
+dv            | d[op=Delete] v[-] => Normal (1,8)
+di<Esc>       | d[op=Delete] i[op=Delete,cmd=i] <Esc>[-] => Normal (1,8)
+dK            | d[op=Delete] K[-] => Normal (1,8)
+dz            | d[op=Delete] z[cmd=z] => Normal (1,8)
+d"            | d[op=Delete] "[-] => Normal (1,8)
+dg<Esc>       | d[op=Delete] g[op=Delete,cmd=g] <Esc>[-] => Normal (1,8)
+dgx           | d[op=Delete] g[op=Delete,cmd=g] x[-] => Normal (1,8)
+dq            | d[op=Delete] q[-] => Normal (1,8)
+d:            | d[op=Delete] :[-] => Command (1,8)
+cw            | c[op=Change] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+ce            | c[op=Change] e[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+cb            | c[op=Change] b[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha "
+c$            | c[op=Change] $[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+c0            | c[op=Change] 0[-] => Insert (1,0) text="foo bar(baz, qux) \"str\" end\nbeta gamma\nxdelta\n\nlast line here\n" @"="  alpha "
+cj            | c[op=Change] j[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
+ck            | c[op=Change] k[-] => Insert (0,0) text="\nxdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+cG            | c[op=Change] G[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \n" @"="  alpha beta gamma\nxdelta\n\nlast line here\n"
+cgg           | c[op=Change] g[op=Change,cmd=g] g[-] => Insert (0,0) text="\nxdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+cgn           | c[op=Change] g[op=Change,cmd=g] n[-] => Normal (1,8)
+ciw           | c[op=Change] i[op=Change,cmd=i] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+caw           | c[op=Change] a[op=Change,cmd=a] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta "
+ci(           | c[op=Change] i[op=Change,cmd=i] ([-] => Normal (1,8)
+ca"           | c[op=Change] a[op=Change,cmd=a] "[-] => Normal (1,8)
+cip           | c[op=Change] i[op=Change,cmd=i] p[-] => Insert (0,0) text="\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+cfa           | c[op=Change] f[op=Change,char=Find/Some(Change)] a[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta"
+cta           | c[op=Change] t[op=Change,char=Till/Some(Change)] a[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha a gamma\nxdelta\n\nlast line here\n" @"="bet"
+cFa           | c[op=Change] F[op=Change,char=FindBack/Some(Change)] a[-] => Insert (1,6) text="foo bar(baz, qux) \"str\" end\n  alphbeta gamma\nxdelta\n\nlast line here\n" @"="a "
+cl            | c[op=Change] l[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+c}            | c[op=Change] }[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta"
+c2w           | c[op=Change] 2[n=2,op=Change] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+cd            | c[op=Change] d[-] => Normal (1,8)
+cc            | c[op=Change] c[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+cy            | c[op=Change] y[-] => Normal (1,8)
+c<            | c[op=Change] <[-] => Normal (1,8)
+c>            | c[op=Change] >[-] => Normal (1,8)
+cu            | c[op=Change] u[-] => Normal (1,8)
+cU            | c[op=Change] U[-] => Normal (1,8)
+c~            | c[op=Change] ~[-] => Normal (1,8)
+c<Esc>        | c[op=Change] <Esc>[-] => Normal (1,8)
+cx            | c[op=Change] x[-] => Normal (1,8)
+cv            | c[op=Change] v[-] => Normal (1,8)
+ci<Esc>       | c[op=Change] i[op=Change,cmd=i] <Esc>[-] => Normal (1,8)
+cK            | c[op=Change] K[-] => Normal (1,8)
+cz            | c[op=Change] z[cmd=z] => Normal (1,8)
+c"            | c[op=Change] "[-] => Normal (1,8)
+cg<Esc>       | c[op=Change] g[op=Change,cmd=g] <Esc>[-] => Normal (1,8)
+cgx           | c[op=Change] g[op=Change,cmd=g] x[-] => Normal (1,8)
+cq            | c[op=Change] q[-] => Normal (1,8)
+c:            | c[op=Change] :[-] => Command (1,8)
+yw            | y[op=Yank] w[-] => Normal (1,8) @"="beta "
+ye            | y[op=Yank] e[-] => Normal (1,8) @"="beta"
+yb            | y[op=Yank] b[-] => Normal (1,2) @"="alpha "
+y$            | y[op=Yank] $[-] => Normal (1,8) @"="beta gamma"
+y0            | y[op=Yank] 0[-] => Normal (1,0) @"="  alpha "
+yj            | y[op=Yank] j[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n"
+yk            | y[op=Yank] k[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+yG            | y[op=Yank] G[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n\nlast line here\n"
+ygg           | y[op=Yank] g[op=Yank,cmd=g] g[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+ygn           | y[op=Yank] g[op=Yank,cmd=g] n[-] => Normal (1,8)
+yiw           | y[op=Yank] i[op=Yank,cmd=i] w[-] => Normal (1,8) @"="beta"
+yaw           | y[op=Yank] a[op=Yank,cmd=a] w[-] => Normal (1,8) @"="beta "
+yi(           | y[op=Yank] i[op=Yank,cmd=i] ([-] => Normal (1,8)
+ya"           | y[op=Yank] a[op=Yank,cmd=a] "[-] => Normal (1,8)
+yip           | y[op=Yank] i[op=Yank,cmd=i] p[-] => Normal (0,0) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+yfa           | y[op=Yank] f[op=Yank,char=Find/Some(Yank)] a[-] => Normal (1,8) @"="beta"
+yta           | y[op=Yank] t[op=Yank,char=Till/Some(Yank)] a[-] => Normal (1,8) @"="bet"
+yFa           | y[op=Yank] F[op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,6) @"="a "
+yl            | y[op=Yank] l[-] => Normal (1,8) @"="b"
+y}            | y[op=Yank] }[-] => Normal (1,8) @"="beta gamma\nxdelta"
+y2w           | y[op=Yank] 2[n=2,op=Yank] w[-] => Normal (1,8) @"="beta gamma"
+yd            | y[op=Yank] d[-] => Normal (1,8)
+yc            | y[op=Yank] c[-] => Normal (1,8)
+yy            | y[op=Yank] y[-] => Normal (1,8) @"="  alpha beta gamma\n"
+y<            | y[op=Yank] <[-] => Normal (1,8)
+y>            | y[op=Yank] >[-] => Normal (1,8)
+yu            | y[op=Yank] u[-] => Normal (1,8)
+yU            | y[op=Yank] U[-] => Normal (1,8)
+y~            | y[op=Yank] ~[-] => Normal (1,8)
+y<Esc>        | y[op=Yank] <Esc>[-] => Normal (1,8)
+yx            | y[op=Yank] x[-] => Normal (1,8)
+yv            | y[op=Yank] v[-] => Normal (1,8)
+yi<Esc>       | y[op=Yank] i[op=Yank,cmd=i] <Esc>[-] => Normal (1,8)
+yK            | y[op=Yank] K[-] => Normal (1,8)
+yz            | y[op=Yank] z[cmd=z] => Normal (1,8)
+y"            | y[op=Yank] "[-] => Normal (1,8)
+yg<Esc>       | y[op=Yank] g[op=Yank,cmd=g] <Esc>[-] => Normal (1,8)
+ygx           | y[op=Yank] g[op=Yank,cmd=g] x[-] => Normal (1,8)
+yq            | y[op=Yank] q[-] => Normal (1,8)
+y:            | y[op=Yank] :[-] => Command (1,8)
+<w            | <[op=Dedent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<e            | <[op=Dedent] e[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<b            | <[op=Dedent] b[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<$            | <[op=Dedent] $[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<0            | <[op=Dedent] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<j            | <[op=Dedent] j[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<k            | <[op=Dedent] k[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<G            | <G[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<gg           | <[op=Dedent] g[op=Dedent,cmd=g] g[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<gn           | <[op=Dedent] g[op=Dedent,cmd=g] n[-] => Normal (1,8)
+<iw           | <[op=Dedent] i[op=Dedent,cmd=i] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<aw           | <[op=Dedent] a[op=Dedent,cmd=a] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<i(           | <[op=Dedent] i[op=Dedent,cmd=i] ([-] => Normal (1,8)
+<a"           | <[op=Dedent] a[op=Dedent,cmd=a] "[-] => Normal (1,8)
+<ip           | <[op=Dedent] i[op=Dedent,cmd=i] p[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<fa           | <[op=Dedent] f[op=Dedent,char=Find/Some(Dedent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<ta           | <[op=Dedent] t[op=Dedent,char=Till/Some(Dedent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<Fa           | <Fa[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<l            | <[op=Dedent] l[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<}            | <[op=Dedent] }[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<2w           | <[op=Dedent] 2[n=2,op=Dedent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<d            | <[op=Dedent] d[-] => Normal (1,8)
+<c            | <[op=Dedent] c[-] => Normal (1,8)
+<y            | <[op=Dedent] y[-] => Normal (1,8)
+<<            | <[op=Dedent] <[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+<>            | <[op=Dedent] >[-] => Normal (1,8)
+<u            | <[op=Dedent] u[-] => Normal (1,8)
+<U            | <U[-] => Normal (1,8)
+<~            | <[op=Dedent] ~[-] => Normal (1,8)
+<<Esc>        | <[op=Dedent] <Esc>[-] => Normal (1,8)
+<x            | <[op=Dedent] x[-] => Normal (1,8)
+<v            | <[op=Dedent] v[-] => Normal (1,8)
+<i<Esc>       | <[op=Dedent] i[op=Dedent,cmd=i] <Esc>[-] => Normal (1,8)
+<K            | <K[-] => Normal (1,8)
+<z            | <[op=Dedent] z[cmd=z] => Normal (1,8)
+<"            | <[op=Dedent] "[-] => Normal (1,8)
+<g<Esc>       | <[op=Dedent] g[op=Dedent,cmd=g] <Esc>[-] => Normal (1,8)
+<gx           | <[op=Dedent] g[op=Dedent,cmd=g] x[-] => Normal (1,8)
+<q            | <[op=Dedent] q[-] => Normal (1,8)
+<:            | <[op=Dedent] :[-] => Command (1,8)
+>w            | >[op=Indent] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>e            | >[op=Indent] e[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>b            | >[op=Indent] b[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>$            | >[op=Indent] $[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>0            | >[op=Indent] 0[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>j            | >[op=Indent] j[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+>k            | >[op=Indent] k[-] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>G            | >[op=Indent] G[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\n    last line here\n"
+>gg           | >[op=Indent] g[op=Indent,cmd=g] g[-] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>gn           | >[op=Indent] g[op=Indent,cmd=g] n[-] => Normal (1,8)
+>iw           | >[op=Indent] i[op=Indent,cmd=i] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>aw           | >[op=Indent] a[op=Indent,cmd=a] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>i(           | >[op=Indent] i[op=Indent,cmd=i] ([-] => Normal (1,8)
+>a"           | >[op=Indent] a[op=Indent,cmd=a] "[-] => Normal (1,8)
+>ip           | >[op=Indent] i[op=Indent,cmd=i] p[-] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+>fa           | >[op=Indent] f[op=Indent,char=Find/Some(Indent)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>ta           | >[op=Indent] t[op=Indent,char=Till/Some(Indent)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>Fa           | >[op=Indent] F[op=Indent,char=FindBack/Some(Indent)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>l            | >[op=Indent] l[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>}            | >[op=Indent] }[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+>2w           | >[op=Indent] 2[n=2,op=Indent] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>d            | >[op=Indent] d[-] => Normal (1,8)
+>c            | >[op=Indent] c[-] => Normal (1,8)
+>y            | >[op=Indent] y[-] => Normal (1,8)
+><            | >[op=Indent] <[-] => Normal (1,8)
+>>            | >[op=Indent] >[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+>u            | >[op=Indent] u[-] => Normal (1,8)
+>U            | >[op=Indent] U[-] => Normal (1,8)
+>~            | >[op=Indent] ~[-] => Normal (1,8)
+><Esc>        | >[op=Indent] <Esc>[-] => Normal (1,8)
+>x            | >[op=Indent] x[-] => Normal (1,8)
+>v            | >[op=Indent] v[-] => Normal (1,8)
+>i<Esc>       | >[op=Indent] i[op=Indent,cmd=i] <Esc>[-] => Normal (1,8)
+>K            | >[op=Indent] K[-] => Normal (1,8)
+>z            | >[op=Indent] z[cmd=z] => Normal (1,8)
+>"            | >[op=Indent] "[-] => Normal (1,8)
+>g<Esc>       | >[op=Indent] g[op=Indent,cmd=g] <Esc>[-] => Normal (1,8)
+>gx           | >[op=Indent] g[op=Indent,cmd=g] x[-] => Normal (1,8)
+>q            | >[op=Indent] q[-] => Normal (1,8)
+>:            | >[op=Indent] :[-] => Command (1,8)
+=w            | =[op=AutoIndent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=e            | =[op=AutoIndent] e[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=b            | =[op=AutoIndent] b[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=$            | =[op=AutoIndent] $[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=0            | =[op=AutoIndent] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=j            | =[op=AutoIndent] j[-] => Normal (2,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=k            | =[op=AutoIndent] k[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=G            | =[op=AutoIndent] G[-] => Normal (4,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=gg           | =[op=AutoIndent] g[op=AutoIndent,cmd=g] g[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=gn           | =[op=AutoIndent] g[op=AutoIndent,cmd=g] n[-] => Normal (1,8)
+=iw           | =[op=AutoIndent] i[op=AutoIndent,cmd=i] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=aw           | =[op=AutoIndent] a[op=AutoIndent,cmd=a] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=i(           | =[op=AutoIndent] i[op=AutoIndent,cmd=i] ([-] => Normal (1,8)
+=a"           | =[op=AutoIndent] a[op=AutoIndent,cmd=a] "[-] => Normal (1,8)
+=ip           | =[op=AutoIndent] i[op=AutoIndent,cmd=i] p[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=fa           | =[op=AutoIndent] f[op=AutoIndent,char=Find/Some(AutoIndent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=ta           | =[op=AutoIndent] t[op=AutoIndent,char=Till/Some(AutoIndent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=Fa           | =[op=AutoIndent] F[op=AutoIndent,char=FindBack/Some(AutoIndent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=l            | =[op=AutoIndent] l[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=}            | =[op=AutoIndent] }[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=2w           | =[op=AutoIndent] 2[n=2,op=AutoIndent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+=d            | =[op=AutoIndent] d[-] => Normal (1,8)
+=c            | =[op=AutoIndent] c[-] => Normal (1,8)
+=y            | =[op=AutoIndent] y[-] => Normal (1,8)
+=<            | =[op=AutoIndent] <[-] => Normal (1,8)
+=>            | =[op=AutoIndent] >[-] => Normal (1,8)
+=u            | =[op=AutoIndent] u[-] => Normal (1,8)
+=U            | =[op=AutoIndent] U[-] => Normal (1,8)
+=~            | =[op=AutoIndent] ~[-] => Normal (1,8)
+=<Esc>        | =[op=AutoIndent] <Esc>[-] => Normal (1,8)
+=x            | =[op=AutoIndent] x[-] => Normal (1,8)
+=v            | =[op=AutoIndent] v[-] => Normal (1,8)
+=i<Esc>       | =[op=AutoIndent] i[op=AutoIndent,cmd=i] <Esc>[-] => Normal (1,8)
+=K            | =[op=AutoIndent] K[-] => Normal (1,8)
+=z            | =[op=AutoIndent] z[cmd=z] => Normal (1,8)
+="            | =[op=AutoIndent] "[-] => Normal (1,8)
+=g<Esc>       | =[op=AutoIndent] g[op=AutoIndent,cmd=g] <Esc>[-] => Normal (1,8)
+=gx           | =[op=AutoIndent] g[op=AutoIndent,cmd=g] x[-] => Normal (1,8)
+=q            | =[op=AutoIndent] q[-] => Normal (1,8)
+=:            | =[op=AutoIndent] :[-] => Command (1,8)
+guw           | g[cmd=g] u[op=Lowercase] w[-] => Normal (1,8)
+gue           | g[cmd=g] u[op=Lowercase] e[-] => Normal (1,8)
+gub           | g[cmd=g] u[op=Lowercase] b[-] => Normal (1,2)
+gu$           | g[cmd=g] u[op=Lowercase] $[-] => Normal (1,8)
+gu0           | g[cmd=g] u[op=Lowercase] 0[-] => Normal (1,0)
+guj           | g[cmd=g] u[op=Lowercase] j[-] => Normal (1,8)
+guk           | g[cmd=g] u[op=Lowercase] k[-] => Normal (0,8)
+guG           | g[cmd=g] u[op=Lowercase] G[-] => Normal (1,8)
+gugg          | g[cmd=g] u[op=Lowercase] g[op=Lowercase,cmd=g] g[-] => Normal (0,8)
+gugn          | g[cmd=g] u[op=Lowercase] g[op=Lowercase,cmd=g] n[-] => Normal (1,8)
+guiw          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] w[-] => Normal (1,8)
+guaw          | g[cmd=g] u[op=Lowercase] a[op=Lowercase,cmd=a] w[-] => Normal (1,8)
+gui(          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] ([-] => Normal (1,8)
+gua"          | g[cmd=g] u[op=Lowercase] a[op=Lowercase,cmd=a] "[-] => Normal (1,8)
+guip          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] p[-] => Normal (0,0)
+gufa          | g[cmd=g] u[op=Lowercase] f[op=Lowercase,char=Find/Some(Lowercase)] a[-] => Normal (1,8)
+guta          | g[cmd=g] u[op=Lowercase] t[op=Lowercase,char=Till/Some(Lowercase)] a[-] => Normal (1,8)
+guFa          | g[cmd=g] u[op=Lowercase] F[op=Lowercase,char=FindBack/Some(Lowercase)] a[-] => Normal (1,6)
+gul           | g[cmd=g] u[op=Lowercase] l[-] => Normal (1,8)
+gu}           | g[cmd=g] u[op=Lowercase] }[-] => Normal (1,8)
+gu2w          | g[cmd=g] u[op=Lowercase] 2[n=2,op=Lowercase] w[-] => Normal (1,8)
+gud           | g[cmd=g] u[op=Lowercase] d[-] => Normal (1,8)
+guc           | g[cmd=g] u[op=Lowercase] c[-] => Normal (1,8)
+guy           | g[cmd=g] u[op=Lowercase] y[-] => Normal (1,8)
+gu<           | g[cmd=g] u[op=Lowercase] <[-] => Normal (1,8)
+gu>           | g[cmd=g] u[op=Lowercase] >[-] => Normal (1,8)
+guu           | g[cmd=g] u[op=Lowercase] u[-] => Normal (1,8)
+guU           | g[cmd=g] u[op=Lowercase] U[-] => Normal (1,8)
+gu~           | g[cmd=g] u[op=Lowercase] ~[-] => Normal (1,8)
+gu<Esc>       | g[cmd=g] u[op=Lowercase] <Esc>[-] => Normal (1,8)
+gux           | g[cmd=g] u[op=Lowercase] x[-] => Normal (1,8)
+guv           | g[cmd=g] u[op=Lowercase] v[-] => Normal (1,8)
+gui<Esc>      | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] <Esc>[-] => Normal (1,8)
+guK           | g[cmd=g] u[op=Lowercase] K[-] => Normal (1,8)
+guz           | g[cmd=g] u[op=Lowercase] z[cmd=z] => Normal (1,8)
+gu"           | g[cmd=g] u[op=Lowercase] "[-] => Normal (1,8)
+gug<Esc>      | g[cmd=g] u[op=Lowercase] g[op=Lowercase,cmd=g] <Esc>[-] => Normal (1,8)
+gugx          | g[cmd=g] u[op=Lowercase] g[op=Lowercase,cmd=g] x[-] => Normal (1,8)
+guq           | g[cmd=g] u[op=Lowercase] q[-] => Normal (1,8)
+gu:           | g[cmd=g] u[op=Lowercase] :[-] => Command (1,8)
+gUw           | g[cmd=g] U[op=Uppercase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUe           | g[cmd=g] U[op=Uppercase] e[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUb           | g[cmd=g] U[op=Uppercase] b[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+gU$           | g[cmd=g] U[op=Uppercase] $[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+gU0           | g[cmd=g] U[op=Uppercase] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+gUj           | g[cmd=g] U[op=Uppercase] j[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+gUk           | g[cmd=g] U[op=Uppercase] k[-] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+gUG           | g[cmd=g] U[op=Uppercase] G[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nLAST LINE HERE\n"
+gUgg          | g[cmd=g] U[op=Uppercase] g[op=Uppercase,cmd=g] g[-] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+gUgn          | g[cmd=g] U[op=Uppercase] g[op=Uppercase,cmd=g] n[-] => Normal (1,8)
+gUiw          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUaw          | g[cmd=g] U[op=Uppercase] a[op=Uppercase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUi(          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] ([-] => Normal (1,8)
+gUa"          | g[cmd=g] U[op=Uppercase] a[op=Uppercase,cmd=a] "[-] => Normal (1,8)
+gUip          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+gUfa          | g[cmd=g] U[op=Uppercase] f[op=Uppercase,char=Find/Some(Uppercase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUta          | g[cmd=g] U[op=Uppercase] t[op=Uppercase,char=Till/Some(Uppercase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETa gamma\nxdelta\n\nlast line here\n"
+gUFa          | g[cmd=g] U[op=Uppercase] F[op=Uppercase,char=FindBack/Some(Uppercase)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alphA beta gamma\nxdelta\n\nlast line here\n"
+gUl           | g[cmd=g] U[op=Uppercase] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+gU}           | g[cmd=g] U[op=Uppercase] }[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+gU2w          | g[cmd=g] U[op=Uppercase] 2[n=2,op=Uppercase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+gUd           | g[cmd=g] U[op=Uppercase] d[-] => Normal (1,8)
+gUc           | g[cmd=g] U[op=Uppercase] c[-] => Normal (1,8)
+gUy           | g[cmd=g] U[op=Uppercase] y[-] => Normal (1,8)
+gU<           | g[cmd=g] U[op=Uppercase] <[-] => Normal (1,8)
+gU>           | g[cmd=g] U[op=Uppercase] >[-] => Normal (1,8)
+gUu           | g[cmd=g] U[op=Uppercase] u[-] => Normal (1,8)
+gUU           | g[cmd=g] U[op=Uppercase] U[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+gU~           | g[cmd=g] U[op=Uppercase] ~[-] => Normal (1,8)
+gU<Esc>       | g[cmd=g] U[op=Uppercase] <Esc>[-] => Normal (1,8)
+gUx           | g[cmd=g] U[op=Uppercase] x[-] => Normal (1,8)
+gUv           | g[cmd=g] U[op=Uppercase] v[-] => Normal (1,8)
+gUi<Esc>      | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] <Esc>[-] => Normal (1,8)
+gUK           | g[cmd=g] U[op=Uppercase] K[-] => Normal (1,8)
+gUz           | g[cmd=g] U[op=Uppercase] z[cmd=z] => Normal (1,8)
+gU"           | g[cmd=g] U[op=Uppercase] "[-] => Normal (1,8)
+gUg<Esc>      | g[cmd=g] U[op=Uppercase] g[op=Uppercase,cmd=g] <Esc>[-] => Normal (1,8)
+gUgx          | g[cmd=g] U[op=Uppercase] g[op=Uppercase,cmd=g] x[-] => Normal (1,8)
+gUq           | g[cmd=g] U[op=Uppercase] q[-] => Normal (1,8)
+gU:           | g[cmd=g] U[op=Uppercase] :[-] => Command (1,8)
+g~w           | g[cmd=g] ~[op=ToggleCase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~e           | g[cmd=g] ~[op=ToggleCase] e[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~b           | g[cmd=g] ~[op=ToggleCase] b[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+g~$           | g[cmd=g] ~[op=ToggleCase] $[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+g~0           | g[cmd=g] ~[op=ToggleCase] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+g~j           | g[cmd=g] ~[op=ToggleCase] j[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+g~k           | g[cmd=g] ~[op=ToggleCase] k[-] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+g~G           | g[cmd=g] ~[op=ToggleCase] G[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nLAST LINE HERE\n"
+g~gg          | g[cmd=g] ~[op=ToggleCase] g[op=ToggleCase,cmd=g] g[-] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+g~gn          | g[cmd=g] ~[op=ToggleCase] g[op=ToggleCase,cmd=g] n[-] => Normal (1,8)
+g~iw          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~aw          | g[cmd=g] ~[op=ToggleCase] a[op=ToggleCase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~i(          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] ([-] => Normal (1,8)
+g~a"          | g[cmd=g] ~[op=ToggleCase] a[op=ToggleCase,cmd=a] "[-] => Normal (1,8)
+g~ip          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+g~fa          | g[cmd=g] ~[op=ToggleCase] f[op=ToggleCase,char=Find/Some(ToggleCase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~ta          | g[cmd=g] ~[op=ToggleCase] t[op=ToggleCase,char=Till/Some(ToggleCase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETa gamma\nxdelta\n\nlast line here\n"
+g~Fa          | g[cmd=g] ~[op=ToggleCase] F[op=ToggleCase,char=FindBack/Some(ToggleCase)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alphA beta gamma\nxdelta\n\nlast line here\n"
+g~l           | g[cmd=g] ~[op=ToggleCase] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+g~}           | g[cmd=g] ~[op=ToggleCase] }[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+g~2w          | g[cmd=g] ~[op=ToggleCase] 2[n=2,op=ToggleCase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+g~d           | g[cmd=g] ~[op=ToggleCase] d[-] => Normal (1,8)
+g~c           | g[cmd=g] ~[op=ToggleCase] c[-] => Normal (1,8)
+g~y           | g[cmd=g] ~[op=ToggleCase] y[-] => Normal (1,8)
+g~<           | g[cmd=g] ~[op=ToggleCase] <[-] => Normal (1,8)
+g~>           | g[cmd=g] ~[op=ToggleCase] >[-] => Normal (1,8)
+g~u           | g[cmd=g] ~[op=ToggleCase] u[-] => Normal (1,8)
+g~U           | g[cmd=g] ~[op=ToggleCase] U[-] => Normal (1,8)
+g~~           | g[cmd=g] ~[op=ToggleCase] ~[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+g~<Esc>       | g[cmd=g] ~[op=ToggleCase] <Esc>[-] => Normal (1,8)
+g~x           | g[cmd=g] ~[op=ToggleCase] x[-] => Normal (1,8)
+g~v           | g[cmd=g] ~[op=ToggleCase] v[-] => Normal (1,8)
+g~i<Esc>      | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] <Esc>[-] => Normal (1,8)
+g~K           | g[cmd=g] ~[op=ToggleCase] K[-] => Normal (1,8)
+g~z           | g[cmd=g] ~[op=ToggleCase] z[cmd=z] => Normal (1,8)
+g~"           | g[cmd=g] ~[op=ToggleCase] "[-] => Normal (1,8)
+g~g<Esc>      | g[cmd=g] ~[op=ToggleCase] g[op=ToggleCase,cmd=g] <Esc>[-] => Normal (1,8)
+g~gx          | g[cmd=g] ~[op=ToggleCase] g[op=ToggleCase,cmd=g] x[-] => Normal (1,8)
+g~q           | g[cmd=g] ~[op=ToggleCase] q[-] => Normal (1,8)
+g~:           | g[cmd=g] ~[op=ToggleCase] :[-] => Command (1,8)
+g?w           | g[cmd=g] ?[-] w[-] => Normal (1,13)
+g?e           | g[cmd=g] ?[-] e[-] => Normal (1,11)
+g?b           | g[cmd=g] ?[-] b[-] => Normal (1,2)
+g?$           | g[cmd=g] ?[-] $[-] => Normal (1,17)
+g?0           | g[cmd=g] ?[-] 0[-] => Normal (1,0)
+g?j           | g[cmd=g] ?[-] j[-] => Normal (2,5)
+g?k           | g[cmd=g] ?[-] k[-] => Normal (0,8)
+g?G           | g[cmd=g] ?[-] G[-] => Normal (4,0)
+g?gg          | g[cmd=g] ?[-] g[cmd=g] g[-] => Normal (0,0)
+g?gn          | g[cmd=g] ?[-] g[cmd=g] n[-] => Normal (1,8)
+g?iw          | g[cmd=g] ?[-] i[-] w[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha wbeta gamma\nxdelta\n\nlast line here\n"
+g?aw          | g[cmd=g] ?[-] a[-] w[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha bweta gamma\nxdelta\n\nlast line here\n"
+g?i(          | g[cmd=g] ?[-] i[-] ([-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha (beta gamma\nxdelta\n\nlast line here\n"
+g?a"          | g[cmd=g] ?[-] a[-] "[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha b\"eta gamma\nxdelta\n\nlast line here\n"
+g?ip          | g[cmd=g] ?[-] i[-] p[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha pbeta gamma\nxdelta\n\nlast line here\n"
+g?fa          | g[cmd=g] ?[-] f[char=Find/None] a[-] => Normal (1,11)
+g?ta          | g[cmd=g] ?[-] t[char=Till/None] a[-] => Normal (1,10)
+g?Fa          | g[cmd=g] ?[-] F[char=FindBack/None] a[-] => Normal (1,6)
+g?l           | g[cmd=g] ?[-] l[-] => Normal (1,9)
+g?}           | g[cmd=g] ?[-] }[-] => Normal (3,0)
+g?2w          | g[cmd=g] ?[-] 2[n=2] w[-] => Normal (2,0)
+g?d           | g[cmd=g] ?[-] d[op=Delete] => Normal (1,8)
+g?c           | g[cmd=g] ?[-] c[op=Change] => Normal (1,8)
+g?y           | g[cmd=g] ?[-] y[op=Yank] => Normal (1,8)
+g?<           | g[cmd=g] ?[-] <[op=Dedent] => Normal (1,8)
+g?>           | g[cmd=g] ?[-] >[op=Indent] => Normal (1,8)
+g?u           | g[cmd=g] ?[-] u[-] => Normal (1,8)
+g?U           | g[cmd=g] ?[-] U[-] => Normal (1,8)
+g?~           | g[cmd=g] ?[-] ~[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+g?<Esc>       | g[cmd=g] ?[-] <Esc>[-] => Normal (1,8)
+g?x           | g[cmd=g] ?[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+g?v           | g[cmd=g] ?[-] v[-] => Visual (1,8)
+g?i<Esc>      | g[cmd=g] ?[-] i[-] <Esc>[-] => Normal (1,7)
+g?K           | g[cmd=g] ?[-] K[-] => Normal (1,8)
+g?z           | g[cmd=g] ?[-] z[cmd=z] => Normal (1,8)
+g?"           | g[cmd=g] ?[-] "[cmd="] => Normal (1,8)
+g?g<Esc>      | g[cmd=g] ?[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+g?gx          | g[cmd=g] ?[-] g[cmd=g] x[-] => Normal (1,8)
+g?q           | g[cmd=g] ?[-] q[cmd=q] => Normal (1,8)
+g?:           | g[cmd=g] ?[-] :[-] => Command (1,8)
+gqw           | g[cmd=g] q[-] w[-] => Normal (1,13)
+gqe           | g[cmd=g] q[-] e[-] => Normal (1,11)
+gqb           | g[cmd=g] q[-] b[-] => Normal (1,2)
+gq$           | g[cmd=g] q[-] $[-] => Normal (1,17)
+gq0           | g[cmd=g] q[-] 0[-] => Normal (1,0)
+gqj           | g[cmd=g] q[-] j[-] => Normal (2,5)
+gqk           | g[cmd=g] q[-] k[-] => Normal (0,8)
+gqG           | g[cmd=g] q[-] G[-] => Normal (4,0)
+gqgg          | g[cmd=g] q[-] g[cmd=g] g[-] => Normal (0,0)
+gqgn          | g[cmd=g] q[-] g[cmd=g] n[-] => Normal (1,8)
+gqiw          | g[cmd=g] q[-] i[-] w[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha wbeta gamma\nxdelta\n\nlast line here\n"
+gqaw          | g[cmd=g] q[-] a[-] w[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha bweta gamma\nxdelta\n\nlast line here\n"
+gqi(          | g[cmd=g] q[-] i[-] ([-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha (beta gamma\nxdelta\n\nlast line here\n"
+gqa"          | g[cmd=g] q[-] a[-] "[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha b\"eta gamma\nxdelta\n\nlast line here\n"
+gqip          | g[cmd=g] q[-] i[-] p[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha pbeta gamma\nxdelta\n\nlast line here\n"
+gqfa          | g[cmd=g] q[-] f[char=Find/None] a[-] => Normal (1,11)
+gqta          | g[cmd=g] q[-] t[char=Till/None] a[-] => Normal (1,10)
+gqFa          | g[cmd=g] q[-] F[char=FindBack/None] a[-] => Normal (1,6)
+gql           | g[cmd=g] q[-] l[-] => Normal (1,9)
+gq}           | g[cmd=g] q[-] }[-] => Normal (3,0)
+gq2w          | g[cmd=g] q[-] 2[n=2] w[-] => Normal (2,0)
+gqd           | g[cmd=g] q[-] d[op=Delete] => Normal (1,8)
+gqc           | g[cmd=g] q[-] c[op=Change] => Normal (1,8)
+gqy           | g[cmd=g] q[-] y[op=Yank] => Normal (1,8)
+gq<           | g[cmd=g] q[-] <[op=Dedent] => Normal (1,8)
+gq>           | g[cmd=g] q[-] >[op=Indent] => Normal (1,8)
+gqu           | g[cmd=g] q[-] u[-] => Normal (1,8)
+gqU           | g[cmd=g] q[-] U[-] => Normal (1,8)
+gq~           | g[cmd=g] q[-] ~[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+gq<Esc>       | g[cmd=g] q[-] <Esc>[-] => Normal (1,8)
+gqx           | g[cmd=g] q[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+gqv           | g[cmd=g] q[-] v[-] => Visual (1,8)
+gqi<Esc>      | g[cmd=g] q[-] i[-] <Esc>[-] => Normal (1,7)
+gqK           | g[cmd=g] q[-] K[-] => Normal (1,8)
+gqz           | g[cmd=g] q[-] z[cmd=z] => Normal (1,8)
+gq"           | g[cmd=g] q[-] "[cmd="] => Normal (1,8)
+gqg<Esc>      | g[cmd=g] q[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+gqgx          | g[cmd=g] q[-] g[cmd=g] x[-] => Normal (1,8)
+gqq           | g[cmd=g] q[-] q[cmd=q] => Normal (1,8)
+gq:           | g[cmd=g] q[-] :[-] => Command (1,8)
+zfw           | z[cmd=z] f[op=Fold] w[-] => Normal (1,8)
+zfe           | z[cmd=z] f[op=Fold] e[-] => Normal (1,8)
+zfb           | z[cmd=z] f[op=Fold] b[-] => Normal (1,8)
+zf$           | z[cmd=z] f[op=Fold] $[-] => Normal (1,8)
+zf0           | z[cmd=z] f[op=Fold] 0[-] => Normal (1,8)
+zfj           | z[cmd=z] f[op=Fold] j[-] => Normal (1,8)
+zfk           | z[cmd=z] f[op=Fold] k[-] => Normal (0,8)
+zfG           | z[cmd=z] f[op=Fold] G[-] => Normal (1,8)
+zfgg          | z[cmd=z] f[op=Fold] g[op=Fold,cmd=g] g[-] => Normal (0,8)
+zfgn          | z[cmd=z] f[op=Fold] g[op=Fold,cmd=g] n[-] => Normal (1,8)
+zfiw          | z[cmd=z] f[op=Fold] i[op=Fold,cmd=i] w[-] => Normal (1,8)
+zfaw          | z[cmd=z] f[op=Fold] a[op=Fold,cmd=a] w[-] => Normal (1,8)
+zfi(          | z[cmd=z] f[op=Fold] i[op=Fold,cmd=i] ([-] => Normal (1,8)
+zfa"          | z[cmd=z] f[op=Fold] a[op=Fold,cmd=a] "[-] => Normal (1,8)
+zfip          | z[cmd=z] f[op=Fold] i[op=Fold,cmd=i] p[-] => Normal (0,8)
+zffa          | z[cmd=z] f[op=Fold] f[op=Fold,char=Find/Some(Fold)] a[-] => Normal (1,8)
+zfta          | z[cmd=z] f[op=Fold] t[op=Fold,char=Till/Some(Fold)] a[-] => Normal (1,8)
+zfFa          | z[cmd=z] f[op=Fold] F[op=Fold,char=FindBack/Some(Fold)] a[-] => Normal (1,8)
+zfl           | z[cmd=z] f[op=Fold] l[-] => Normal (1,8)
+zf}           | z[cmd=z] f[op=Fold] }[-] => Normal (1,8)
+zf2w          | z[cmd=z] f[op=Fold] 2[n=2,op=Fold] w[-] => Normal (1,8)
+zfd           | z[cmd=z] f[op=Fold] d[-] => Normal (1,8)
+zfc           | z[cmd=z] f[op=Fold] c[-] => Normal (1,8)
+zfy           | z[cmd=z] f[op=Fold] y[-] => Normal (1,8)
+zf<           | z[cmd=z] f[op=Fold] <[-] => Normal (1,8)
+zf>           | z[cmd=z] f[op=Fold] >[-] => Normal (1,8)
+zfu           | z[cmd=z] f[op=Fold] u[-] => Normal (1,8)
+zfU           | z[cmd=z] f[op=Fold] U[-] => Normal (1,8)
+zf~           | z[cmd=z] f[op=Fold] ~[-] => Normal (1,8)
+zf<Esc>       | z[cmd=z] f[op=Fold] <Esc>[-] => Normal (1,8)
+zfx           | z[cmd=z] f[op=Fold] x[-] => Normal (1,8)
+zfv           | z[cmd=z] f[op=Fold] v[-] => Normal (1,8)
+zfi<Esc>      | z[cmd=z] f[op=Fold] i[op=Fold,cmd=i] <Esc>[-] => Normal (1,8)
+zfK           | z[cmd=z] f[op=Fold] K[-] => Normal (1,8)
+zfz           | z[cmd=z] f[op=Fold] z[cmd=z] => Normal (1,8)
+zf"           | z[cmd=z] f[op=Fold] "[-] => Normal (1,8)
+zfg<Esc>      | z[cmd=z] f[op=Fold] g[op=Fold,cmd=g] <Esc>[-] => Normal (1,8)
+zfgx          | z[cmd=z] f[op=Fold] g[op=Fold,cmd=g] x[-] => Normal (1,8)
+zfq           | z[cmd=z] f[op=Fold] q[-] => Normal (1,8)
+zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
+2dw           | 2[n=2] d[n=2,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+2de           | 2[n=2] d[n=2,op=Delete] e[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+2db           | 2[n=2] d[n=2,op=Delete] b[-] => Normal (0,24) text="foo bar(baz, qux) \"str\" beta gamma\nxdelta\n\nlast line here\n" @"="end\n  alpha "
+2d$           | 2[n=2] d[n=2,op=Delete] $[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta"
+2d0           | 2[n=2] d[n=2,op=Delete] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nbeta gamma\nxdelta\n\nlast line here\n" @"="  alpha "
+2dj           | 2[n=2] d[n=2,op=Delete] j[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nlast line here\n" @"="  alpha beta gamma\nxdelta\n\n"
+2dk           | 2[n=2] d[n=2,op=Delete] k[-] => Normal (0,0) text="xdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+2dG           | 2[n=2] d[n=2,op=Delete] G[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+2dgg          | 2[n=2] d[n=2,op=Delete] g[n=2,op=Delete,cmd=g] g[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+2dgn          | 2[n=2] d[n=2,op=Delete] g[n=2,op=Delete,cmd=g] n[-] => Normal (1,8)
+2diw          | 2[n=2] d[n=2,op=Delete] i[n=2,op=Delete,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta "
+2daw          | 2[n=2] d[n=2,op=Delete] a[n=2,op=Delete,cmd=a] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+2di(          | 2[n=2] d[n=2,op=Delete] i[n=2,op=Delete,cmd=i] ([-] => Normal (1,8)
+2da"          | 2[n=2] d[n=2,op=Delete] a[n=2,op=Delete,cmd=a] "[-] => Normal (1,8)
+2dip          | 2[n=2] d[n=2,op=Delete] i[n=2,op=Delete,cmd=i] p[-] => Normal (0,0) text="last line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n\n"
+2dfa          | 2[n=2] d[n=2,op=Delete] f[n=2,op=Delete,char=Find/Some(Delete)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha mma\nxdelta\n\nlast line here\n" @"="beta ga"
+2dta          | 2[n=2] d[n=2,op=Delete] t[n=2,op=Delete,char=Till/Some(Delete)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha amma\nxdelta\n\nlast line here\n" @"="beta g"
+2dFa          | 2[n=2] d[n=2,op=Delete] F[n=2,op=Delete,char=FindBack/Some(Delete)] a[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha "
+2dl           | 2[n=2] d[n=2,op=Delete] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha ta gamma\nxdelta\n\nlast line here\n" @"="be"
+2d}           | 2[n=2] d[n=2,op=Delete] }[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n" @"="beta gamma\nxdelta\n\nlast line here"
+2d2w          | 2[n=2] d[n=2,op=Delete] 2[n=4,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nlast line here\n" @"="beta gamma\nxdelta\n"
+2dd           | 2[n=2] d[n=2,op=Delete] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
+2dc           | 2[n=2] d[n=2,op=Delete] c[-] => Normal (1,8)
+2dy           | 2[n=2] d[n=2,op=Delete] y[-] => Normal (1,8)
+2d<           | 2[n=2] d[n=2,op=Delete] <[-] => Normal (1,8)
+2d>           | 2[n=2] d[n=2,op=Delete] >[-] => Normal (1,8)
+2du           | 2[n=2] d[n=2,op=Delete] u[-] => Normal (1,8)
+2dU           | 2[n=2] d[n=2,op=Delete] U[-] => Normal (1,8)
+2d~           | 2[n=2] d[n=2,op=Delete] ~[-] => Normal (1,8)
+2d<Esc>       | 2[n=2] d[n=2,op=Delete] <Esc>[-] => Normal (1,8)
+2dx           | 2[n=2] d[n=2,op=Delete] x[-] => Normal (1,8)
+2dv           | 2[n=2] d[n=2,op=Delete] v[-] => Normal (1,8)
+2di<Esc>      | 2[n=2] d[n=2,op=Delete] i[n=2,op=Delete,cmd=i] <Esc>[-] => Normal (1,8)
+2dK           | 2[n=2] d[n=2,op=Delete] K[-] => Normal (1,8)
+2dz           | 2[n=2] d[n=2,op=Delete] z[cmd=z] => Normal (1,8)
+2d"           | 2[n=2] d[n=2,op=Delete] "[-] => Normal (1,8)
+2dg<Esc>      | 2[n=2] d[n=2,op=Delete] g[n=2,op=Delete,cmd=g] <Esc>[-] => Normal (1,8)
+2dgx          | 2[n=2] d[n=2,op=Delete] g[n=2,op=Delete,cmd=g] x[-] => Normal (1,8)
+2dq           | 2[n=2] d[n=2,op=Delete] q[-] => Normal (1,8)
+2d:           | 2[n=2] d[n=2,op=Delete] :[-] => Command (1,8)
+2cw           | 2[n=2] c[n=2,op=Change] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+2ce           | 2[n=2] c[n=2,op=Change] e[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+2cb           | 2[n=2] c[n=2,op=Change] b[-] => Insert (0,24) text="foo bar(baz, qux) \"str\" beta gamma\nxdelta\n\nlast line here\n" @"="end\n  alpha "
+2c$           | 2[n=2] c[n=2,op=Change] $[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta"
+2c0           | 2[n=2] c[n=2,op=Change] 0[-] => Insert (1,0) text="foo bar(baz, qux) \"str\" end\nbeta gamma\nxdelta\n\nlast line here\n" @"="  alpha "
+2cj           | 2[n=2] c[n=2,op=Change] j[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \nlast line here\n" @"="  alpha beta gamma\nxdelta\n\n"
+2ck           | 2[n=2] c[n=2,op=Change] k[-] => Insert (0,0) text="\nxdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+2cG           | 2[n=2] c[n=2,op=Change] G[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+2cgg          | 2[n=2] c[n=2,op=Change] g[n=2,op=Change,cmd=g] g[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n"
+2cgn          | 2[n=2] c[n=2,op=Change] g[n=2,op=Change,cmd=g] n[-] => Normal (1,8)
+2ciw          | 2[n=2] c[n=2,op=Change] i[n=2,op=Change,cmd=i] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta "
+2caw          | 2[n=2] c[n=2,op=Change] a[n=2,op=Change,cmd=a] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma"
+2ci(          | 2[n=2] c[n=2,op=Change] i[n=2,op=Change,cmd=i] ([-] => Normal (1,8)
+2ca"          | 2[n=2] c[n=2,op=Change] a[n=2,op=Change,cmd=a] "[-] => Normal (1,8)
+2cip          | 2[n=2] c[n=2,op=Change] i[n=2,op=Change,cmd=i] p[-] => Insert (0,0) text="\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n\n"
+2cfa          | 2[n=2] c[n=2,op=Change] f[n=2,op=Change,char=Find/Some(Change)] a[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha mma\nxdelta\n\nlast line here\n" @"="beta ga"
+2cta          | 2[n=2] c[n=2,op=Change] t[n=2,op=Change,char=Till/Some(Change)] a[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha amma\nxdelta\n\nlast line here\n" @"="beta g"
+2cFa          | 2[n=2] c[n=2,op=Change] F[n=2,op=Change,char=FindBack/Some(Change)] a[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha "
+2cl           | 2[n=2] c[n=2,op=Change] l[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha ta gamma\nxdelta\n\nlast line here\n" @"="be"
+2c}           | 2[n=2] c[n=2,op=Change] }[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \n" @"="beta gamma\nxdelta\n\nlast line here"
+2c2w          | 2[n=2] c[n=2,op=Change] 2[n=4,op=Change] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  line here\n" @"="beta gamma\nxdelta\n\nlast"
+2cd           | 2[n=2] c[n=2,op=Change] d[-] => Normal (1,8)
+2cc           | 2[n=2] c[n=2,op=Change] c[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
+2cy           | 2[n=2] c[n=2,op=Change] y[-] => Normal (1,8)
+2c<           | 2[n=2] c[n=2,op=Change] <[-] => Normal (1,8)
+2c>           | 2[n=2] c[n=2,op=Change] >[-] => Normal (1,8)
+2cu           | 2[n=2] c[n=2,op=Change] u[-] => Normal (1,8)
+2cU           | 2[n=2] c[n=2,op=Change] U[-] => Normal (1,8)
+2c~           | 2[n=2] c[n=2,op=Change] ~[-] => Normal (1,8)
+2c<Esc>       | 2[n=2] c[n=2,op=Change] <Esc>[-] => Normal (1,8)
+2cx           | 2[n=2] c[n=2,op=Change] x[-] => Normal (1,8)
+2cv           | 2[n=2] c[n=2,op=Change] v[-] => Normal (1,8)
+2ci<Esc>      | 2[n=2] c[n=2,op=Change] i[n=2,op=Change,cmd=i] <Esc>[-] => Normal (1,8)
+2cK           | 2[n=2] c[n=2,op=Change] K[-] => Normal (1,8)
+2cz           | 2[n=2] c[n=2,op=Change] z[cmd=z] => Normal (1,8)
+2c"           | 2[n=2] c[n=2,op=Change] "[-] => Normal (1,8)
+2cg<Esc>      | 2[n=2] c[n=2,op=Change] g[n=2,op=Change,cmd=g] <Esc>[-] => Normal (1,8)
+2cgx          | 2[n=2] c[n=2,op=Change] g[n=2,op=Change,cmd=g] x[-] => Normal (1,8)
+2cq           | 2[n=2] c[n=2,op=Change] q[-] => Normal (1,8)
+2c:           | 2[n=2] c[n=2,op=Change] :[-] => Command (1,8)
+2yw           | 2[n=2] y[n=2,op=Yank] w[-] => Normal (1,8) @"="beta gamma"
+2ye           | 2[n=2] y[n=2,op=Yank] e[-] => Normal (1,8) @"="beta gamma"
+2yb           | 2[n=2] y[n=2,op=Yank] b[-] => Normal (0,24) @"="end\n  alpha "
+2y$           | 2[n=2] y[n=2,op=Yank] $[-] => Normal (1,8) @"="beta gamma\nxdelta"
+2y0           | 2[n=2] y[n=2,op=Yank] 0[-] => Normal (1,0) @"="  alpha "
+2yj           | 2[n=2] y[n=2,op=Yank] j[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n\n"
+2yk           | 2[n=2] y[n=2,op=Yank] k[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+2yG           | 2[n=2] y[n=2,op=Yank] G[-] => Normal (1,8) @"="  alpha beta gamma\n"
+2ygg          | 2[n=2] y[n=2,op=Yank] g[n=2,op=Yank,cmd=g] g[-] => Normal (1,8) @"="  alpha beta gamma\n"
+2ygn          | 2[n=2] y[n=2,op=Yank] g[n=2,op=Yank,cmd=g] n[-] => Normal (1,8)
+2yiw          | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] w[-] => Normal (1,8) @"="beta "
+2yaw          | 2[n=2] y[n=2,op=Yank] a[n=2,op=Yank,cmd=a] w[-] => Normal (1,8) @"="beta gamma"
+2yi(          | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] ([-] => Normal (1,8)
+2ya"          | 2[n=2] y[n=2,op=Yank] a[n=2,op=Yank,cmd=a] "[-] => Normal (1,8)
+2yip          | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] p[-] => Normal (0,0) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n\n"
+2yfa          | 2[n=2] y[n=2,op=Yank] f[n=2,op=Yank,char=Find/Some(Yank)] a[-] => Normal (1,8) @"="beta ga"
+2yta          | 2[n=2] y[n=2,op=Yank] t[n=2,op=Yank,char=Till/Some(Yank)] a[-] => Normal (1,8) @"="beta g"
+2yFa          | 2[n=2] y[n=2,op=Yank] F[n=2,op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,2) @"="alpha "
+2yl           | 2[n=2] y[n=2,op=Yank] l[-] => Normal (1,8) @"="be"
+2y}           | 2[n=2] y[n=2,op=Yank] }[-] => Normal (1,8) @"="beta gamma\nxdelta\n\nlast line here"
+2y2w          | 2[n=2] y[n=2,op=Yank] 2[n=4,op=Yank] w[-] => Normal (1,8) @"="beta gamma\nxdelta\n"
+2yd           | 2[n=2] y[n=2,op=Yank] d[-] => Normal (1,8)
+2yc           | 2[n=2] y[n=2,op=Yank] c[-] => Normal (1,8)
+2yy           | 2[n=2] y[n=2,op=Yank] y[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n"
+2y<           | 2[n=2] y[n=2,op=Yank] <[-] => Normal (1,8)
+2y>           | 2[n=2] y[n=2,op=Yank] >[-] => Normal (1,8)
+2yu           | 2[n=2] y[n=2,op=Yank] u[-] => Normal (1,8)
+2yU           | 2[n=2] y[n=2,op=Yank] U[-] => Normal (1,8)
+2y~           | 2[n=2] y[n=2,op=Yank] ~[-] => Normal (1,8)
+2y<Esc>       | 2[n=2] y[n=2,op=Yank] <Esc>[-] => Normal (1,8)
+2yx           | 2[n=2] y[n=2,op=Yank] x[-] => Normal (1,8)
+2yv           | 2[n=2] y[n=2,op=Yank] v[-] => Normal (1,8)
+2yi<Esc>      | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] <Esc>[-] => Normal (1,8)
+2yK           | 2[n=2] y[n=2,op=Yank] K[-] => Normal (1,8)
+2yz           | 2[n=2] y[n=2,op=Yank] z[cmd=z] => Normal (1,8)
+2y"           | 2[n=2] y[n=2,op=Yank] "[-] => Normal (1,8)
+2yg<Esc>      | 2[n=2] y[n=2,op=Yank] g[n=2,op=Yank,cmd=g] <Esc>[-] => Normal (1,8)
+2ygx          | 2[n=2] y[n=2,op=Yank] g[n=2,op=Yank,cmd=g] x[-] => Normal (1,8)
+2yq           | 2[n=2] y[n=2,op=Yank] q[-] => Normal (1,8)
+2y:           | 2[n=2] y[n=2,op=Yank] :[-] => Command (1,8)
+2<w           | 2[n=2] <[n=2,op=Dedent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<e           | 2[n=2] <[n=2,op=Dedent] e[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<b           | 2[n=2] <[n=2,op=Dedent] b[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<$           | 2[n=2] <[n=2,op=Dedent] $[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<0           | 2[n=2] <[n=2,op=Dedent] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<j           | 2[n=2] <[n=2,op=Dedent] j[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<k           | 2[n=2] <[n=2,op=Dedent] k[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<G           | 2[n=2] <G[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<gg          | 2[n=2] <[n=2,op=Dedent] g[n=2,op=Dedent,cmd=g] g[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<gn          | 2[n=2] <[n=2,op=Dedent] g[n=2,op=Dedent,cmd=g] n[-] => Normal (1,8)
+2<iw          | 2[n=2] <[n=2,op=Dedent] i[n=2,op=Dedent,cmd=i] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<aw          | 2[n=2] <[n=2,op=Dedent] a[n=2,op=Dedent,cmd=a] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<i(          | 2[n=2] <[n=2,op=Dedent] i[n=2,op=Dedent,cmd=i] ([-] => Normal (1,8)
+2<a"          | 2[n=2] <[n=2,op=Dedent] a[n=2,op=Dedent,cmd=a] "[-] => Normal (1,8)
+2<ip          | 2[n=2] <[n=2,op=Dedent] i[n=2,op=Dedent,cmd=i] p[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<fa          | 2[n=2] <[n=2,op=Dedent] f[n=2,op=Dedent,char=Find/Some(Dedent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<ta          | 2[n=2] <[n=2,op=Dedent] t[n=2,op=Dedent,char=Till/Some(Dedent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<Fa          | 2[n=2] <Fa[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<l           | 2[n=2] <[n=2,op=Dedent] l[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<}           | 2[n=2] <[n=2,op=Dedent] }[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<2w          | 2[n=2] <[n=2,op=Dedent] 2[n=4,op=Dedent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<d           | 2[n=2] <[n=2,op=Dedent] d[-] => Normal (1,8)
+2<c           | 2[n=2] <[n=2,op=Dedent] c[-] => Normal (1,8)
+2<y           | 2[n=2] <[n=2,op=Dedent] y[-] => Normal (1,8)
+2<<           | 2[n=2] <[n=2,op=Dedent] <[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2<>           | 2[n=2] <[n=2,op=Dedent] >[-] => Normal (1,8)
+2<u           | 2[n=2] <[n=2,op=Dedent] u[-] => Normal (1,8)
+2<U           | 2[n=2] <U[-] => Normal (1,8)
+2<~           | 2[n=2] <[n=2,op=Dedent] ~[-] => Normal (1,8)
+2<<Esc>       | 2[n=2] <[n=2,op=Dedent] <Esc>[-] => Normal (1,8)
+2<x           | 2[n=2] <[n=2,op=Dedent] x[-] => Normal (1,8)
+2<v           | 2[n=2] <[n=2,op=Dedent] v[-] => Normal (1,8)
+2<i<Esc>      | 2[n=2] <[n=2,op=Dedent] i[n=2,op=Dedent,cmd=i] <Esc>[-] => Normal (1,8)
+2<K           | 2[n=2] <K[-] => Normal (1,8)
+2<z           | 2[n=2] <[n=2,op=Dedent] z[cmd=z] => Normal (1,8)
+2<"           | 2[n=2] <[n=2,op=Dedent] "[-] => Normal (1,8)
+2<g<Esc>      | 2[n=2] <[n=2,op=Dedent] g[n=2,op=Dedent,cmd=g] <Esc>[-] => Normal (1,8)
+2<gx          | 2[n=2] <[n=2,op=Dedent] g[n=2,op=Dedent,cmd=g] x[-] => Normal (1,8)
+2<q           | 2[n=2] <[n=2,op=Dedent] q[-] => Normal (1,8)
+2<:           | 2[n=2] <[n=2,op=Dedent] :[-] => Command (1,8)
+2>w           | 2[n=2] >[n=2,op=Indent] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>e           | 2[n=2] >[n=2,op=Indent] e[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>b           | 2[n=2] >[n=2,op=Indent] b[-] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>$           | 2[n=2] >[n=2,op=Indent] $[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+2>0           | 2[n=2] >[n=2,op=Indent] 0[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>j           | 2[n=2] >[n=2,op=Indent] j[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+2>k           | 2[n=2] >[n=2,op=Indent] k[-] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>G           | 2[n=2] >[n=2,op=Indent] G[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>gg          | 2[n=2] >[n=2,op=Indent] g[n=2,op=Indent,cmd=g] g[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>gn          | 2[n=2] >[n=2,op=Indent] g[n=2,op=Indent,cmd=g] n[-] => Normal (1,8)
+2>iw          | 2[n=2] >[n=2,op=Indent] i[n=2,op=Indent,cmd=i] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>aw          | 2[n=2] >[n=2,op=Indent] a[n=2,op=Indent,cmd=a] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>i(          | 2[n=2] >[n=2,op=Indent] i[n=2,op=Indent,cmd=i] ([-] => Normal (1,8)
+2>a"          | 2[n=2] >[n=2,op=Indent] a[n=2,op=Indent,cmd=a] "[-] => Normal (1,8)
+2>ip          | 2[n=2] >[n=2,op=Indent] i[n=2,op=Indent,cmd=i] p[-] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+2>fa          | 2[n=2] >[n=2,op=Indent] f[n=2,op=Indent,char=Find/Some(Indent)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>ta          | 2[n=2] >[n=2,op=Indent] t[n=2,op=Indent,char=Till/Some(Indent)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>Fa          | 2[n=2] >[n=2,op=Indent] F[n=2,op=Indent,char=FindBack/Some(Indent)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>l           | 2[n=2] >[n=2,op=Indent] l[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+2>}           | 2[n=2] >[n=2,op=Indent] }[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\n    last line here\n"
+2>2w          | 2[n=2] >[n=2,op=Indent] 2[n=4,op=Indent] w[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+2>d           | 2[n=2] >[n=2,op=Indent] d[-] => Normal (1,8)
+2>c           | 2[n=2] >[n=2,op=Indent] c[-] => Normal (1,8)
+2>y           | 2[n=2] >[n=2,op=Indent] y[-] => Normal (1,8)
+2><           | 2[n=2] >[n=2,op=Indent] <[-] => Normal (1,8)
+2>>           | 2[n=2] >[n=2,op=Indent] >[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+2>u           | 2[n=2] >[n=2,op=Indent] u[-] => Normal (1,8)
+2>U           | 2[n=2] >[n=2,op=Indent] U[-] => Normal (1,8)
+2>~           | 2[n=2] >[n=2,op=Indent] ~[-] => Normal (1,8)
+2><Esc>       | 2[n=2] >[n=2,op=Indent] <Esc>[-] => Normal (1,8)
+2>x           | 2[n=2] >[n=2,op=Indent] x[-] => Normal (1,8)
+2>v           | 2[n=2] >[n=2,op=Indent] v[-] => Normal (1,8)
+2>i<Esc>      | 2[n=2] >[n=2,op=Indent] i[n=2,op=Indent,cmd=i] <Esc>[-] => Normal (1,8)
+2>K           | 2[n=2] >[n=2,op=Indent] K[-] => Normal (1,8)
+2>z           | 2[n=2] >[n=2,op=Indent] z[cmd=z] => Normal (1,8)
+2>"           | 2[n=2] >[n=2,op=Indent] "[-] => Normal (1,8)
+2>g<Esc>      | 2[n=2] >[n=2,op=Indent] g[n=2,op=Indent,cmd=g] <Esc>[-] => Normal (1,8)
+2>gx          | 2[n=2] >[n=2,op=Indent] g[n=2,op=Indent,cmd=g] x[-] => Normal (1,8)
+2>q           | 2[n=2] >[n=2,op=Indent] q[-] => Normal (1,8)
+2>:           | 2[n=2] >[n=2,op=Indent] :[-] => Command (1,8)
+2=w           | 2[n=2] =[n=2,op=AutoIndent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=e           | 2[n=2] =[n=2,op=AutoIndent] e[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=b           | 2[n=2] =[n=2,op=AutoIndent] b[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=$           | 2[n=2] =[n=2,op=AutoIndent] $[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=0           | 2[n=2] =[n=2,op=AutoIndent] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=j           | 2[n=2] =[n=2,op=AutoIndent] j[-] => Normal (3,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=k           | 2[n=2] =[n=2,op=AutoIndent] k[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=G           | 2[n=2] =[n=2,op=AutoIndent] G[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=gg          | 2[n=2] =[n=2,op=AutoIndent] g[n=2,op=AutoIndent,cmd=g] g[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=gn          | 2[n=2] =[n=2,op=AutoIndent] g[n=2,op=AutoIndent,cmd=g] n[-] => Normal (1,8)
+2=iw          | 2[n=2] =[n=2,op=AutoIndent] i[n=2,op=AutoIndent,cmd=i] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=aw          | 2[n=2] =[n=2,op=AutoIndent] a[n=2,op=AutoIndent,cmd=a] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=i(          | 2[n=2] =[n=2,op=AutoIndent] i[n=2,op=AutoIndent,cmd=i] ([-] => Normal (1,8)
+2=a"          | 2[n=2] =[n=2,op=AutoIndent] a[n=2,op=AutoIndent,cmd=a] "[-] => Normal (1,8)
+2=ip          | 2[n=2] =[n=2,op=AutoIndent] i[n=2,op=AutoIndent,cmd=i] p[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=fa          | 2[n=2] =[n=2,op=AutoIndent] f[n=2,op=AutoIndent,char=Find/Some(AutoIndent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=ta          | 2[n=2] =[n=2,op=AutoIndent] t[n=2,op=AutoIndent,char=Till/Some(AutoIndent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=Fa          | 2[n=2] =[n=2,op=AutoIndent] F[n=2,op=AutoIndent,char=FindBack/Some(AutoIndent)] a[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=l           | 2[n=2] =[n=2,op=AutoIndent] l[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=}           | 2[n=2] =[n=2,op=AutoIndent] }[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=2w          | 2[n=2] =[n=2,op=AutoIndent] 2[n=4,op=AutoIndent] w[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+2=d           | 2[n=2] =[n=2,op=AutoIndent] d[-] => Normal (1,8)
+2=c           | 2[n=2] =[n=2,op=AutoIndent] c[-] => Normal (1,8)
+2=y           | 2[n=2] =[n=2,op=AutoIndent] y[-] => Normal (1,8)
+2=<           | 2[n=2] =[n=2,op=AutoIndent] <[-] => Normal (1,8)
+2=>           | 2[n=2] =[n=2,op=AutoIndent] >[-] => Normal (1,8)
+2=u           | 2[n=2] =[n=2,op=AutoIndent] u[-] => Normal (1,8)
+2=U           | 2[n=2] =[n=2,op=AutoIndent] U[-] => Normal (1,8)
+2=~           | 2[n=2] =[n=2,op=AutoIndent] ~[-] => Normal (1,8)
+2=<Esc>       | 2[n=2] =[n=2,op=AutoIndent] <Esc>[-] => Normal (1,8)
+2=x           | 2[n=2] =[n=2,op=AutoIndent] x[-] => Normal (1,8)
+2=v           | 2[n=2] =[n=2,op=AutoIndent] v[-] => Normal (1,8)
+2=i<Esc>      | 2[n=2] =[n=2,op=AutoIndent] i[n=2,op=AutoIndent,cmd=i] <Esc>[-] => Normal (1,8)
+2=K           | 2[n=2] =[n=2,op=AutoIndent] K[-] => Normal (1,8)
+2=z           | 2[n=2] =[n=2,op=AutoIndent] z[cmd=z] => Normal (1,8)
+2="           | 2[n=2] =[n=2,op=AutoIndent] "[-] => Normal (1,8)
+2=g<Esc>      | 2[n=2] =[n=2,op=AutoIndent] g[n=2,op=AutoIndent,cmd=g] <Esc>[-] => Normal (1,8)
+2=gx          | 2[n=2] =[n=2,op=AutoIndent] g[n=2,op=AutoIndent,cmd=g] x[-] => Normal (1,8)
+2=q           | 2[n=2] =[n=2,op=AutoIndent] q[-] => Normal (1,8)
+2=:           | 2[n=2] =[n=2,op=AutoIndent] :[-] => Command (1,8)
+2guw          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] w[-] => Normal (1,8)
+2gue          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] e[-] => Normal (1,8)
+2gub          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] b[-] => Normal (0,24)
+2gu$          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] $[-] => Normal (1,8)
+2gu0          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] 0[-] => Normal (1,0)
+2guj          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] j[-] => Normal (1,8)
+2guk          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] k[-] => Normal (0,8)
+2guG          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] G[-] => Normal (1,8)
+2gugg         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] g[n=2,op=Lowercase,cmd=g] g[-] => Normal (1,8)
+2gugn         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] g[n=2,op=Lowercase,cmd=g] n[-] => Normal (1,8)
+2guiw         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] w[-] => Normal (1,8)
+2guaw         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] a[n=2,op=Lowercase,cmd=a] w[-] => Normal (1,8)
+2gui(         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] ([-] => Normal (1,8)
+2gua"         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] a[n=2,op=Lowercase,cmd=a] "[-] => Normal (1,8)
+2guip         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] p[-] => Normal (0,0)
+2gufa         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] f[n=2,op=Lowercase,char=Find/Some(Lowercase)] a[-] => Normal (1,8)
+2guta         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] t[n=2,op=Lowercase,char=Till/Some(Lowercase)] a[-] => Normal (1,8)
+2guFa         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] F[n=2,op=Lowercase,char=FindBack/Some(Lowercase)] a[-] => Normal (1,2)
+2gul          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] l[-] => Normal (1,8)
+2gu}          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] }[-] => Normal (1,8)
+2gu2w         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] 2[n=4,op=Lowercase] w[-] => Normal (1,8)
+2gud          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] d[-] => Normal (1,8)
+2guc          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] c[-] => Normal (1,8)
+2guy          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] y[-] => Normal (1,8)
+2gu<          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] <[-] => Normal (1,8)
+2gu>          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] >[-] => Normal (1,8)
+2guu          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] u[-] => Normal (1,8)
+2guU          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] U[-] => Normal (1,8)
+2gu~          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] ~[-] => Normal (1,8)
+2gu<Esc>      | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] <Esc>[-] => Normal (1,8)
+2gux          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] x[-] => Normal (1,8)
+2guv          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] v[-] => Normal (1,8)
+2gui<Esc>     | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] <Esc>[-] => Normal (1,8)
+2guK          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] K[-] => Normal (1,8)
+2guz          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] z[cmd=z] => Normal (1,8)
+2gu"          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] "[-] => Normal (1,8)
+2gug<Esc>     | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] g[n=2,op=Lowercase,cmd=g] <Esc>[-] => Normal (1,8)
+2gugx         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] g[n=2,op=Lowercase,cmd=g] x[-] => Normal (1,8)
+2guq          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] q[-] => Normal (1,8)
+2gu:          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] :[-] => Command (1,8)
+2gUw          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+2gUe          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] e[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+2gUb          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] b[-] => Normal (0,24) text="foo bar(baz, qux) \"str\" END\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+2gU$          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] $[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+2gU0          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+2gUj          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] j[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2gUk          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] k[-] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+2gUG          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] G[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+2gUgg         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] g[n=2,op=Uppercase,cmd=g] g[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+2gUgn         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] g[n=2,op=Uppercase,cmd=g] n[-] => Normal (1,8)
+2gUiw         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+2gUaw         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] a[n=2,op=Uppercase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+2gUi(         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] ([-] => Normal (1,8)
+2gUa"         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] a[n=2,op=Uppercase,cmd=a] "[-] => Normal (1,8)
+2gUip         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2gUfa         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] f[n=2,op=Uppercase,char=Find/Some(Uppercase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAmma\nxdelta\n\nlast line here\n"
+2gUta         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] t[n=2,op=Uppercase,char=Till/Some(Uppercase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA Gamma\nxdelta\n\nlast line here\n"
+2gUFa         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] F[n=2,op=Uppercase,char=FindBack/Some(Uppercase)] a[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+2gUl          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BEta gamma\nxdelta\n\nlast line here\n"
+2gU}          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] }[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nLAST LINE HERE\n"
+2gU2w         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] 2[n=4,op=Uppercase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+2gUd          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] d[-] => Normal (1,8)
+2gUc          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] c[-] => Normal (1,8)
+2gUy          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] y[-] => Normal (1,8)
+2gU<          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] <[-] => Normal (1,8)
+2gU>          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] >[-] => Normal (1,8)
+2gUu          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] u[-] => Normal (1,8)
+2gUU          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] U[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2gU~          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] ~[-] => Normal (1,8)
+2gU<Esc>      | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] <Esc>[-] => Normal (1,8)
+2gUx          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] x[-] => Normal (1,8)
+2gUv          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] v[-] => Normal (1,8)
+2gUi<Esc>     | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] <Esc>[-] => Normal (1,8)
+2gUK          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] K[-] => Normal (1,8)
+2gUz          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] z[cmd=z] => Normal (1,8)
+2gU"          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] "[-] => Normal (1,8)
+2gUg<Esc>     | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] g[n=2,op=Uppercase,cmd=g] <Esc>[-] => Normal (1,8)
+2gUgx         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] g[n=2,op=Uppercase,cmd=g] x[-] => Normal (1,8)
+2gUq          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] q[-] => Normal (1,8)
+2gU:          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] :[-] => Command (1,8)
+2g~w          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+2g~e          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] e[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+2g~b          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] b[-] => Normal (0,24) text="foo bar(baz, qux) \"str\" END\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+2g~$          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] $[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+2g~0          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+2g~j          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] j[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2g~k          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] k[-] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+2g~G          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] G[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+2g~gg         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] g[n=2,op=ToggleCase,cmd=g] g[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+2g~gn         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] g[n=2,op=ToggleCase,cmd=g] n[-] => Normal (1,8)
+2g~iw         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+2g~aw         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] a[n=2,op=ToggleCase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+2g~i(         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] ([-] => Normal (1,8)
+2g~a"         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] a[n=2,op=ToggleCase,cmd=a] "[-] => Normal (1,8)
+2g~ip         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2g~fa         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] f[n=2,op=ToggleCase,char=Find/Some(ToggleCase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAmma\nxdelta\n\nlast line here\n"
+2g~ta         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] t[n=2,op=ToggleCase,char=Till/Some(ToggleCase)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA Gamma\nxdelta\n\nlast line here\n"
+2g~Fa         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] F[n=2,op=ToggleCase,char=FindBack/Some(ToggleCase)] a[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+2g~l          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BEta gamma\nxdelta\n\nlast line here\n"
+2g~}          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] }[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nLAST LINE HERE\n"
+2g~2w         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] 2[n=4,op=ToggleCase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+2g~d          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] d[-] => Normal (1,8)
+2g~c          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] c[-] => Normal (1,8)
+2g~y          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] y[-] => Normal (1,8)
+2g~<          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] <[-] => Normal (1,8)
+2g~>          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] >[-] => Normal (1,8)
+2g~u          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] u[-] => Normal (1,8)
+2g~U          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] U[-] => Normal (1,8)
+2g~~          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] ~[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2g~<Esc>      | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] <Esc>[-] => Normal (1,8)
+2g~x          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] x[-] => Normal (1,8)
+2g~v          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] v[-] => Normal (1,8)
+2g~i<Esc>     | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] <Esc>[-] => Normal (1,8)
+2g~K          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] K[-] => Normal (1,8)
+2g~z          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] z[cmd=z] => Normal (1,8)
+2g~"          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] "[-] => Normal (1,8)
+2g~g<Esc>     | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] g[n=2,op=ToggleCase,cmd=g] <Esc>[-] => Normal (1,8)
+2g~gx         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] g[n=2,op=ToggleCase,cmd=g] x[-] => Normal (1,8)
+2g~q          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] q[-] => Normal (1,8)
+2g~:          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] :[-] => Command (1,8)
+2g?w          | 2[n=2] g[n=2,cmd=g] ?[-] w[-] => Normal (1,13)
+2g?e          | 2[n=2] g[n=2,cmd=g] ?[-] e[-] => Normal (1,11)
+2g?b          | 2[n=2] g[n=2,cmd=g] ?[-] b[-] => Normal (1,2)
+2g?$          | 2[n=2] g[n=2,cmd=g] ?[-] $[-] => Normal (1,17)
+2g?0          | 2[n=2] g[n=2,cmd=g] ?[-] 0[-] => Normal (1,0)
+2g?j          | 2[n=2] g[n=2,cmd=g] ?[-] j[-] => Normal (2,5)
+2g?k          | 2[n=2] g[n=2,cmd=g] ?[-] k[-] => Normal (0,8)
+2g?G          | 2[n=2] g[n=2,cmd=g] ?[-] G[-] => Normal (4,0)
+2g?gg         | 2[n=2] g[n=2,cmd=g] ?[-] g[cmd=g] g[-] => Normal (0,0)
+2g?gn         | 2[n=2] g[n=2,cmd=g] ?[-] g[cmd=g] n[-] => Normal (1,8)
+2g?iw         | 2[n=2] g[n=2,cmd=g] ?[-] i[-] w[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha wbeta gamma\nxdelta\n\nlast line here\n"
+2g?aw         | 2[n=2] g[n=2,cmd=g] ?[-] a[-] w[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha bweta gamma\nxdelta\n\nlast line here\n"
+2g?i(         | 2[n=2] g[n=2,cmd=g] ?[-] i[-] ([-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha (beta gamma\nxdelta\n\nlast line here\n"
+2g?a"         | 2[n=2] g[n=2,cmd=g] ?[-] a[-] "[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha b\"eta gamma\nxdelta\n\nlast line here\n"
+2g?ip         | 2[n=2] g[n=2,cmd=g] ?[-] i[-] p[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha pbeta gamma\nxdelta\n\nlast line here\n"
+2g?fa         | 2[n=2] g[n=2,cmd=g] ?[-] f[char=Find/None] a[-] => Normal (1,11)
+2g?ta         | 2[n=2] g[n=2,cmd=g] ?[-] t[char=Till/None] a[-] => Normal (1,10)
+2g?Fa         | 2[n=2] g[n=2,cmd=g] ?[-] F[char=FindBack/None] a[-] => Normal (1,6)
+2g?l          | 2[n=2] g[n=2,cmd=g] ?[-] l[-] => Normal (1,9)
+2g?}          | 2[n=2] g[n=2,cmd=g] ?[-] }[-] => Normal (3,0)
+2g?2w         | 2[n=2] g[n=2,cmd=g] ?[-] 2[n=2] w[-] => Normal (2,0)
+2g?d          | 2[n=2] g[n=2,cmd=g] ?[-] d[op=Delete] => Normal (1,8)
+2g?c          | 2[n=2] g[n=2,cmd=g] ?[-] c[op=Change] => Normal (1,8)
+2g?y          | 2[n=2] g[n=2,cmd=g] ?[-] y[op=Yank] => Normal (1,8)
+2g?<          | 2[n=2] g[n=2,cmd=g] ?[-] <[op=Dedent] => Normal (1,8)
+2g?>          | 2[n=2] g[n=2,cmd=g] ?[-] >[op=Indent] => Normal (1,8)
+2g?u          | 2[n=2] g[n=2,cmd=g] ?[-] u[-] => Normal (1,8)
+2g?U          | 2[n=2] g[n=2,cmd=g] ?[-] U[-] => Normal (1,8)
+2g?~          | 2[n=2] g[n=2,cmd=g] ?[-] ~[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+2g?<Esc>      | 2[n=2] g[n=2,cmd=g] ?[-] <Esc>[-] => Normal (1,8)
+2g?x          | 2[n=2] g[n=2,cmd=g] ?[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+2g?v          | 2[n=2] g[n=2,cmd=g] ?[-] v[-] => Visual (1,8)
+2g?i<Esc>     | 2[n=2] g[n=2,cmd=g] ?[-] i[-] <Esc>[-] => Normal (1,7)
+2g?K          | 2[n=2] g[n=2,cmd=g] ?[-] K[-] => Normal (1,8)
+2g?z          | 2[n=2] g[n=2,cmd=g] ?[-] z[cmd=z] => Normal (1,8)
+2g?"          | 2[n=2] g[n=2,cmd=g] ?[-] "[cmd="] => Normal (1,8)
+2g?g<Esc>     | 2[n=2] g[n=2,cmd=g] ?[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+2g?gx         | 2[n=2] g[n=2,cmd=g] ?[-] g[cmd=g] x[-] => Normal (1,8)
+2g?q          | 2[n=2] g[n=2,cmd=g] ?[-] q[cmd=q] => Normal (1,8)
+2g?:          | 2[n=2] g[n=2,cmd=g] ?[-] :[-] => Command (1,8)
+2gqw          | 2[n=2] g[n=2,cmd=g] q[-] w[-] => Normal (1,13)
+2gqe          | 2[n=2] g[n=2,cmd=g] q[-] e[-] => Normal (1,11)
+2gqb          | 2[n=2] g[n=2,cmd=g] q[-] b[-] => Normal (1,2)
+2gq$          | 2[n=2] g[n=2,cmd=g] q[-] $[-] => Normal (1,17)
+2gq0          | 2[n=2] g[n=2,cmd=g] q[-] 0[-] => Normal (1,0)
+2gqj          | 2[n=2] g[n=2,cmd=g] q[-] j[-] => Normal (2,5)
+2gqk          | 2[n=2] g[n=2,cmd=g] q[-] k[-] => Normal (0,8)
+2gqG          | 2[n=2] g[n=2,cmd=g] q[-] G[-] => Normal (4,0)
+2gqgg         | 2[n=2] g[n=2,cmd=g] q[-] g[cmd=g] g[-] => Normal (0,0)
+2gqgn         | 2[n=2] g[n=2,cmd=g] q[-] g[cmd=g] n[-] => Normal (1,8)
+2gqiw         | 2[n=2] g[n=2,cmd=g] q[-] i[-] w[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha wbeta gamma\nxdelta\n\nlast line here\n"
+2gqaw         | 2[n=2] g[n=2,cmd=g] q[-] a[-] w[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha bweta gamma\nxdelta\n\nlast line here\n"
+2gqi(         | 2[n=2] g[n=2,cmd=g] q[-] i[-] ([-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha (beta gamma\nxdelta\n\nlast line here\n"
+2gqa"         | 2[n=2] g[n=2,cmd=g] q[-] a[-] "[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha b\"eta gamma\nxdelta\n\nlast line here\n"
+2gqip         | 2[n=2] g[n=2,cmd=g] q[-] i[-] p[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha pbeta gamma\nxdelta\n\nlast line here\n"
+2gqfa         | 2[n=2] g[n=2,cmd=g] q[-] f[char=Find/None] a[-] => Normal (1,11)
+2gqta         | 2[n=2] g[n=2,cmd=g] q[-] t[char=Till/None] a[-] => Normal (1,10)
+2gqFa         | 2[n=2] g[n=2,cmd=g] q[-] F[char=FindBack/None] a[-] => Normal (1,6)
+2gql          | 2[n=2] g[n=2,cmd=g] q[-] l[-] => Normal (1,9)
+2gq}          | 2[n=2] g[n=2,cmd=g] q[-] }[-] => Normal (3,0)
+2gq2w         | 2[n=2] g[n=2,cmd=g] q[-] 2[n=2] w[-] => Normal (2,0)
+2gqd          | 2[n=2] g[n=2,cmd=g] q[-] d[op=Delete] => Normal (1,8)
+2gqc          | 2[n=2] g[n=2,cmd=g] q[-] c[op=Change] => Normal (1,8)
+2gqy          | 2[n=2] g[n=2,cmd=g] q[-] y[op=Yank] => Normal (1,8)
+2gq<          | 2[n=2] g[n=2,cmd=g] q[-] <[op=Dedent] => Normal (1,8)
+2gq>          | 2[n=2] g[n=2,cmd=g] q[-] >[op=Indent] => Normal (1,8)
+2gqu          | 2[n=2] g[n=2,cmd=g] q[-] u[-] => Normal (1,8)
+2gqU          | 2[n=2] g[n=2,cmd=g] q[-] U[-] => Normal (1,8)
+2gq~          | 2[n=2] g[n=2,cmd=g] q[-] ~[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+2gq<Esc>      | 2[n=2] g[n=2,cmd=g] q[-] <Esc>[-] => Normal (1,8)
+2gqx          | 2[n=2] g[n=2,cmd=g] q[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
+2gqv          | 2[n=2] g[n=2,cmd=g] q[-] v[-] => Visual (1,8)
+2gqi<Esc>     | 2[n=2] g[n=2,cmd=g] q[-] i[-] <Esc>[-] => Normal (1,7)
+2gqK          | 2[n=2] g[n=2,cmd=g] q[-] K[-] => Normal (1,8)
+2gqz          | 2[n=2] g[n=2,cmd=g] q[-] z[cmd=z] => Normal (1,8)
+2gq"          | 2[n=2] g[n=2,cmd=g] q[-] "[cmd="] => Normal (1,8)
+2gqg<Esc>     | 2[n=2] g[n=2,cmd=g] q[-] g[cmd=g] <Esc>[-] => Normal (1,8)
+2gqgx         | 2[n=2] g[n=2,cmd=g] q[-] g[cmd=g] x[-] => Normal (1,8)
+2gqq          | 2[n=2] g[n=2,cmd=g] q[-] q[cmd=q] => Normal (1,8)
+2gq:          | 2[n=2] g[n=2,cmd=g] q[-] :[-] => Command (1,8)
+2zfw          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] w[-] => Normal (1,8)
+2zfe          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] e[-] => Normal (1,8)
+2zfb          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] b[-] => Normal (0,8)
+2zf$          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] $[-] => Normal (1,8)
+2zf0          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] 0[-] => Normal (1,8)
+2zfj          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] j[-] => Normal (1,8)
+2zfk          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] k[-] => Normal (0,8)
+2zfG          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] G[-] => Normal (1,8)
+2zfgg         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] g[n=2,op=Fold,cmd=g] g[-] => Normal (1,8)
+2zfgn         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] g[n=2,op=Fold,cmd=g] n[-] => Normal (1,8)
+2zfiw         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] i[n=2,op=Fold,cmd=i] w[-] => Normal (1,8)
+2zfaw         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] a[n=2,op=Fold,cmd=a] w[-] => Normal (1,8)
+2zfi(         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] i[n=2,op=Fold,cmd=i] ([-] => Normal (1,8)
+2zfa"         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] a[n=2,op=Fold,cmd=a] "[-] => Normal (1,8)
+2zfip         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] i[n=2,op=Fold,cmd=i] p[-] => Normal (0,8)
+2zffa         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] f[n=2,op=Fold,char=Find/Some(Fold)] a[-] => Normal (1,8)
+2zfta         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] t[n=2,op=Fold,char=Till/Some(Fold)] a[-] => Normal (1,8)
+2zfFa         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] F[n=2,op=Fold,char=FindBack/Some(Fold)] a[-] => Normal (1,8)
+2zfl          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] l[-] => Normal (1,8)
+2zf}          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] }[-] => Normal (1,8)
+2zf2w         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] 2[n=4,op=Fold] w[-] => Normal (1,8)
+2zfd          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] d[-] => Normal (1,8)
+2zfc          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] c[-] => Normal (1,8)
+2zfy          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] y[-] => Normal (1,8)
+2zf<          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] <[-] => Normal (1,8)
+2zf>          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] >[-] => Normal (1,8)
+2zfu          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] u[-] => Normal (1,8)
+2zfU          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] U[-] => Normal (1,8)
+2zf~          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] ~[-] => Normal (1,8)
+2zf<Esc>      | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] <Esc>[-] => Normal (1,8)
+2zfx          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] x[-] => Normal (1,8)
+2zfv          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] v[-] => Normal (1,8)
+2zfi<Esc>     | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] i[n=2,op=Fold,cmd=i] <Esc>[-] => Normal (1,8)
+2zfK          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] K[-] => Normal (1,8)
+2zfz          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] z[cmd=z] => Normal (1,8)
+2zf"          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] "[-] => Normal (1,8)
+2zfg<Esc>     | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] g[n=2,op=Fold,cmd=g] <Esc>[-] => Normal (1,8)
+2zfgx         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] g[n=2,op=Fold,cmd=g] x[-] => Normal (1,8)
+2zfq          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] q[-] => Normal (1,8)
+2zf:          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] :[-] => Command (1,8)
+"adw          | "[cmd="] a[reg=a] d[op=Delete,reg=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta " @a="beta "
+"ade          | "[cmd="] a[reg=a] d[op=Delete,reg=a] e[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"adb          | "[cmd="] a[reg=a] d[op=Delete,reg=a] b[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha " @a="alpha "
+"ad$          | "[cmd="] a[reg=a] d[op=Delete,reg=a] $[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma" @a="beta gamma"
+"ad0          | "[cmd="] a[reg=a] d[op=Delete,reg=a] 0[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nbeta gamma\nxdelta\n\nlast line here\n" @"="  alpha " @a="  alpha "
+"adj          | "[cmd="] a[reg=a] d[op=Delete,reg=a] j[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n" @a="  alpha beta gamma\nxdelta\n"
+"adk          | "[cmd="] a[reg=a] d[op=Delete,reg=a] k[-] => Normal (0,0) text="xdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+"adG          | "[cmd="] a[reg=a] d[op=Delete,reg=a] G[-] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\n" @"="  alpha beta gamma\nxdelta\n\nlast line here\n" @a="  alpha beta gamma\nxdelta\n\nlast line here\n"
+"adgg         | "[cmd="] a[reg=a] d[op=Delete,reg=a] g[op=Delete,cmd=g,reg=a] g[-] => Normal (0,0) text="xdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+"adgn         | "[cmd="] a[reg=a] d[op=Delete,reg=a] g[op=Delete,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"adiw         | "[cmd="] a[reg=a] d[op=Delete,reg=a] i[op=Delete,cmd=i,reg=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"adaw         | "[cmd="] a[reg=a] d[op=Delete,reg=a] a[op=Delete,cmd=a,reg=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta " @a="beta "
+"adi(         | "[cmd="] a[reg=a] d[op=Delete,reg=a] i[op=Delete,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"ada"         | "[cmd="] a[reg=a] d[op=Delete,reg=a] a[op=Delete,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"adip         | "[cmd="] a[reg=a] d[op=Delete,reg=a] i[op=Delete,cmd=i,reg=a] p[-] => Normal (0,0) text="\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+"adfa         | "[cmd="] a[reg=a] d[op=Delete,reg=a] f[op=Delete,reg=a,char=Find/Some(Delete)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"adta         | "[cmd="] a[reg=a] d[op=Delete,reg=a] t[op=Delete,reg=a,char=Till/Some(Delete)] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha a gamma\nxdelta\n\nlast line here\n" @"="bet" @a="bet"
+"adFa         | "[cmd="] a[reg=a] d[op=Delete,reg=a] F[op=Delete,reg=a,char=FindBack/Some(Delete)] a[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alphbeta gamma\nxdelta\n\nlast line here\n" @"="a " @a="a "
+"adl          | "[cmd="] a[reg=a] d[op=Delete,reg=a] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b" @a="b"
+"ad}          | "[cmd="] a[reg=a] d[op=Delete,reg=a] }[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta" @a="beta gamma\nxdelta"
+"ad2w         | "[cmd="] a[reg=a] d[op=Delete,reg=a] 2[n=2,op=Delete,reg=a] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma" @a="beta gamma"
+"add          | "[cmd="] a[reg=a] d[op=Delete,reg=a] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n" @a="  alpha beta gamma\n"
+"adc          | "[cmd="] a[reg=a] d[op=Delete,reg=a] c[reg=a] => Normal (1,8)
+"ady          | "[cmd="] a[reg=a] d[op=Delete,reg=a] y[reg=a] => Normal (1,8)
+"ad<          | "[cmd="] a[reg=a] d[op=Delete,reg=a] <[reg=a] => Normal (1,8)
+"ad>          | "[cmd="] a[reg=a] d[op=Delete,reg=a] >[reg=a] => Normal (1,8)
+"adu          | "[cmd="] a[reg=a] d[op=Delete,reg=a] u[reg=a] => Normal (1,8)
+"adU          | "[cmd="] a[reg=a] d[op=Delete,reg=a] U[reg=a] => Normal (1,8)
+"ad~          | "[cmd="] a[reg=a] d[op=Delete,reg=a] ~[reg=a] => Normal (1,8)
+"ad<Esc>      | "[cmd="] a[reg=a] d[op=Delete,reg=a] <Esc>[reg=a] => Normal (1,8)
+"adx          | "[cmd="] a[reg=a] d[op=Delete,reg=a] x[reg=a] => Normal (1,8)
+"adv          | "[cmd="] a[reg=a] d[op=Delete,reg=a] v[reg=a] => Normal (1,8)
+"adi<Esc>     | "[cmd="] a[reg=a] d[op=Delete,reg=a] i[op=Delete,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"adK          | "[cmd="] a[reg=a] d[op=Delete,reg=a] K[reg=a] => Normal (1,8)
+"adz          | "[cmd="] a[reg=a] d[op=Delete,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"ad"          | "[cmd="] a[reg=a] d[op=Delete,reg=a] "[reg=a] => Normal (1,8)
+"adg<Esc>     | "[cmd="] a[reg=a] d[op=Delete,reg=a] g[op=Delete,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"adgx         | "[cmd="] a[reg=a] d[op=Delete,reg=a] g[op=Delete,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"adq          | "[cmd="] a[reg=a] d[op=Delete,reg=a] q[reg=a] => Normal (1,8)
+"ad:          | "[cmd="] a[reg=a] d[op=Delete,reg=a] :[-] => Command (1,8)
+"acw          | "[cmd="] a[reg=a] c[op=Change,reg=a] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"ace          | "[cmd="] a[reg=a] c[op=Change,reg=a] e[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"acb          | "[cmd="] a[reg=a] c[op=Change,reg=a] b[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha " @a="alpha "
+"ac$          | "[cmd="] a[reg=a] c[op=Change,reg=a] $[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma" @a="beta gamma"
+"ac0          | "[cmd="] a[reg=a] c[op=Change,reg=a] 0[-] => Insert (1,0) text="foo bar(baz, qux) \"str\" end\nbeta gamma\nxdelta\n\nlast line here\n" @"="  alpha " @a="  alpha "
+"acj          | "[cmd="] a[reg=a] c[op=Change,reg=a] j[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n" @a="  alpha beta gamma\nxdelta\n"
+"ack          | "[cmd="] a[reg=a] c[op=Change,reg=a] k[-] => Insert (0,0) text="\nxdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+"acG          | "[cmd="] a[reg=a] c[op=Change,reg=a] G[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \n" @"="  alpha beta gamma\nxdelta\n\nlast line here\n" @a="  alpha beta gamma\nxdelta\n\nlast line here\n"
+"acgg         | "[cmd="] a[reg=a] c[op=Change,reg=a] g[op=Change,cmd=g,reg=a] g[-] => Insert (0,0) text="\nxdelta\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+"acgn         | "[cmd="] a[reg=a] c[op=Change,reg=a] g[op=Change,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"aciw         | "[cmd="] a[reg=a] c[op=Change,reg=a] i[op=Change,cmd=i,reg=a] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"acaw         | "[cmd="] a[reg=a] c[op=Change,reg=a] a[op=Change,cmd=a,reg=a] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="beta " @a="beta "
+"aci(         | "[cmd="] a[reg=a] c[op=Change,reg=a] i[op=Change,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"aca"         | "[cmd="] a[reg=a] c[op=Change,reg=a] a[op=Change,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"acip         | "[cmd="] a[reg=a] c[op=Change,reg=a] i[op=Change,cmd=i,reg=a] p[-] => Insert (0,0) text="\n\nlast line here\n" @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+"acfa         | "[cmd="] a[reg=a] c[op=Change,reg=a] f[op=Change,reg=a,char=Find/Some(Change)] a[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  gamma\nxdelta\n\nlast line here\n" @"="beta" @a="beta"
+"acta         | "[cmd="] a[reg=a] c[op=Change,reg=a] t[op=Change,reg=a,char=Till/Some(Change)] a[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha a gamma\nxdelta\n\nlast line here\n" @"="bet" @a="bet"
+"acFa         | "[cmd="] a[reg=a] c[op=Change,reg=a] F[op=Change,reg=a,char=FindBack/Some(Change)] a[-] => Insert (1,6) text="foo bar(baz, qux) \"str\" end\n  alphbeta gamma\nxdelta\n\nlast line here\n" @"="a " @a="a "
+"acl          | "[cmd="] a[reg=a] c[op=Change,reg=a] l[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b" @a="b"
+"ac}          | "[cmd="] a[reg=a] c[op=Change,reg=a] }[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \n\nlast line here\n" @"="beta gamma\nxdelta" @a="beta gamma\nxdelta"
+"ac2w         | "[cmd="] a[reg=a] c[op=Change,reg=a] 2[n=2,op=Change,reg=a] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \nxdelta\n\nlast line here\n" @"="beta gamma" @a="beta gamma"
+"acd          | "[cmd="] a[reg=a] c[op=Change,reg=a] d[reg=a] => Normal (1,8)
+"acc          | "[cmd="] a[reg=a] c[op=Change,reg=a] c[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n" @a="  alpha beta gamma\n"
+"acy          | "[cmd="] a[reg=a] c[op=Change,reg=a] y[reg=a] => Normal (1,8)
+"ac<          | "[cmd="] a[reg=a] c[op=Change,reg=a] <[reg=a] => Normal (1,8)
+"ac>          | "[cmd="] a[reg=a] c[op=Change,reg=a] >[reg=a] => Normal (1,8)
+"acu          | "[cmd="] a[reg=a] c[op=Change,reg=a] u[reg=a] => Normal (1,8)
+"acU          | "[cmd="] a[reg=a] c[op=Change,reg=a] U[reg=a] => Normal (1,8)
+"ac~          | "[cmd="] a[reg=a] c[op=Change,reg=a] ~[reg=a] => Normal (1,8)
+"ac<Esc>      | "[cmd="] a[reg=a] c[op=Change,reg=a] <Esc>[reg=a] => Normal (1,8)
+"acx          | "[cmd="] a[reg=a] c[op=Change,reg=a] x[reg=a] => Normal (1,8)
+"acv          | "[cmd="] a[reg=a] c[op=Change,reg=a] v[reg=a] => Normal (1,8)
+"aci<Esc>     | "[cmd="] a[reg=a] c[op=Change,reg=a] i[op=Change,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"acK          | "[cmd="] a[reg=a] c[op=Change,reg=a] K[reg=a] => Normal (1,8)
+"acz          | "[cmd="] a[reg=a] c[op=Change,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"ac"          | "[cmd="] a[reg=a] c[op=Change,reg=a] "[reg=a] => Normal (1,8)
+"acg<Esc>     | "[cmd="] a[reg=a] c[op=Change,reg=a] g[op=Change,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"acgx         | "[cmd="] a[reg=a] c[op=Change,reg=a] g[op=Change,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"acq          | "[cmd="] a[reg=a] c[op=Change,reg=a] q[reg=a] => Normal (1,8)
+"ac:          | "[cmd="] a[reg=a] c[op=Change,reg=a] :[-] => Command (1,8)
+"ayw          | "[cmd="] a[reg=a] y[op=Yank,reg=a] w[-] => Normal (1,8) @"="beta " @a="beta "
+"aye          | "[cmd="] a[reg=a] y[op=Yank,reg=a] e[-] => Normal (1,8) @"="beta" @a="beta"
+"ayb          | "[cmd="] a[reg=a] y[op=Yank,reg=a] b[-] => Normal (1,2) @"="alpha " @a="alpha "
+"ay$          | "[cmd="] a[reg=a] y[op=Yank,reg=a] $[-] => Normal (1,8) @"="beta gamma" @a="beta gamma"
+"ay0          | "[cmd="] a[reg=a] y[op=Yank,reg=a] 0[-] => Normal (1,0) @"="  alpha " @a="  alpha "
+"ayj          | "[cmd="] a[reg=a] y[op=Yank,reg=a] j[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n" @a="  alpha beta gamma\nxdelta\n"
+"ayk          | "[cmd="] a[reg=a] y[op=Yank,reg=a] k[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+"ayG          | "[cmd="] a[reg=a] y[op=Yank,reg=a] G[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n\nlast line here\n" @a="  alpha beta gamma\nxdelta\n\nlast line here\n"
+"aygg         | "[cmd="] a[reg=a] y[op=Yank,reg=a] g[op=Yank,cmd=g,reg=a] g[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
+"aygn         | "[cmd="] a[reg=a] y[op=Yank,reg=a] g[op=Yank,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"ayiw         | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] w[-] => Normal (1,8) @"="beta" @a="beta"
+"ayaw         | "[cmd="] a[reg=a] y[op=Yank,reg=a] a[op=Yank,cmd=a,reg=a] w[-] => Normal (1,8) @"="beta " @a="beta "
+"ayi(         | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"aya"         | "[cmd="] a[reg=a] y[op=Yank,reg=a] a[op=Yank,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"ayip         | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] p[-] => Normal (0,0) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+"ayfa         | "[cmd="] a[reg=a] y[op=Yank,reg=a] f[op=Yank,reg=a,char=Find/Some(Yank)] a[-] => Normal (1,8) @"="beta" @a="beta"
+"ayta         | "[cmd="] a[reg=a] y[op=Yank,reg=a] t[op=Yank,reg=a,char=Till/Some(Yank)] a[-] => Normal (1,8) @"="bet" @a="bet"
+"ayFa         | "[cmd="] a[reg=a] y[op=Yank,reg=a] F[op=Yank,reg=a,char=FindBack/Some(Yank)] a[-] => Normal (1,6) @"="a " @a="a "
+"ayl          | "[cmd="] a[reg=a] y[op=Yank,reg=a] l[-] => Normal (1,8) @"="b" @a="b"
+"ay}          | "[cmd="] a[reg=a] y[op=Yank,reg=a] }[-] => Normal (1,8) @"="beta gamma\nxdelta" @a="beta gamma\nxdelta"
+"ay2w         | "[cmd="] a[reg=a] y[op=Yank,reg=a] 2[n=2,op=Yank,reg=a] w[-] => Normal (1,8) @"="beta gamma" @a="beta gamma"
+"ayd          | "[cmd="] a[reg=a] y[op=Yank,reg=a] d[reg=a] => Normal (1,8)
+"ayc          | "[cmd="] a[reg=a] y[op=Yank,reg=a] c[reg=a] => Normal (1,8)
+"ayy          | "[cmd="] a[reg=a] y[op=Yank,reg=a] y[-] => Normal (1,8) @"="  alpha beta gamma\n" @a="  alpha beta gamma\n"
+"ay<          | "[cmd="] a[reg=a] y[op=Yank,reg=a] <[reg=a] => Normal (1,8)
+"ay>          | "[cmd="] a[reg=a] y[op=Yank,reg=a] >[reg=a] => Normal (1,8)
+"ayu          | "[cmd="] a[reg=a] y[op=Yank,reg=a] u[reg=a] => Normal (1,8)
+"ayU          | "[cmd="] a[reg=a] y[op=Yank,reg=a] U[reg=a] => Normal (1,8)
+"ay~          | "[cmd="] a[reg=a] y[op=Yank,reg=a] ~[reg=a] => Normal (1,8)
+"ay<Esc>      | "[cmd="] a[reg=a] y[op=Yank,reg=a] <Esc>[reg=a] => Normal (1,8)
+"ayx          | "[cmd="] a[reg=a] y[op=Yank,reg=a] x[reg=a] => Normal (1,8)
+"ayv          | "[cmd="] a[reg=a] y[op=Yank,reg=a] v[reg=a] => Normal (1,8)
+"ayi<Esc>     | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"ayK          | "[cmd="] a[reg=a] y[op=Yank,reg=a] K[reg=a] => Normal (1,8)
+"ayz          | "[cmd="] a[reg=a] y[op=Yank,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"ay"          | "[cmd="] a[reg=a] y[op=Yank,reg=a] "[reg=a] => Normal (1,8)
+"ayg<Esc>     | "[cmd="] a[reg=a] y[op=Yank,reg=a] g[op=Yank,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"aygx         | "[cmd="] a[reg=a] y[op=Yank,reg=a] g[op=Yank,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"ayq          | "[cmd="] a[reg=a] y[op=Yank,reg=a] q[reg=a] => Normal (1,8)
+"ay:          | "[cmd="] a[reg=a] y[op=Yank,reg=a] :[-] => Command (1,8)
+"a<w          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<e          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] e[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<b          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] b[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<$          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] $[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<0          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] 0[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<j          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] j[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<k          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] k[reg=a] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<G          | "[cmd="] a[reg=a] <G[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<gg         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] g[op=Dedent,cmd=g,reg=a] g[reg=a] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<gn         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] g[op=Dedent,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"a<iw         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] i[op=Dedent,cmd=i,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<aw         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] a[op=Dedent,cmd=a,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<i(         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] i[op=Dedent,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"a<a"         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] a[op=Dedent,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"a<ip         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] i[op=Dedent,cmd=i,reg=a] p[reg=a] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<fa         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] f[op=Dedent,reg=a,char=Find/Some(Dedent)] a[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<ta         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] t[op=Dedent,reg=a,char=Till/Some(Dedent)] a[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<Fa         | "[cmd="] a[reg=a] <Fa[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<l          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] l[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<}          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] }[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<2w         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] 2[n=2,op=Dedent,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<d          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] d[reg=a] => Normal (1,8)
+"a<c          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] c[reg=a] => Normal (1,8)
+"a<y          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] y[reg=a] => Normal (1,8)
+"a<<          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] <[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a<>          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] >[reg=a] => Normal (1,8)
+"a<u          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] u[reg=a] => Normal (1,8)
+"a<U          | "[cmd="] a[reg=a] <U[reg=a] => Normal (1,8)
+"a<~          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] ~[reg=a] => Normal (1,8)
+"a<<Esc>      | "[cmd="] a[reg=a] <[op=Dedent,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a<x          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] x[reg=a] => Normal (1,8)
+"a<v          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] v[reg=a] => Normal (1,8)
+"a<i<Esc>     | "[cmd="] a[reg=a] <[op=Dedent,reg=a] i[op=Dedent,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a<K          | "[cmd="] a[reg=a] <K[reg=a] => Normal (1,8)
+"a<z          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"a<"          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] "[reg=a] => Normal (1,8)
+"a<g<Esc>     | "[cmd="] a[reg=a] <[op=Dedent,reg=a] g[op=Dedent,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a<gx         | "[cmd="] a[reg=a] <[op=Dedent,reg=a] g[op=Dedent,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"a<q          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] q[reg=a] => Normal (1,8)
+"a<:          | "[cmd="] a[reg=a] <[op=Dedent,reg=a] :[-] => Command (1,8)
+"a>w          | "[cmd="] a[reg=a] >[op=Indent,reg=a] w[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>e          | "[cmd="] a[reg=a] >[op=Indent,reg=a] e[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>b          | "[cmd="] a[reg=a] >[op=Indent,reg=a] b[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>$          | "[cmd="] a[reg=a] >[op=Indent,reg=a] $[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>0          | "[cmd="] a[reg=a] >[op=Indent,reg=a] 0[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>j          | "[cmd="] a[reg=a] >[op=Indent,reg=a] j[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+"a>k          | "[cmd="] a[reg=a] >[op=Indent,reg=a] k[reg=a] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>G          | "[cmd="] a[reg=a] >[op=Indent,reg=a] G[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\n    last line here\n"
+"a>gg         | "[cmd="] a[reg=a] >[op=Indent,reg=a] g[op=Indent,cmd=g,reg=a] g[reg=a] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>gn         | "[cmd="] a[reg=a] >[op=Indent,reg=a] g[op=Indent,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"a>iw         | "[cmd="] a[reg=a] >[op=Indent,reg=a] i[op=Indent,cmd=i,reg=a] w[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>aw         | "[cmd="] a[reg=a] >[op=Indent,reg=a] a[op=Indent,cmd=a,reg=a] w[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>i(         | "[cmd="] a[reg=a] >[op=Indent,reg=a] i[op=Indent,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"a>a"         | "[cmd="] a[reg=a] >[op=Indent,reg=a] a[op=Indent,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"a>ip         | "[cmd="] a[reg=a] >[op=Indent,reg=a] i[op=Indent,cmd=i,reg=a] p[reg=a] => Normal (0,4) text="    foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+"a>fa         | "[cmd="] a[reg=a] >[op=Indent,reg=a] f[op=Indent,reg=a,char=Find/Some(Indent)] a[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>ta         | "[cmd="] a[reg=a] >[op=Indent,reg=a] t[op=Indent,reg=a,char=Till/Some(Indent)] a[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>Fa         | "[cmd="] a[reg=a] >[op=Indent,reg=a] F[op=Indent,reg=a,char=FindBack/Some(Indent)] a[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>l          | "[cmd="] a[reg=a] >[op=Indent,reg=a] l[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>}          | "[cmd="] a[reg=a] >[op=Indent,reg=a] }[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\n    xdelta\n\nlast line here\n"
+"a>2w         | "[cmd="] a[reg=a] >[op=Indent,reg=a] 2[n=2,op=Indent,reg=a] w[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>d          | "[cmd="] a[reg=a] >[op=Indent,reg=a] d[reg=a] => Normal (1,8)
+"a>c          | "[cmd="] a[reg=a] >[op=Indent,reg=a] c[reg=a] => Normal (1,8)
+"a>y          | "[cmd="] a[reg=a] >[op=Indent,reg=a] y[reg=a] => Normal (1,8)
+"a><          | "[cmd="] a[reg=a] >[op=Indent,reg=a] <[reg=a] => Normal (1,8)
+"a>>          | "[cmd="] a[reg=a] >[op=Indent,reg=a] >[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
+"a>u          | "[cmd="] a[reg=a] >[op=Indent,reg=a] u[reg=a] => Normal (1,8)
+"a>U          | "[cmd="] a[reg=a] >[op=Indent,reg=a] U[reg=a] => Normal (1,8)
+"a>~          | "[cmd="] a[reg=a] >[op=Indent,reg=a] ~[reg=a] => Normal (1,8)
+"a><Esc>      | "[cmd="] a[reg=a] >[op=Indent,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a>x          | "[cmd="] a[reg=a] >[op=Indent,reg=a] x[reg=a] => Normal (1,8)
+"a>v          | "[cmd="] a[reg=a] >[op=Indent,reg=a] v[reg=a] => Normal (1,8)
+"a>i<Esc>     | "[cmd="] a[reg=a] >[op=Indent,reg=a] i[op=Indent,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a>K          | "[cmd="] a[reg=a] >[op=Indent,reg=a] K[reg=a] => Normal (1,8)
+"a>z          | "[cmd="] a[reg=a] >[op=Indent,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"a>"          | "[cmd="] a[reg=a] >[op=Indent,reg=a] "[reg=a] => Normal (1,8)
+"a>g<Esc>     | "[cmd="] a[reg=a] >[op=Indent,reg=a] g[op=Indent,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a>gx         | "[cmd="] a[reg=a] >[op=Indent,reg=a] g[op=Indent,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"a>q          | "[cmd="] a[reg=a] >[op=Indent,reg=a] q[reg=a] => Normal (1,8)
+"a>:          | "[cmd="] a[reg=a] >[op=Indent,reg=a] :[-] => Command (1,8)
+"a=w          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=e          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] e[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=b          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] b[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=$          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] $[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=0          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] 0[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=j          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] j[reg=a] => Normal (2,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=k          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] k[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=G          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] G[reg=a] => Normal (4,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=gg         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] g[op=AutoIndent,cmd=g,reg=a] g[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=gn         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] g[op=AutoIndent,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"a=iw         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] i[op=AutoIndent,cmd=i,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=aw         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] a[op=AutoIndent,cmd=a,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=i(         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] i[op=AutoIndent,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"a=a"         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] a[op=AutoIndent,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"a=ip         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] i[op=AutoIndent,cmd=i,reg=a] p[reg=a] => Normal (0,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=fa         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] f[op=AutoIndent,reg=a,char=Find/Some(AutoIndent)] a[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=ta         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] t[op=AutoIndent,reg=a,char=Till/Some(AutoIndent)] a[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=Fa         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] F[op=AutoIndent,reg=a,char=FindBack/Some(AutoIndent)] a[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=l          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] l[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=}          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] }[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=2w         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] 2[n=2,op=AutoIndent,reg=a] w[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nalpha beta gamma\nxdelta\n\nlast line here\n"
+"a=d          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] d[reg=a] => Normal (1,8)
+"a=c          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] c[reg=a] => Normal (1,8)
+"a=y          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] y[reg=a] => Normal (1,8)
+"a=<          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] <[reg=a] => Normal (1,8)
+"a=>          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] >[reg=a] => Normal (1,8)
+"a=u          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] u[reg=a] => Normal (1,8)
+"a=U          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] U[reg=a] => Normal (1,8)
+"a=~          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] ~[reg=a] => Normal (1,8)
+"a=<Esc>      | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a=x          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] x[reg=a] => Normal (1,8)
+"a=v          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] v[reg=a] => Normal (1,8)
+"a=i<Esc>     | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] i[op=AutoIndent,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a=K          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] K[reg=a] => Normal (1,8)
+"a=z          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"a="          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] "[reg=a] => Normal (1,8)
+"a=g<Esc>     | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] g[op=AutoIndent,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"a=gx         | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] g[op=AutoIndent,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"a=q          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] q[reg=a] => Normal (1,8)
+"a=:          | "[cmd="] a[reg=a] =[op=AutoIndent,reg=a] :[-] => Command (1,8)
+"aguw         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] w[reg=a] => Normal (1,8)
+"ague         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] e[reg=a] => Normal (1,8)
+"agub         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] b[reg=a] => Normal (1,2)
+"agu$         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] $[reg=a] => Normal (1,8)
+"agu0         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] 0[reg=a] => Normal (1,0)
+"aguj         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] j[reg=a] => Normal (1,8)
+"aguk         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] k[reg=a] => Normal (0,8)
+"aguG         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] G[reg=a] => Normal (1,8)
+"agugg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] g[op=Lowercase,cmd=g,reg=a] g[reg=a] => Normal (0,8)
+"agugn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] g[op=Lowercase,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"aguiw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] w[reg=a] => Normal (1,8)
+"aguaw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] a[op=Lowercase,cmd=a,reg=a] w[reg=a] => Normal (1,8)
+"agui(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"agua"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] a[op=Lowercase,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"aguip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] p[reg=a] => Normal (0,0)
+"agufa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] f[op=Lowercase,reg=a,char=Find/Some(Lowercase)] a[reg=a] => Normal (1,8)
+"aguta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] t[op=Lowercase,reg=a,char=Till/Some(Lowercase)] a[reg=a] => Normal (1,8)
+"aguFa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] F[op=Lowercase,reg=a,char=FindBack/Some(Lowercase)] a[reg=a] => Normal (1,6)
+"agul         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] l[reg=a] => Normal (1,8)
+"agu}         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] }[reg=a] => Normal (1,8)
+"agu2w        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] 2[n=2,op=Lowercase,reg=a] w[reg=a] => Normal (1,8)
+"agud         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] d[reg=a] => Normal (1,8)
+"aguc         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] c[reg=a] => Normal (1,8)
+"aguy         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] y[reg=a] => Normal (1,8)
+"agu<         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] <[reg=a] => Normal (1,8)
+"agu>         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] >[reg=a] => Normal (1,8)
+"aguu         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] u[reg=a] => Normal (1,8)
+"aguU         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] U[reg=a] => Normal (1,8)
+"agu~         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] ~[reg=a] => Normal (1,8)
+"agu<Esc>     | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] <Esc>[reg=a] => Normal (1,8)
+"agux         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] x[reg=a] => Normal (1,8)
+"aguv         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] v[reg=a] => Normal (1,8)
+"agui<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"aguK         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] K[reg=a] => Normal (1,8)
+"aguz         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"agu"         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] "[reg=a] => Normal (1,8)
+"agug<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] g[op=Lowercase,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"agugx        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] g[op=Lowercase,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"aguq         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] q[reg=a] => Normal (1,8)
+"agu:         | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] :[-] => Command (1,8)
+"agUw         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUe         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] e[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUb         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] b[reg=a] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+"agU$         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] $[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+"agU0         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] 0[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+"agUj         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] j[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+"agUk         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] k[reg=a] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+"agUG         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] G[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nLAST LINE HERE\n"
+"agUgg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] g[op=Uppercase,cmd=g,reg=a] g[reg=a] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+"agUgn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] g[op=Uppercase,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"agUiw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUaw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] a[op=Uppercase,cmd=a,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUi(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"agUa"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] a[op=Uppercase,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"agUip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] p[reg=a] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+"agUfa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] f[op=Uppercase,reg=a,char=Find/Some(Uppercase)] a[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] t[op=Uppercase,reg=a,char=Till/Some(Uppercase)] a[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETa gamma\nxdelta\n\nlast line here\n"
+"agUFa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] F[op=Uppercase,reg=a,char=FindBack/Some(Uppercase)] a[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alphA beta gamma\nxdelta\n\nlast line here\n"
+"agUl         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] l[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+"agU}         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] }[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+"agU2w        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] 2[n=2,op=Uppercase,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+"agUd         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] d[reg=a] => Normal (1,8)
+"agUc         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] c[reg=a] => Normal (1,8)
+"agUy         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] y[reg=a] => Normal (1,8)
+"agU<         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] <[reg=a] => Normal (1,8)
+"agU>         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] >[reg=a] => Normal (1,8)
+"agUu         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] u[reg=a] => Normal (1,8)
+"agUU         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] U[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+"agU~         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] ~[reg=a] => Normal (1,8)
+"agU<Esc>     | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] <Esc>[reg=a] => Normal (1,8)
+"agUx         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] x[reg=a] => Normal (1,8)
+"agUv         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] v[reg=a] => Normal (1,8)
+"agUi<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"agUK         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] K[reg=a] => Normal (1,8)
+"agUz         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"agU"         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] "[reg=a] => Normal (1,8)
+"agUg<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] g[op=Uppercase,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"agUgx        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] g[op=Uppercase,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"agUq         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] q[reg=a] => Normal (1,8)
+"agU:         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] :[-] => Command (1,8)
+"ag~w         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~e         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] e[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~b         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] b[reg=a] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+"ag~$         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] $[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+"ag~0         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] 0[reg=a] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA beta gamma\nxdelta\n\nlast line here\n"
+"ag~j         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] j[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+"ag~k         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] k[reg=a] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+"ag~G         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] G[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nXDELTA\n\nLAST LINE HERE\n"
+"ag~gg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] g[op=ToggleCase,cmd=g,reg=a] g[reg=a] => Normal (0,8) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+"ag~gn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] g[op=ToggleCase,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"ag~iw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~aw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] a[op=ToggleCase,cmd=a,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~i(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"ag~a"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] a[op=ToggleCase,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"ag~ip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] p[reg=a] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+"ag~fa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] f[op=ToggleCase,reg=a,char=Find/Some(ToggleCase)] a[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~ta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] t[op=ToggleCase,reg=a,char=Till/Some(ToggleCase)] a[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETa gamma\nxdelta\n\nlast line here\n"
+"ag~Fa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] F[op=ToggleCase,reg=a,char=FindBack/Some(ToggleCase)] a[reg=a] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n  alphA beta gamma\nxdelta\n\nlast line here\n"
+"ag~l         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] l[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+"ag~}         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] }[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
+"ag~2w        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] 2[n=2,op=ToggleCase,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nxdelta\n\nlast line here\n"
+"ag~d         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] d[reg=a] => Normal (1,8)
+"ag~c         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] c[reg=a] => Normal (1,8)
+"ag~y         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] y[reg=a] => Normal (1,8)
+"ag~<         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] <[reg=a] => Normal (1,8)
+"ag~>         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] >[reg=a] => Normal (1,8)
+"ag~u         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] u[reg=a] => Normal (1,8)
+"ag~U         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] U[reg=a] => Normal (1,8)
+"ag~~         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] ~[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
+"ag~<Esc>     | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] <Esc>[reg=a] => Normal (1,8)
+"ag~x         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] x[reg=a] => Normal (1,8)
+"ag~v         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] v[reg=a] => Normal (1,8)
+"ag~i<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"ag~K         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] K[reg=a] => Normal (1,8)
+"ag~z         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"ag~"         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] "[reg=a] => Normal (1,8)
+"ag~g<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] g[op=ToggleCase,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"ag~gx        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] g[op=ToggleCase,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"ag~q         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] q[reg=a] => Normal (1,8)
+"ag~:         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] :[-] => Command (1,8)
+"ag?w         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] w[-] => Normal (1,13)
+"ag?e         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] e[-] => Normal (1,11)
+"ag?b         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] b[-] => Normal (1,2)
+"ag?$         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] $[-] => Normal (1,17)
+"ag?0         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] 0[-] => Normal (1,0)
+"ag?j         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] j[-] => Normal (2,5)
+"ag?k         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] k[-] => Normal (0,8)
+"ag?G         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] G[-] => Normal (4,0)
+"ag?gg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] g[cmd=g,reg=a] g[reg=a] => Normal (0,0)
+"ag?gn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] g[cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"ag?iw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] i[-] w[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha wbeta gamma\nxdelta\n\nlast line here\n"
+"ag?aw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] a[-] w[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha bweta gamma\nxdelta\n\nlast line here\n"
+"ag?i(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] i[-] ([-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha (beta gamma\nxdelta\n\nlast line here\n"
+"ag?a"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] a[-] "[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha b\"eta gamma\nxdelta\n\nlast line here\n"
+"ag?ip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] i[-] p[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha pbeta gamma\nxdelta\n\nlast line here\n"
+"ag?fa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] f[reg=a,char=Find/None] a[reg=a] => Normal (1,11)
+"ag?ta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] t[reg=a,char=Till/None] a[reg=a] => Normal (1,10)
+"ag?Fa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] F[reg=a,char=FindBack/None] a[reg=a] => Normal (1,6)
+"ag?l         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] l[-] => Normal (1,9)
+"ag?}         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] }[-] => Normal (3,0)
+"ag?2w        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] 2[n=2,reg=a] w[-] => Normal (2,0)
+"ag?d         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] d[op=Delete,reg=a] => Normal (1,8)
+"ag?c         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] c[op=Change,reg=a] => Normal (1,8)
+"ag?y         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] y[op=Yank,reg=a] => Normal (1,8)
+"ag?<         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] <[op=Dedent,reg=a] => Normal (1,8)
+"ag?>         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] >[op=Indent,reg=a] => Normal (1,8)
+"ag?u         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] u[-] => Normal (1,8)
+"ag?U         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] U[-] => Normal (1,8)
+"ag?~         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] ~[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+"ag?<Esc>     | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] <Esc>[-] => Normal (1,8)
+"ag?x         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b" @a="b"
+"ag?v         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] v[-] => Visual (1,8)
+"ag?i<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] i[-] <Esc>[-] => Normal (1,7)
+"ag?K         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] K[-] => Normal (1,8)
+"ag?z         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"ag?"         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] "[cmd=",reg=a] => Normal (1,8)
+"ag?g<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] g[cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"ag?gx        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] g[cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"ag?q         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] q[cmd=q,reg=a] => Normal (1,8)
+"ag?:         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ?[reg=a] :[-] => Command (1,8)
+"agqw         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] w[-] => Normal (1,13)
+"agqe         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] e[-] => Normal (1,11)
+"agqb         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] b[-] => Normal (1,2)
+"agq$         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] $[-] => Normal (1,17)
+"agq0         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] 0[-] => Normal (1,0)
+"agqj         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] j[-] => Normal (2,5)
+"agqk         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] k[-] => Normal (0,8)
+"agqG         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] G[-] => Normal (4,0)
+"agqgg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] g[cmd=g,reg=a] g[reg=a] => Normal (0,0)
+"agqgn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] g[cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"agqiw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] i[-] w[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha wbeta gamma\nxdelta\n\nlast line here\n"
+"agqaw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] a[-] w[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha bweta gamma\nxdelta\n\nlast line here\n"
+"agqi(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] i[-] ([-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha (beta gamma\nxdelta\n\nlast line here\n"
+"agqa"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] a[-] "[-] => Insert (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha b\"eta gamma\nxdelta\n\nlast line here\n"
+"agqip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] i[-] p[-] => Insert (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha pbeta gamma\nxdelta\n\nlast line here\n"
+"agqfa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] f[reg=a,char=Find/None] a[reg=a] => Normal (1,11)
+"agqta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] t[reg=a,char=Till/None] a[reg=a] => Normal (1,10)
+"agqFa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] F[reg=a,char=FindBack/None] a[reg=a] => Normal (1,6)
+"agql         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] l[-] => Normal (1,9)
+"agq}         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] }[-] => Normal (3,0)
+"agq2w        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] 2[n=2,reg=a] w[-] => Normal (2,0)
+"agqd         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] d[op=Delete,reg=a] => Normal (1,8)
+"agqc         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] c[op=Change,reg=a] => Normal (1,8)
+"agqy         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] y[op=Yank,reg=a] => Normal (1,8)
+"agq<         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] <[op=Dedent,reg=a] => Normal (1,8)
+"agq>         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] >[op=Indent,reg=a] => Normal (1,8)
+"agqu         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] u[-] => Normal (1,8)
+"agqU         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] U[-] => Normal (1,8)
+"agq~         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] ~[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
+"agq<Esc>     | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] <Esc>[-] => Normal (1,8)
+"agqx         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b" @a="b"
+"agqv         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] v[-] => Visual (1,8)
+"agqi<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] i[-] <Esc>[-] => Normal (1,7)
+"agqK         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] K[-] => Normal (1,8)
+"agqz         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"agq"         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] "[cmd=",reg=a] => Normal (1,8)
+"agqg<Esc>    | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] g[cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"agqgx        | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] g[cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"agqq         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] q[cmd=q,reg=a] => Normal (1,8)
+"agq:         | "[cmd="] a[reg=a] g[cmd=g,reg=a] q[reg=a] :[-] => Command (1,8)
+"azfw         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] w[reg=a] => Normal (1,8)
+"azfe         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] e[reg=a] => Normal (1,8)
+"azfb         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] b[reg=a] => Normal (1,8)
+"azf$         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] $[reg=a] => Normal (1,8)
+"azf0         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] 0[reg=a] => Normal (1,8)
+"azfj         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] j[reg=a] => Normal (1,8)
+"azfk         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] k[reg=a] => Normal (0,8)
+"azfG         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] G[reg=a] => Normal (1,8)
+"azfgg        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] g[op=Fold,cmd=g,reg=a] g[reg=a] => Normal (0,8)
+"azfgn        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] g[op=Fold,cmd=g,reg=a] n[reg=a] => Normal (1,8)
+"azfiw        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] i[op=Fold,cmd=i,reg=a] w[reg=a] => Normal (1,8)
+"azfaw        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] a[op=Fold,cmd=a,reg=a] w[reg=a] => Normal (1,8)
+"azfi(        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] i[op=Fold,cmd=i,reg=a] ([reg=a] => Normal (1,8)
+"azfa"        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] a[op=Fold,cmd=a,reg=a] "[reg=a] => Normal (1,8)
+"azfip        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] i[op=Fold,cmd=i,reg=a] p[reg=a] => Normal (0,8)
+"azffa        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] f[op=Fold,reg=a,char=Find/Some(Fold)] a[reg=a] => Normal (1,8)
+"azfta        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] t[op=Fold,reg=a,char=Till/Some(Fold)] a[reg=a] => Normal (1,8)
+"azfFa        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] F[op=Fold,reg=a,char=FindBack/Some(Fold)] a[reg=a] => Normal (1,8)
+"azfl         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] l[reg=a] => Normal (1,8)
+"azf}         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] }[reg=a] => Normal (1,8)
+"azf2w        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] 2[n=2,op=Fold,reg=a] w[reg=a] => Normal (1,8)
+"azfd         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] d[reg=a] => Normal (1,8)
+"azfc         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] c[reg=a] => Normal (1,8)
+"azfy         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] y[reg=a] => Normal (1,8)
+"azf<         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] <[reg=a] => Normal (1,8)
+"azf>         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] >[reg=a] => Normal (1,8)
+"azfu         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] u[reg=a] => Normal (1,8)
+"azfU         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] U[reg=a] => Normal (1,8)
+"azf~         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] ~[reg=a] => Normal (1,8)
+"azf<Esc>     | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] <Esc>[reg=a] => Normal (1,8)
+"azfx         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] x[reg=a] => Normal (1,8)
+"azfv         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] v[reg=a] => Normal (1,8)
+"azfi<Esc>    | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] i[op=Fold,cmd=i,reg=a] <Esc>[reg=a] => Normal (1,8)
+"azfK         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] K[reg=a] => Normal (1,8)
+"azfz         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] z[cmd=z,reg=a] => Normal (1,8)
+"azf"         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] "[reg=a] => Normal (1,8)
+"azfg<Esc>    | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] g[op=Fold,cmd=g,reg=a] <Esc>[reg=a] => Normal (1,8)
+"azfgx        | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] g[op=Fold,cmd=g,reg=a] x[reg=a] => Normal (1,8)
+"azfq         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] q[reg=a] => Normal (1,8)
+"azf:         | "[cmd="] a[reg=a] z[cmd=z,reg=a] f[op=Fold,reg=a] :[-] => Command (1,8)
