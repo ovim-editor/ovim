@@ -11,6 +11,7 @@
     "format:check": "prettier --check src scripts",
     "test": "vitest run src",
     "icons:generate": "node scripts/generate-icons.mjs",
+    "app-icon": "python3 ../icons/app-icon.py ../icons/icon.svg && node scripts/render-app-icon.mjs && cd .. && tauri icon icons/icon.png",
     "bundle": "npm run build && cd .. && cargo build --release --bin ovim-gui && tauri bundle",
     "test:layout": "playwright test"
   },

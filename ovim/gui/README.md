@@ -70,6 +70,20 @@ harness is compiled only in debug builds and does not make external network
 requests. Operating-system delivery of trusted physical keyboard events still
 needs a manual check because macOS automation requires Accessibility access.
 
+### Application icon
+
+`icons/app-icon.py` draws the icon as `icons/icon.svg`. To change the icon,
+edit the script and run:
+
+```sh
+npm run app-icon
+```
+
+The script renders the SVG to `icons/icon.png` in Chromium, because the glow and
+shadow need SVG filters. `tauri icon` then writes every platform size, including
+`icon.icns`. The tile keeps the macOS margins and drop shadow, so it sits at the
+same size as other apps in the Dock.
+
 ## Current boundary
 
 The GUI renders the focused editor pane, tabs, file tree, diagnostics, Git
