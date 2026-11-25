@@ -19,6 +19,7 @@ import { mockSnapshot } from "./mock";
 import { version } from "../package.json";
 import MarkdownDocument from "./MarkdownDocument";
 import ChatModelPicker from "./ChatModelPicker";
+import PickerPreview from "./PickerPreview";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
 import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
 import { createBrowserNavigation } from "./browserNavigation";
@@ -5472,6 +5473,10 @@ function App() {
                                             )
                                         }
                                         class="picker"
+                                        classList={{
+                                            "with-preview":
+                                                picker().showsPreview,
+                                        }}
                                         role="dialog"
                                         aria-labelledby="picker-title"
                                         data-gui-core-dialog
@@ -5574,6 +5579,15 @@ function App() {
                                                 )}
                                             </For>
                                         </div>
+                                        <Show when={picker().showsPreview}>
+                                            <PickerPreview
+                                                preview={picker().preview}
+                                                hasSelection={
+                                                    picker().total > 0
+                                                }
+                                                syntax={view().theme.syntax}
+                                            />
+                                        </Show>
                                         <footer>
                                             <span>
                                                 {picker().total}{" "}

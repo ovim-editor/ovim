@@ -17,6 +17,7 @@ mod mac_arrow_keys;
 mod mac_text_input;
 #[cfg(feature = "gui")]
 mod menu;
+mod picker_preview;
 #[cfg(feature = "gui")]
 mod terminal;
 
@@ -675,6 +676,10 @@ pub struct GuiPicker {
     pub selected: usize,
     pub total: usize,
     pub items: Vec<GuiPickerItem>,
+    /// The picker lists files or locations, so it has a code pane.
+    pub shows_preview: bool,
+    /// Code around the selected result, once its file has loaded.
+    pub preview: Option<picker_preview::GuiPickerPreview>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -4026,6 +4031,8 @@ fn picker(editor: &Editor) -> Option<GuiPicker> {
         selected,
         total,
         items,
+        shows_preview: picker_preview::shows_preview(picker),
+        preview: picker_preview::picker_preview(editor),
     })
 }
 

@@ -3266,6 +3266,89 @@ kbd {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.picker.with-preview {
+    width: min(1240px, calc(100% - 50px));
+    height: min(640px, calc(100% - 70px));
+    max-height: none;
+    grid-template-columns: minmax(280px, 38%) minmax(0, 1fr);
+    grid-template-areas: "heading heading" "filter filter" "results preview" "footer footer";
+}
+.picker-preview {
+    grid-area: preview;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    border-left: 1px solid var(--border);
+    background: var(--canvas);
+}
+.picker-preview header {
+    grid-area: auto;
+    height: 30px;
+    padding: 0 12px;
+    gap: 8px;
+    font: var(--text-technical)/1 var(--editor-font);
+    color: var(--text-secondary);
+}
+.picker-preview header span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+}
+.picker-preview header small {
+    margin-left: auto;
+    flex: none;
+    color: var(--accent);
+}
+.picker-preview.stale > * {
+    opacity: 0.45;
+}
+.picker-preview-code {
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+    padding: 6px 0;
+    font: 12px/19px var(--editor-font);
+    color: var(--text-primary);
+}
+.picker-preview-line {
+    display: flex;
+    white-space: pre;
+}
+.picker-preview-line.target {
+    background: var(--cursor-line);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+.picker-preview-number {
+    flex: none;
+    width: 5ch;
+    padding-right: 1.5ch;
+    text-align: right;
+    color: var(--text-secondary);
+    opacity: 0.6;
+    user-select: none;
+}
+.picker-preview-line.target .picker-preview-number {
+    color: var(--accent);
+    opacity: 1;
+    font-weight: 700;
+}
+.picker-preview-text {
+    min-width: 0;
+    overflow: hidden;
+}
+.picker-preview-empty {
+    align-self: center;
+    grid-row: 1 / -1;
+    margin: 0;
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: var(--text-control);
+}
 .picker footer {
     grid-area: footer;
     padding: 0 11px;
@@ -3646,6 +3729,9 @@ kbd {
     .picker {
         width: calc(100% - 24px);
         max-height: calc(100% - 42px);
+    }
+    .picker.with-preview {
+        height: calc(100% - 42px);
     }
 }
 

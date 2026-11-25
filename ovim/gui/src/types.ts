@@ -545,6 +545,10 @@ export interface GuiSnapshot {
             detail?: string;
             matched: number[];
         }>;
+        /** The picker lists files or locations, so it has a code pane. */
+        showsPreview?: boolean;
+        /** Code around the selected result, once its file has loaded. */
+        preview?: GuiPickerPreview;
     };
     completion?: {
         selected: number;
@@ -601,3 +605,17 @@ export interface GuiSnapshot {
     theme: GuiTheme;
     shouldQuit: boolean;
 }
+
+export type GuiPickerPreview = {
+    /** Relative path of the file shown. Empty while a new file loads. */
+    path: string;
+    /** 1-based line of the selected match. Absent for a file result. */
+    targetLine?: number;
+    /** The previous result's file, shown while the selected one loads. */
+    stale: boolean;
+    lines: Array<{
+        number: number;
+        target: boolean;
+        segments: Array<{ text: string; token?: string }>;
+    }>;
+};
